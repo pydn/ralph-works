@@ -303,6 +303,63 @@ export default function (pi: ExtensionAPI) {
   let writeCountSinceGate = 0;
   const GATE_THRESHOLD = 3; // Auto-run gate after N consecutive writes
 
+  // Live streaming phase detection — update widget as model outputs phase markers
+  let streamingText = "";
+  let lastDetectedPhaseIdx: number | null = null;
+
+  pi.on("message_start", async (event, ctx) => {
+    const state = getState(ctx);
+    if (!state || event.message.role !== "assistant") return;
+    streamingText = "";
+    lastDetectedPhaseIdx = state.currentPhaseIndex ?? 0;
+  });
+
+  pi.on("message_update", async (event, ctx) => {
+    const state = getState(ctx);
+    if (!state || event.message.role !== "assistant") return;
+
+    // Accumulate streaming text (text content parts)
+    const textParts = event.message.content
+      .filter((c: any) => c.type === "text")
+      .map((c: any) => c.text || "");
+    const currentText = textParts.join("\n");
+
+    if (currentText.length > streamingText.length) {
+      streamingText = currentText;
+    }
+
+    // Check for phase transition markers in the full streamed text so far
+    const detectedIdx = detectPhaseIndexFromText(streamingText, state.phases);
+    if (detectedIdx !== null && detectedIdx > lastDetectedPhaseIdx!) {
+      lastDetectedPhaseIdx = detectedIdx;
+      // Update widget live — but don't persist to state yet (agent_end does that)
+      const fakeState = { ...state, currentPhaseIndex: detectedIdx };
+      refreshWidget(ctx, fakeState);
+    }
+  });
+
+  // Detect phase index from assistant text output
+  function detectPhaseIndexFromText(text: string, phases: string[]): number | null {
+    const lower = text.toLowerCase();
+    // Check for explicit phase markers: "## Phase X:", "Phase X: <name>"
+    for (let i = phases.length - 1; i >= 0; i--) {
+      const key = phases[i];
+      const meta = PHASE_META[key];
+      if (!meta) continue;
+
+      // Match patterns like "## Phase N:", "### Phase N:", "Phase N: Name"
+      const phaseNum = i + 1;
+      if (lower.includes(`phase ${phaseNum}:`) || lower.includes(`phase ${phaseNum} `)) {
+        return i;
+      }
+      // Match by name: "Ralph Review Loop", "TDD Implementation", etc.
+      if (meta.name && lower.includes(meta.name.toLowerCase().split(" ")[0])) {
+        return i;
+      }
+    }
+    return null;
+  }
+
   // Refresh the widget display with current phase info
   function refreshWidget(ctx: ExtensionContext, st: PipelineState) {
     const idx = st.currentPhaseIndex ?? 0;
