@@ -331,33 +331,52 @@ export default function (pi: ExtensionAPI) {
     // Check for phase transition markers in the full streamed text so far
     const detectedIdx = detectPhaseIndexFromText(streamingText, state.phases);
     if (detectedIdx !== null && detectedIdx > lastDetectedPhaseIdx!) {
-      lastDetectedPhaseIdx = detectedIdx;
-      // Update widget live — but don't persist to state yet (agent_end does that)
-      const fakeState = { ...state, currentPhaseIndex: detectedIdx };
-      refreshWidget(ctx, fakeState);
+      // Only advance by 1 phase at a time — prevents jumping from 0→5 on echoed instructions
+      const nextAllowed = lastDetectedPhaseIdx! + 1;
+      const actualAdvance = Math.min(detectedIdx, nextAllowed);
+      if (actualAdvance > lastDetectedPhaseIdx!) {
+        lastDetectedPhaseIdx = actualAdvance;
+        // Update widget live — but don't persist to state yet (agent_end does that)
+        const fakeState = { ...state, currentPhaseIndex: actualAdvance };
+        refreshWidget(ctx, fakeState);
+      }
     }
   });
 
   // Detect phase index from assistant text output
   function detectPhaseIndexFromText(text: string, phases: string[]): number | null {
     const lower = text.toLowerCase();
-    // Check for explicit phase markers: "## Phase X:", "Phase X: <name>"
-    for (let i = phases.length - 1; i >= 0; i--) {
+
+    // Only look at the most recent portion of text (last 2000 chars)
+    // to avoid matching old references or echoed instructions
+    const tail = lower.slice(-2000);
+
+    let bestIdx: number | null = null;
+
+    for (let i = 0; i < phases.length; i++) {
       const key = phases[i];
       const meta = PHASE_META[key];
       if (!meta) continue;
 
-      // Match patterns like "## Phase N:", "### Phase N:", "Phase N: Name"
       const phaseNum = i + 1;
-      if (lower.includes(`phase ${phaseNum}:`) || lower.includes(`phase ${phaseNum} `)) {
-        return i;
+
+      // Require heading marker: "## Phase N:" or "### Phase N:" or standalone "# Phase N"
+      // This avoids matching the agent echoing instruction lists like "phase 5: review"
+      if (/
+##?\s*phase\s+${phaseNum}\s*:/.test(lower)) {
+        bestIdx = i;
       }
-      // Match by name: "Ralph Review Loop", "TDD Implementation", etc.
-      if (meta.name && lower.includes(meta.name.toLowerCase().split(" ")[0])) {
-        return i;
+
+      // Also match by full phase name preceded by a heading or explicit label
+      // e.g. "## TDD Implementation" or "Phase: TDD Implementation"
+      const nameLower = meta.name.toLowerCase();
+      if (new RegExp(`\n##?\\s*${nameLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,'').test(lower)
+        || new RegExp(`phase[:\s]+${nameLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, '').test(tail)) {
+        bestIdx = i;
       }
     }
-    return null;
+
+    return bestIdx;
   }
 
   // Refresh the widget display with current phase info
