@@ -33,6 +33,9 @@ Reload Pi (`/reload`) to activate.
 |---------|-------------|
 | `/ralph start <feature>` | Start full pipeline |
 | `/ralph start <feature> spec,implement` | Run selected phases only |
+| `/ralph start <feature> "reduce nesting depth"` | With inline prompt |
+| `/ralph start <feature> .ralph/task.md` | Prompt from file |
+| `/ralph start <feature> "..." spec,implement` | Prompt + specific phases |
 | `/ralph status` | Show current pipeline state |
 | `/ralph cancel` | Abort pipeline |
 
