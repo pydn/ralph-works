@@ -275,6 +275,13 @@ ${taskSection}
 - For each phase: show what you're doing, execute it, report results
 - After each phase, summarize what was accomplished before proceeding
 
+## Anti-Shortcut Rules (read carefully)
+- **DO NOT write a "Complete Summary" until ALL phases are actually executed**
+- Validation results from Phase 4 (implement) are NOT the same as Phase 5 (review)
+- Phase 5 requires a genuine multi-pass PR review, not just re-reporting gate results
+- Only output "LGTM" as your FINAL response after completing every listed phase
+- If you have remaining phases, keep working — do not summarize and stop early
+
 ## Quality Gates (via ralph_gate_check tool)
 Run after implementation and after every remediation cycle:
 1. \`uv run ruff check . --select E,F,W,I\` — lint errors (blocker)
@@ -396,7 +403,8 @@ export default function (pi: ExtensionAPI) {
         .map((c: any) => c.text)
         .join("\n");
 
-      if (text.includes("LGTM") || text.includes("pipeline complete") || text.includes("Completion Checklist")) {
+      // Check for genuine pipeline completion (LGTM + review done)
+      if ((text.includes("LGTM") || text.includes("pipeline complete")) && state.currentPhase === "review") {
         ctx.ui.notify(`✅ Ralph loop complete for "${state.feature}"`, "success");
         ctx.ui.setStatus("ralph-loop", `✅ Done | ${state.feature}`);
       }
@@ -411,6 +419,32 @@ export default function (pi: ExtensionAPI) {
           saveState(pi, state);
           refreshWidget(ctx, state);
         }
+      }
+
+      // Anti-shortcut: detect if agent wrote a "Complete Summary" but didn't finish all phases
+      const currentIdx = state.currentPhaseIndex ?? 0;
+      const unfinishedPhases = state.phases.slice(currentIdx + 1);
+      if (unfinishedPhases.length > 0 && text.includes("Complete Summary") && text.includes("✅")) {
+        // Agent wrote a summary claiming things are done, but phases remain
+        const nextPhase = state.phases[currentIdx + 1];
+        const meta = PHASE_META[nextPhase];
+        ctx.ui.notify(
+          `⚠️ Agent shortcut — Phase ${currentIdx + 2}/${state.phases.length} (${meta?.name}) not yet done`,
+          "warning",
+        );
+
+        pi.sendMessage(
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `⛔ STOP — You wrote a summary but Phase ${currentIdx + 1}/${state.phases.length} (${meta?.name ?? nextPhase}) was not actually executed.\n\n**You still need to complete these phases:**\n${unfinishedPhases.map((p, i) => `- **Phase ${currentIdx + 2 + i}: ${PHASE_META[p]?.name ?? p}** — ${PHASE_META[p]?.desc ?? ""}`).join("\n")}\n\nStart Phase ${currentIdx + 2} (${meta?.name}) now. Do NOT write a summary until ALL phases are genuinely complete and you have output "LGTM" as your final response.`,
+              },
+            ],
+          },
+          { triggerTurn: true, deliverAs: "steer" },
+        );
       }
     }
   });
