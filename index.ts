@@ -60,12 +60,14 @@ const PHASE_META: Record<string, { name: string; desc: string }> = {
 // ── Helpers ───────────────────────────────────────────────
 
 function getState(ctx: ExtensionContext): PipelineState | null {
+  let latest = null;
   for (const entry of ctx.sessionManager.getBranch()) {
     if (entry.type === "custom" && entry.customType === CUSTOM_TYPE && entry.data) {
-      return entry.data as PipelineState;
+      latest = entry.data as PipelineState;
     }
   }
-  return null;
+  // Return the last saved state (most recent saveState call)
+  return latest;
 }
 
 function saveState(pi: ExtensionAPI, state: PipelineState) {
