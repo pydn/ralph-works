@@ -324,13 +324,41 @@ export default function (pi: ExtensionAPI) {
   // Restore state on session start (refreshes widget after compaction)
   pi.on("session_start", async (_event, ctx) => {
     const state = getState(ctx);
-    if (state) {
-      ctx.ui.notify(`Ralph loop: ${state.feature} (${state.phases.join(", ")})`, "info");
-      ctx.ui.setStatus(
-        "ralph-loop",
-        `🔄 Ralph | ${state.feature} | phases: ${state.phases.join(",")}`,
+    if (!state) return;
+
+    ctx.ui.notify(`Ralph loop: ${state.feature} (${state.phases.join(", ")})`, "info");
+    ctx.ui.setStatus(
+      "ralph-loop",
+      `🔄 Ralph | ${state.feature} | phases: ${state.phases.join(",")}`,
+    );
+    refreshWidget(ctx, state);
+
+    // Check for unfinished phases (agent may have shortcut on previous run)
+    const currentIdx = state.currentPhaseIndex ?? 0;
+    const unfinishedPhases = state.phases.slice(currentIdx + 1);
+    if (unfinishedPhases.length > 0) {
+      const nextPhase = state.phases[currentIdx + 1];
+      const meta = PHASE_META[nextPhase];
+      ctx.ui.notify(
+        `⚠️ Resuming from Phase ${currentIdx + 2}/${state.phases.length} (${meta?.name})`,
+        "warning",
       );
-      refreshWidget(ctx, state);
+
+      pi.sendMessage(
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `⛔ PIPELINE RESUMPTION — You stopped at Phase ${currentIdx + 1}/${state.phases.length}.
+
+**Remaining phases to complete:**\n${unfinishedPhases.map((p, i) => `- **Phase ${currentIdx + 2 + i}: ${PHASE_META[p]?.name ?? p}** — ${PHASE_META[p]?.desc ?? ""}`).join("\n")}\n
+Start Phase ${currentIdx + 2} (${meta?.name}) now. Do NOT write a summary until ALL phases are genuinely complete.`,
+            },
+          ],
+        },
+        { triggerTurn: true, deliverAs: "steer" },
+      );
     }
   });
 
