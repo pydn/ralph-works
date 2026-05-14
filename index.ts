@@ -362,18 +362,19 @@ export default function (pi: ExtensionAPI) {
 
   // Refresh the widget display with current phase info
   function refreshWidget(ctx: ExtensionContext, st: PipelineState) {
+    const phases = st.phases && st.phases.length > 0 ? st.phases : ["spec", "redteam", "harden", "implement", "review"];
     const idx = st.currentPhaseIndex ?? 0;
-    const phaseKey = st.phases[idx];
+    const phaseKey = phases[idx];
     const meta = PHASE_META[phaseKey];
     ctx.ui.setWidget(
       "ralph-loop",
       [
         `Pipeline: ${st.feature}`,
-        `Phases: ${st.phases.join(" → ")}`,
+        `Phases: ${phases.join(" → ")}`,
         st.promptText ? `Prompt: (provided)` : `Prompt: (none — infer from codebase)`,
         `Started: ${new Date(st.startedAt).toISOString()}`,
         ``,
-        `Progress: Phase ${idx + 1}/${st.phases.length} — ${meta?.name ?? "?"}`,
+        `Progress: Phase ${idx + 1}/${phases.length} — ${meta?.name ?? "?"}`,
       ],
     );
   }
@@ -383,16 +384,19 @@ export default function (pi: ExtensionAPI) {
     const state = getState(ctx);
     if (!state) return;
 
-    ctx.ui.notify(`Ralph loop: ${state.feature} (${state.phases.join(", ")})`, "info");
+    // Ensure phases is never empty (defensive)
+    const phases = state.phases && state.phases.length > 0 ? state.phases : ["spec", "redteam", "harden", "implement", "review"];
+
+    ctx.ui.notify(`Ralph loop: ${state.feature} (${phases.join(", ")})`, "info");
     ctx.ui.setStatus(
       "ralph-loop",
-      `🔄 Ralph | ${state.feature} | phases: ${state.phases.join(",")}`,
+      `🔄 Ralph | ${state.feature} | phases: ${phases.join(",")}`,
     );
-    refreshWidget(ctx, state);
+    refreshWidget(ctx, { ...state, phases });
 
     // Check for unfinished phases (agent may have shortcut on previous run)
     const currentIdx = state.currentPhaseIndex ?? 0;
-    const unfinishedPhases = state.phases.slice(currentIdx + 1);
+    const unfinishedPhases = phases.slice(currentIdx + 1);
     if (unfinishedPhases.length > 0) {
       const nextPhase = state.phases[currentIdx + 1];
       const meta = PHASE_META[nextPhase];
@@ -658,6 +662,9 @@ Start Phase ${currentIdx + 2} (${meta?.name}) now. Do NOT write a summary until 
               if (parts[3]) {
                 const requested = parts[3].split(",").map((p) => p.trim());
                 phases = requested.filter((p) => validPhases.has(p));
+                if (phases.length === 0) {
+                  phases = ["spec", "redteam", "harden", "implement", "review"];
+                }
               }
             }
           }
@@ -746,6 +753,9 @@ Start Phase ${currentIdx + 2} (${meta?.name}) now. Do NOT write a summary until 
               if (parts[2]) {
                 const requested = parts[2].split(",").map((p) => p.trim());
                 phases = requested.filter((p) => validPhases.has(p));
+                if (phases.length === 0) {
+                  phases = ["spec", "redteam", "harden", "implement", "review"];
+                }
               }
             }
 
