@@ -1,30 +1,8 @@
 /**
  * Ralph Loop Extension — Phase-state-machine pipeline inside pi.
  *
- * Each phase runs as a focused agent turn with its own skill injected via
- * before_agent_start, then advances deterministically on agent_end.
- * No mega-prompts, no string-matching phase detection, no shortcutting.
- *
- * Architecture:
- *   /ralph start → save state (phase 0)
- *     → pre-hook: inject current phase's skill into system prompt
- *     → sendUserMessage(focusedPhasePrompt(phase 0))
- *     → agent works on phase 0
- *     → agent_end: run gates if applicable, advance to phase 1
- *     → sendUserMessage(focusedPhasePrompt(phase 1))
- *     → ... repeat until all phases complete
- *
- * Features:
- *   - Pipeline command (/ralph start <feature>)
- *   - Per-phase skill injection (only current phase's skill loaded)
- *   - Pre/post lint gates (ruff check, format, tests)
- *   - Auto-gate after file writes during implementation phases
- *
- * Usage (interactive pi session):
- *   /ralph start <feature>                    — Full pipeline
- *   /ralph start <feature> spec,harden        — Selected phases only
- *   /ralph status                             — Show current state
- *   /ralph cancel                             — Abort pipeline
+ * Deterministic state machine with pre-hook → execution → post-hook lifecycle.
+ * Single-skill injection, structured review decisions, crash recovery.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -33,19 +11,21 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as child from "node:child_process";
+import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META } from "./src/stateMachine";
+import { wrapSteerMessage, MAX_STEER_SIZE, validatePhaseIndex } from "./src/steer";
 
 // ── Constants ───────────────────────────────────────────────
 const CUSTOM_TYPE = "ralph-loop-state";
-const SKILL_BASE = path.join(os.homedir(), ".pi", "agent", "skills", "_global");
-
-// Implementation/remediation phases that trigger auto-gates
+const SKILL_BASE = process.env.PI_SKILL_BASE ?? path.join(os.homedir(), ".pi", "agent", "skills", "_global");
+const MAX_PHASE_ATTEMPTS = 3;
+const GATE_THRESHOLD = 3;
+const GATE_TIMEOUTS = { tsc: 60_000, vitest: 300_000 };
 const GATE_PHASES = new Set(["implement", "review"]);
 
-interface GateResult {
-  name: string;
-  pass: boolean;
-  output: string;
-}
+// ── Interfaces ──────────────────────────────────────────────
+interface GateResult { name: string; pass: boolean; output: string; }
+interface PostHookResult { pass: boolean; decision?: ReviewDecision; errors?: string[]; }
+interface ReviewDecision { status: "LGTM" | "CRITICAL"; issues?: string[]; }
 
 /**
  * Tracks which files each phase produced, so the next phase knows what to read.
@@ -63,40 +43,84 @@ interface PipelineState {
   phases: string[];
   maxIterations: number;
   startedAt: number;
-  currentPhaseIndex: number;  // 0-based index into phases[] (always explicit)
-  promptText?: string;        // task description from prompt file or inline arg
-  artifacts?: PhaseArtifacts; // output files from completed phases
+  currentPhase?: string;
+  currentPhaseIndex?: number;
+  phaseStatus?: string;      // "pre_hook" | "executing" | "post_hook"
+  reviewIterations?: number;
+  pipelineStatus?: string;   // "running"|"completed"|"halted"|"failed"|"cancelled"|"paused"
+  phaseAttempts?: number;
+  turnWriteCount?: number;
+  promptText?: string;
 }
 
-// Phase metadata + skill path mapping
-const PHASE_META: Record<
-  string,
-  { name: string; desc: string; skillPath: string }
-> = {
+// ── Phase Metadata ──────────────────────────────────────────
+// Imported from ./src/stateMachine (PHASE_META)
+
+// ── Phase Config Registry ──────────────────────────────────
+const PHASE_CONFIGS: Record<string, {
+  displayName: string; desc: string; skillPath: string;
+  preHook: (pk: string, s: PipelineState) => boolean;
+  postHook: (pk: string, s: PipelineState) => PostHookResult;
+}> = {
   spec: {
-    name: "Generate Spec",
-    desc: "Create HTML engineering specification",
+    displayName: "Generate Spec", desc: "Create Markdown engineering specification",
     skillPath: path.join(SKILL_BASE, "generate-spec", "SKILL.md"),
+    preHook: (pk) => fs.existsSync(PHASE_CONFIGS[pk].skillPath),
+    postHook: (_pk, s) => {
+      const sp = path.join(s.workDir, "docs", "specs", `${s.feature}.md`);
+      if (!fs.existsSync(sp)) return { pass: false, errors: [`Spec not found at ${sp}`] };
+      if (fs.statSync(sp).size < 1024) return { pass: false, errors: ["Spec file too small (< 1KB)"] };
+      return { pass: true };
+    },
   },
   redteam: {
-    name: "Red Team Audit",
-    desc: "Adversarial security review of the spec",
+    displayName: "Red Team Audit", desc: "Adversarial security review of the spec",
     skillPath: path.join(SKILL_BASE, "red-team-audit", "SKILL.md"),
+    preHook: (pk, s) => {
+      if (!fs.existsSync(PHASE_CONFIGS[pk].skillPath)) return false;
+      return fs.existsSync(path.join(s.workDir, "docs", "specs", `${s.feature}.md`));
+    },
+    postHook: (_pk, s) => {
+      const ap = path.join(s.workDir, "docs", "security", `redteam-findings-${s.feature}.md`);
+      if (!fs.existsSync(ap)) return { pass: false, errors: [`Audit report not found at ${ap}`] };
+      const c = fs.readFileSync(ap, "utf-8");
+      if (!c.includes("[CRITICAL]") && !c.includes("[WARNING]")) return { pass: false, errors: ["Missing severity tags"] };
+      return { pass: true };
+    },
   },
   harden: {
-    name: "Harden Spec",
-    desc: "Address audit findings, update spec with mitigations",
-    skillPath: path.join(SKILL_BASE, "generate-spec", "SKILL.md"), // reuse for editing
+    displayName: "Harden Spec", desc: "Address audit findings, update spec with mitigations",
+    skillPath: path.join(SKILL_BASE, "harden-spec", "SKILL.md"),
+    preHook: (pk, s) => {
+      if (!fs.existsSync(PHASE_CONFIGS[pk].skillPath)) return false;
+      const sp = path.join(s.workDir, "docs", "specs", `${s.feature}.md`);
+      const ap = path.join(s.workDir, "docs", "security", `redteam-findings-${s.feature}.md`);
+      return fs.existsSync(sp) && fs.existsSync(ap);
+    },
+    postHook: (_pk, s) => {
+      const sp = path.join(s.workDir, "docs", "specs", `${s.feature}.md`);
+      const clp = path.join(s.workDir, "docs", "specs", `harden-changelog-${s.feature}.md`);
+      if (!fs.existsSync(sp)) return { pass: false, errors: ["Hardened spec not found"] };
+      if (!fs.existsSync(clp)) return { pass: false, errors: [`Changelog not found at ${clp}`] };
+      if (!fs.readFileSync(sp, "utf-8").includes("HARDENED")) return { pass: false, errors: ["Spec missing HARDENED marker"] };
+      return { pass: true };
+    },
   },
   implement: {
-    name: "TDD Implement",
-    desc: "Implement via Red-Green-Refactor cycle",
+    displayName: "TDD Implement", desc: "Implement via Red-Green-Refactor cycle",
     skillPath: path.join(SKILL_BASE, "tdd-implement", "SKILL.md"),
+    preHook: (pk) => fs.existsSync(PHASE_CONFIGS[pk].skillPath),
+    postHook: (_pk, s) => {
+      const r = runLintGates(s.workDir);
+      if (!r.every(x => x.pass)) return { pass: false, errors: r.filter(x => !x.pass).map(x => `${x.name}: ${x.output.slice(0,200)}`) };
+      return { pass: true };
+    },
   },
   review: {
-    name: "Ralph Review Loop",
-    desc: "Multi-pass PR review → remediate until LGTM",
+    displayName: "Ralph Review Loop", desc: "Multi-pass PR review → remediate until LGTM",
     skillPath: path.join(SKILL_BASE, "pi-skills", "pr-reviewer", "SKILL.md"),
+    preHook: (pk) => fs.existsSync(PHASE_CONFIGS[pk].skillPath),
+    postHook: () => ({ pass: true }), // controlled by ralph_review_decision tool
   },
 };
 
@@ -105,718 +129,524 @@ const PHASE_META: Record<
 function getState(ctx: ExtensionContext): PipelineState | null {
   let latest = null;
   for (const entry of ctx.sessionManager.getBranch()) {
-    if (entry.type === "custom" && entry.customType === CUSTOM_TYPE && entry.data) {
-      latest = entry.data as PipelineState;
-    }
+    if (entry.type === "custom" && entry.customType === CUSTOM_TYPE && entry.data) latest = entry.data as PipelineState;
   }
-  // Return the last saved state (most recent saveState call)
   return latest;
 }
 
-function saveState(pi: ExtensionAPI, state: PipelineState) {
-  pi.appendEntry(CUSTOM_TYPE, state);
-}
+function saveState(pi: ExtensionAPI, state: PipelineState) { pi.appendEntry(CUSTOM_TYPE, state); }
 
-function findLatestSpec(workDir: string): string | null {
-  const dir = path.join(workDir, "docs", "specs");
+function findLatestSpec(wd: string): string | null {
+  const dir = path.join(wd, "docs", "specs");
   try {
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".html"));
+    let files = fs.readdirSync(dir).filter(f => f.endsWith(".md"));
+    if (!files.length) files = fs.readdirSync(dir).filter(f => f.endsWith(".html"));
     if (!files.length) return null;
-    const sorted = files.map((f) => ({
-      name: f,
-      mtime: fs.statSync(path.join(dir, f)).mtimeMs,
-    })).sort((a, b) => b.mtime - a.mtime);
+    const sorted = files.map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
     return `docs/specs/${sorted[0].name}`;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-function runShell(cmd: string, cwd: string): { ok: boolean; output: string } {
+// sanitizeErrorOutput imported from ./src/stateMachine
+
+function runShell(cmd: string, cwd: string, timeoutMs?: number): { ok: boolean; output: string } {
   try {
-    const out = child.execSync(cmd, {
-      cwd,
-      encoding: "utf-8",
-      timeout: 120_000,
-      maxBuffer: 2 * 1024 * 1024,
-    });
-    return { ok: true, output: out.trim() };
+    const o = child.execSync(cmd, { cwd, encoding: "utf-8", timeout: timeoutMs ?? GATE_TIMEOUTS.vitest, maxBuffer: 2*1024*1024 });
+    return { ok: true, output: o.trim() };
   } catch (err: any) {
-    return {
-      ok: err.signal ? false : err.status !== 0,
-      output: (err.stdout ?? "") + (err.stderr ?? "") + (err.message ?? ""),
-    };
+    return { ok: err.signal ? false : err.status !== 0, output: sanitizeErrorOutput((err.stdout ?? "") + (err.stderr ?? "") + (err.message ?? "")) };
   }
 }
 
-/**
- * Run all lint gates. Returns structured results.
- */
-function runLintGates(workDir: string, targetPaths?: string[]): GateResult[] {
-  const target = targetPaths && targetPaths.length > 0 ? targetPaths.join(" ") : ".";
+function runLintGates(wd: string, _targetPaths?: string[]): GateResult[] {
   const results: GateResult[] = [];
-
-  // Gate 1: Ruff lint check (E,F,W,I — errors, format warnings, imports)
-  const ruffCheck = runShell(`uv run ruff check ${target} --select E,F,W,I`, workDir);
-  results.push({
-    name: "ruff check",
-    pass: ruffCheck.ok,
-    output: ruffCheck.output || "(clean)",
-  });
-
-  // Gate 2: Ruff format check (auto-fix on failure)
-  const formatCheck = runShell(`uv run ruff format --check ${target}`, workDir);
-  if (!formatCheck.ok) {
-    // Auto-fix formatting differences
-    const formatFix = runShell(`uv run ruff format ${target}`, workDir);
-    results.push({
-      name: "ruff format",
-      pass: formatFix.ok,
-      output: `(auto-fixed) ${formatFix.output}`,
-    });
-  } else {
-    results.push({ name: "ruff format", pass: true, output: "(clean)" });
-  }
-
-  // Gate 3: Test suite
-  const testResult = runShell("uv run python -m unittest discover tests -v", workDir);
-  results.push({
-    name: "test suite",
-    pass: testResult.ok,
-    output: testResult.output || "(all passed)",
-  });
-
+  const tscRc = runShell("npx tsc --noEmit", wd, GATE_TIMEOUTS.tsc);
+  results.push({ name: "tsc --noEmit", pass: tscRc.ok, output: tscRc.output || "(clean)" });
+  const testRc = runShell("npx vitest run", wd, GATE_TIMEOUTS.vitest);
+  results.push({ name: "vitest run", pass: testRc.ok, output: testRc.output || "(all passed)" });
   return results;
 }
 
-/**
- * Build the gate results into a readable markdown table.
- */
 function formatGateResults(results: GateResult[]): string {
-  const rows = results.map(
-    (r) => `| ${r.name} | ${r.pass ? "✅ PASS" : "❌ FAIL"} |`,
-  );
-  return `## Lint Gate Results
-
-| Gate | Status |
-|------|--------|
-${rows.join("\n")}
-
-${results.map((r) => (r.pass ? "" : `\`\`\`\n${r.name} output:\n${r.output}\n\`\`\``)).join("\n\n")}`;
+  const rows = results.map(r => `| ${r.name} | ${r.pass ? "✅ PASS" : "❌ FAIL"} |`);
+  return `## Lint Gate Results\n\n| Gate | Status |\n|------|--------|\n${rows.join("\n")}\n\n${results.map(r => r.pass ? "" : `\`\`\`\n${r.name} output:\n${r.output}\n\`\`\``).join("\n\n")}`;
 }
 
-/**
- * Resolve prompt input: file path → contents, or use raw text directly.
- */
-function resolvePromptInput(arg: string, workDir: string): string | null {
-  // If it looks like a file path (contains / or .), try to read it
+function resolvePromptInput(arg: string, wd: string): string | undefined {
+  // Only treat as file path if it looks like one
   if (arg.includes("/") || arg.includes(".")) {
-    const resolved = path.isAbsolute(arg) ? arg : path.join(workDir, arg);
-    if (fs.existsSync(resolved)) {
-      return fs.readFileSync(resolved, "utf-8").trim();
-    }
+    const r = path.isAbsolute(arg) ? arg : path.join(wd, arg);
+    const resolved = path.resolve(r);
+    // Security: block reads outside workDir and sensitive files
+    const wdirResolved = path.resolve(wd);
+    if (!resolved.startsWith(wdirResolved)) return arg; // path traversal attempt
+    if (/\.env|\.gitconfig|\.npmrc|id_rsa|\s+secrets/i.test(resolved)) return arg; // sensitive file
+    if (fs.existsSync(r)) return fs.readFileSync(r, "utf-8").trim();
   }
-  // Otherwise treat as inline description text
   return arg;
 }
 
-/**
- * Build a focused prompt for a single phase. Only references artifacts from
- * previous phases — no mention of future phases.
- */
-function buildPhasePrompt(
-  state: PipelineState,
-  phaseKey: string,
-): string {
+// ── State Machine Core ─────────────────────────────────────
+// validatePhaseOrder imported from ./src/stateMachine
+
+function buildPhasePrompt(phaseKey: string, state: PipelineState): string {
+  const cfg = PHASE_CONFIGS[phaseKey];
+  if (!cfg) return `Unknown phase: ${phaseKey}`;
   const taskSection = state.promptText
-    ? `## Feature Requirements\n\n${state.promptText}\n`
-    : `## Feature Requirements\n\nFeature name: ${state.feature}\n(No detailed requirements provided — infer from codebase)\n`;
-
-  const artifacts = state.artifacts || {};
-
+    ? `<description-start>\n${state.promptText}\n<description-end>`
+    : `<description-start>\nFeature name: ${state.feature}\n(No detailed requirements provided — infer from codebase and spec)\n<description-end>`;
+  let skillContent = "";
+  if (fs.existsSync(cfg.skillPath)) { try { skillContent = fs.readFileSync(cfg.skillPath, "utf-8"); } catch {} }
+  const specFile = findLatestSpec(state.workDir);
+  const auditFile = `docs/security/redteam-findings-${state.feature}.md`;
+  let phaseContext = "";
   switch (phaseKey) {
-    case "spec":
-      return `${taskSection}
-## Task: Generate Engineering Specification
+    case "spec": phaseContext = `## Task\nCreate Markdown engineering specification.\nFeature: ${state.feature}\nSave to: docs/specs/${state.feature}.md`; break;
+    case "redteam": phaseContext = `## Task\nAdversarial security review.\nRead: ${specFile || `docs/specs/${state.feature}.md`}\nMark [CRITICAL]/[WARNING].\nSave to: ${auditFile}`; break;
+    case "harden": phaseContext = `## Task\nIntegrate red team findings into spec.\nRead findings: ${auditFile}\nPatch spec, write changelog, mark HARDENED`; break;
+    case "implement": phaseContext = `## Task\nImplement via Red-Green-Refactor.\nRun \`ralph_gate_check\` after implementation.`; break;
+    case "review": phaseContext = `## Task\nMulti-pass PR review. Call \`ralph_review_decision\` with status LGTM or CRITICAL.`; break;
+  }
+  return `# Ralph Pipeline — Phase: ${cfg.displayName}\n\n${taskSection}\n\n## Skill Context\n<ralph-skill-instructions>\n${skillContent || "(Skill file not available)"}</ralph-skill-instructions>\n\n## Phase Instructions\n${phaseContext}\n\n## Rules\n- After implementation steps, run \`ralph_gate_check\`\n- Complete this phase fully. Extension controller advances phases.`;
+}
 
-Create an HTML engineering specification for this feature.
+function runPreHook(phaseKey: string, state: PipelineState): boolean {
+  const cfg = PHASE_CONFIGS[phaseKey];
+  if (!cfg || (cfg.skillPath && !fs.existsSync(cfg.skillPath))) return false;
+  return cfg.preHook(phaseKey, state);
+}
 
-**Save to:** docs/specs/${state.feature}.html
+function runPostHook(phaseKey: string, state: PipelineState): PostHookResult {
+  const cfg = PHASE_CONFIGS[phaseKey];
+  if (!cfg) return { pass: false, errors: [`Unknown phase config for ${phaseKey}`] };
+  return cfg.postHook(phaseKey, state);
+}
 
-**Include:**
-- Problem statement and motivation
-- Proposed solution with architecture overview
-- Detailed implementation plan
-- Risk assessment and assumptions
-- API surface / public interface
+function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState) {
+  const phases = state.phases?.length ? state.phases : ["spec","redteam","harden","implement","review"];
+  const idx = state.currentPhaseIndex ?? 0;
+  if (idx >= phases.length - 1) {
+    const u = { ...state, pipelineStatus: "completed", phaseStatus: "post_hook" };
+    saveState(pi, u); refreshWidget(ctx, u);
+    ctx.ui.notify(`✅ Ralph loop complete for "${state.feature}"`, "info");
+    ctx.ui.setStatus("ralph-loop", `✅ Done | ${state.feature}`);
+    writeDevCycleSummary(state);
+    writeMetrics(state);
+    return;
+  }
+  const nextIdx = idx + 1;
+  const nextPhase = phases[nextIdx];
+  const meta = PHASE_META[nextPhase];
+  const u: PipelineState = { ...state, currentPhaseIndex: nextIdx, currentPhase: nextPhase, phaseStatus: "pre_hook", phaseAttempts: 0, turnWriteCount: 0 };
+  saveState(pi, u); refreshWidget(ctx, u);
+  ctx.ui.notify(`→ Phase ${nextIdx+1}/${phases.length} (${meta?.name ?? nextPhase})`, "info");
+}
 
-Read the codebase first to understand context, then generate the spec.`;
-
-    case "redteam": {
-      const target = artifacts.specFile || `docs/specs/${state.feature}.html`;
-      return `## Task: Red Team Security Audit
-
-You will conduct an adversarial security review of the specification.
-
-**Input file to audit:** ${target}
-
-**Save report to:** docs/security/red-team-audit-${state.feature}.html
-
-**Instructions:**
-1. Read the specification thoroughly
-2. Analyze for: logic gaps, security vulnerabilities, edge cases, scalability issues
-3. Map attack surfaces and exploitation paths
-4. Mark each finding as [CRITICAL] or [WARNING]
-5. Include STRIDE analysis where applicable
-6. Save the audit report in HTML format`;
-    }
-
-    case "harden": {
-      const specFile = artifacts.specFile || `docs/specs/${state.feature}.html`;
-      const auditFile = artifacts.redTeamReport || `docs/security/red-team-audit-${state.feature}.html`;
-      return `## Task: Harden Specification
-
-Address the red team findings and update the specification.
-
-**Files to read:**
-- Spec: ${specFile}
-- Audit report: ${auditFile}
-
-**Instructions:**
-1. Read the audit report first — understand every finding
-2. Update the spec (${specFile}):\n   - Address every [CRITICAL] with specific mitigations\n   - Address every [WARNING] where practical\n   - Add a "Security Considerations" section for residual risks
-3. Write docs/specs/harden-changelog.md listing all changes made
-4. Save the hardened spec in-place (${specFile})`;
-    }
-
-    case "implement": {
-      const spec = artifacts.hardenedSpecFile || artifacts.specFile || `docs/specs/${state.feature}.html`;
-      return `${taskSection}
-## Task: TDD Implementation
-
-Implement the specification using strict Red-Green-Refactor.
-
-**Read the spec:** ${spec}
-
-**For each requirement in the spec:**
-1. Write failing tests FIRST (describe expected behavior)
-2. Implement just enough code to make tests pass (Green)
-3. Refactor for clarity, performance, maintainability
-4. After completing a logical group of changes, call \`ralph_gate_check\`
-5. Fix any gate failures before moving on
-6. Commit with conventional commit messages after each feature
-
-**After all implementation:**
-- Run \`ralph_gate_check\` one final time — ALL gates must pass
-- When done and gates clear, respond with "PHASE COMPLETE"`;
-    }
-
-    case "review": {
-      const spec = artifacts.hardenedSpecFile || `docs/specs/${state.feature}.html`;
-      return `## Task: PR Review Loop
-
-Perform a thorough multi-pass review of the implementation.
-
-**Reference spec:** ${spec}
-
-**Review passes (in order):**
-1. **Logic pass:** Does code match spec? Edge cases handled? Correctness?
-2. **Security pass:** Auth, input validation, injection, data exposure?
-3. **Style pass:** Naming, formatting, DRY, error handling patterns?
-
-**For each [CRITICAL] issue found:**
-- Fix it using TDD (test → implement → gate check)
-- Run \`ralph_gate_check\` after fixes
-
-**Loop until:** zero criticals AND all gates pass.
-Max iterations: ${state.maxIterations}.
-
-**Record findings in:** .ralph/dev-cycle-${state.feature}.md
-
-When review is clean and gates pass, respond with "LGTM — pipeline complete"`;
-    }
-
-    default:
-      return `Unknown phase: ${phaseKey}`;
+function handleReviewDecision(pi: ExtensionAPI, ctx: ExtensionContext, params: { status: string; issues?: string[] }) {
+  const state = getState(ctx);
+  if (!state) return;
+  // Phase gate — reject decisions from non-review phases
+  if (state.currentPhase !== "review") {
+    ctx.ui.notify(`ERROR: ralph_review_decision can only be called during review phase (current: ${state.currentPhase}).`, "error");
+    return;
+  }
+  const status = params.status as "LGTM" | "CRITICAL";
+  const iter = state.reviewIterations ?? 0;
+  if (status === "LGTM") {
+    const u = { ...state, pipelineStatus: "completed", phaseStatus: "post_hook" };
+    saveState(pi, u); refreshWidget(ctx, u);
+    ctx.ui.notify(`✅ Ralph loop complete for "${state.feature}"`, "info");
+    ctx.ui.setStatus("ralph-loop", `✅ Done | ${state.feature}`);
+    writeDevCycleSummary(state);
+    writeMetrics(state);
+  } else if (status === "CRITICAL") {
+    const maxIters = state.maxIterations ?? 10;
+    if (iter >= maxIters) { ctx.ui.notify(`Max review iterations (${maxIters}) reached — halted.`, "error"); saveState(pi, { ...state, pipelineStatus: "halted" }); return; }
+    const phases = state.phases ?? ["spec","redteam","harden","implement","review"];
+    const implIdx = phases.indexOf("implement");
+    const u: PipelineState = { ...state, currentPhaseIndex: implIdx >= 0 ? implIdx : 3, currentPhase: "implement", phaseStatus: "pre_hook", reviewIterations: iter + 1, phaseAttempts: 0, turnWriteCount: 0 };
+    saveState(pi, u); refreshWidget(ctx, u);
+    ctx.ui.notify(`⚠️ Review CRITICAL (iteration ${iter+1}/${maxIters}) — backtracking to implement`, "warning");
+    const prompt = buildPhasePrompt("implement", u);
+    const steerText = params.issues?.length ? `\n\nCRITICAL issues:\n${params.issues.map(i => `- ${i}`).join("\n")}` : "";
+    (pi as any).sendMessage({ role: "user", content: [{ type: "text", text: `⛔ REVIEW CRITICAL — Backtrack to implement.\n\n${prompt}${steerText}` }] }, { triggerTurn: true, deliverAs: "steer" });
   }
 }
 
-/**
- * Resolve artifacts produced by a completed phase.
- */
-function resolvePhaseArtifacts(state: PipelineState, phaseKey: string): Partial<PhaseArtifacts> {
-  const existing = state.artifacts || {};
-  switch (phaseKey) {
-    case "spec":
-      return { specFile: `docs/specs/${state.feature}.html` };
-    case "redteam":
-      return { redTeamReport: `docs/security/red-team-audit-${state.feature}.html` };
-    case "harden":
-      return {
-        hardenedSpecFile: `docs/specs/${state.feature}.html`,
-        hardenChangelog: `docs/specs/harden-changelog.md`,
-      };
-    default:
-      return {};
+async function handleAgentEnd(pi: ExtensionAPI, ctx: ExtensionContext) {
+  const state = getState(ctx);
+  if (!state) return;
+  const updated = { ...state, turnWriteCount: 0 };
+  const phases = updated.phases?.length ? updated.phases : ["spec","redteam","harden","implement","review"];
+  const idx = updated.currentPhaseIndex ?? 0;
+  const pk = phases[idx];
+  if (pk) {
+    const result = runPostHook(pk, updated);
+    if (result.pass) { writePhaseCompletionMarker(pk, state.workDir); advancePhase(pi, ctx, { ...updated, pipelineStatus: "running" }); }
+    else {
+      const attempts = updated.phaseAttempts ?? 0;
+      if (attempts >= MAX_PHASE_ATTEMPTS) { ctx.ui.notify(`Phase "${pk}" failed ${MAX_PHASE_ATTEMPTS} times — halted.`, "error"); saveState(pi, { ...updated, pipelineStatus: "failed", phaseStatus: "post_hook" }); return; }
+      const errList = result.errors?.map(e => `- ${e}`).join("\n") || "Unknown error";
+      ctx.ui.notify(`Post-hook failed for "${pk}" (attempt ${attempts+1}/${MAX_PHASE_ATTEMPTS})`, "warning");
+      (pi as any).sendMessage({ role: "user", content: [{ type: "text", text: `⛔ Phase validation failed:\n\n${errList}\nFix and retry. Run \`ralph_gate_check\` after.` }] }, { triggerTurn: true, deliverAs: "steer" });
+      saveState(pi, { ...updated, phaseAttempts: attempts + 1 });
+    }
   }
 }
 
-// ── Extension: Phase State Machine ─────────────────────────
+function writePhaseCompletionMarker(phaseKey: string, workDir: string): void {
+  const ralphDir = path.join(workDir, ".ralph");
+  if (!fs.existsSync(ralphDir)) fs.mkdirSync(ralphDir, { recursive: true });
+  const markerPath = path.join(ralphDir, `.phase-${phaseKey}-done`);
+  const tmpPath = `${markerPath}.tmp`;
+  const data = { phase: phaseKey, completedAt: Date.now(), attemptNumber: 1 };
+  try { fs.writeFileSync(tmpPath, JSON.stringify(data), "utf-8"); fs.renameSync(tmpPath, markerPath); } catch {}
+  // Log to .ralph/phase-attempts.json
+  const logPath = path.join(ralphDir, "phase-attempts.json");
+  try { let log: any[] = fs.existsSync(logPath) ? JSON.parse(fs.readFileSync(logPath, "utf-8")) : []; log.push({ ...data, logType: "completion" }); fs.writeFileSync(logPath, JSON.stringify(log, null, 2), "utf-8"); } catch {}
+}
+
+function writeDevCycleSummary(state: PipelineState): void {
+  const ralphDir = path.join(state.workDir, ".ralph");
+  if (!fs.existsSync(ralphDir)) fs.mkdirSync(ralphDir, { recursive: true });
+  const phases = state.phases ?? ["spec","redteam","harden","implement","review"];
+  const phaseResults = phases.map(p => `- ${PHASE_META[p]?.name ?? p}: ${fs.existsSync(path.join(ralphDir, `.phase-${p}-done`)) ? "✅ Completed" : "❌ Not completed"}`).join("\n");
+  try { fs.writeFileSync(path.join(ralphDir, `dev-cycle-${state.feature}.md`), `# Dev-Cycle Summary: ${state.feature}\n\n**Started:** ${new Date(state.startedAt).toISOString()}\n**Completed:** ${new Date().toISOString()}\n**Review Iterations:** ${state.reviewIterations ?? 0}\n\n## Phases\n${phaseResults}`, "utf-8"); } catch {}
+}
+
+// ── Metrics Export (per spec task #12) ─────────────────────
+
+function writeMetrics(state: PipelineState): void {
+  const ralphDir = path.join(state.workDir, ".ralph");
+  if (!fs.existsSync(ralphDir)) fs.mkdirSync(ralphDir, { recursive: true });
+  const phases = state.phases ?? ["spec","redteam","harden","implement","review"];
+  const phaseDurations: Record<string, number> = {};
+  for (const p of phases) {
+    const markerPath = path.join(ralphDir, `.phase-${p}-done`);
+    if (fs.existsSync(markerPath)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(markerPath, "utf-8"));
+        phaseDurations[p] = data.completedAt ?? 0;
+      } catch {}
+    }
+  }
+  let gateCount = 0;
+  try {
+    const logPath = path.join(ralphDir, "phase-attempts.json");
+    if (fs.existsSync(logPath)) {
+      const log: any[] = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+      gateCount = log.filter((e: any) => e.logType === "completion").length;
+    }
+  } catch {}
+  const metrics = {
+    feature: state.feature,
+    startedAt: state.startedAt,
+    completedAt: Date.now(),
+    durationMs: Date.now() - state.startedAt,
+    phases,
+    phaseDurations,
+    reviewIterations: state.reviewIterations ?? 0,
+    phaseAttempts: state.phaseAttempts ?? 0,
+    gateCount,
+  };
+  try { fs.writeFileSync(path.join(ralphDir, `metrics-${state.feature}.json`), JSON.stringify(metrics, null, 2), "utf-8"); } catch {}
+}
+
+function checkPipelineLock(feature: string, wd: string): { locked: boolean; stale?: boolean } {
+  const lp = path.join(wd, ".ralph", `pipeline-lock-${feature}`);
+  if (!fs.existsSync(lp)) return { locked: false };
+  try { const s = fs.statSync(lp); return { locked: true, stale: (Date.now() - s.mtimeMs) > 24*60*60*1000 }; } catch { return { locked: false }; }
+}
+
+function createPipelineLock(feature: string, wd: string): boolean {
+  const ralphDir = path.join(wd, ".ralph");
+  if (!fs.existsSync(ralphDir)) fs.mkdirSync(ralphDir, { recursive: true });
+  try { fs.writeFileSync(path.join(ralphDir, `pipeline-lock-${feature}`), JSON.stringify({ feature, createdAt: Date.now() }), "utf-8"); return true; } catch { return false; }
+}
+
+function removePipelineLock(feature: string, wd: string): void {
+  const lp = path.join(wd, ".ralph", `pipeline-lock-${feature}`);
+  try { if (fs.existsSync(lp)) fs.unlinkSync(lp); } catch {}
+}
+
+// ── Widget ──────────────────────────────────────────────────
+
+function refreshWidget(ctx: ExtensionContext, st: PipelineState) {
+  const phases = st.phases?.length ? st.phases : ["spec","redteam","harden","implement","review"];
+  const idx = st.currentPhaseIndex ?? 0;
+  const meta = PHASE_META[phases[idx]];
+  ctx.ui.setWidget("ralph-loop", [
+    `Pipeline: ${st.feature}`, `Phases: ${phases.join(" → ")}`,
+    st.promptText ? `Prompt: (provided)` : `Prompt: (none)`,
+    `Started: ${new Date(st.startedAt).toISOString()}`,
+    `Status: ${st.pipelineStatus ?? "running"} | Phase: ${st.phaseStatus ?? "executing"}`, "",
+    `Progress: Phase ${idx+1}/${phases.length} — ${meta?.name ?? "?"}`,
+    st.reviewIterations ? `Review iterations: ${st.reviewIterations}` : "",
+    st.phaseAttempts && st.phaseAttempts > 0 ? `Phase attempts: ${st.phaseAttempts}` : "",
+  ].filter(Boolean));
+}
+
+// ── Extension Entry Point ──────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-  let writeCountSinceGate = 0;
-  const GATE_THRESHOLD = 3; // Auto-run gate after N consecutive writes
+  // Note: turnWriteCount is tracked in PipelineState, not module-level,
+  // to survive page reloads and session compaction.
 
-  /** Send a focused prompt for the current phase. */
-  function advanceToNextPhase(ctx: ExtensionContext) {
+  pi.on("message_start", async (event, ctx) => {
     const state = getState(ctx);
-    if (!state) return;
-
-    const phases = state.phases && state.phases.length > 0 ? state.phases : ["spec", "redteam", "harden", "implement", "review"];
-    const idx = state.currentPhaseIndex;
-
-    if (idx >= phases.length) {
-      // All phases done — pipeline complete
-      ctx.ui.notify(`✅ Pipeline complete for "${state.feature}"`, "success");
-      ctx.ui.setStatus("ralph-loop", `✅ Done | ${state.feature}`);
-      refreshWidget(ctx, state);
-      return;
-    }
-
-    const phaseKey = phases[idx];
-    const meta = PHASE_META[phaseKey];
-    if (!meta) {
-      ctx.ui.notify(`Unknown phase: ${phaseKey}`, "error");
-      return;
-    }
-
-    const phaseNum = idx + 1;
-    ctx.ui.setStatus("ralph-loop", `🔄 Phase ${phaseNum}/${phases.length} | ${meta.name}`);
-    refreshWidget(ctx, state);
-    ctx.ui.notify(
-      `▶ Phase ${phaseNum}/${phases.length}: ${meta.name}`,
-      "info",
-    );
-
-    const prompt = buildPhasePrompt(state, phaseKey);
-    pi.sendUserMessage(prompt);
-  }
-
-  // Refresh the widget display with current phase info
-  function refreshWidget(ctx: ExtensionContext, st: PipelineState) {
-    const phases = st.phases && st.phases.length > 0 ? st.phases : ["spec", "redteam", "harden", "implement", "review"];
-    const idx = st.currentPhaseIndex;
-    const phaseKey = phases[idx];
-    const meta = PHASE_META[phaseKey];
-    ctx.ui.setWidget(
-      "ralph-loop",
-      [
-        `Pipeline: ${st.feature}`,
-        `Phases: ${phases.join(" → ")}`,
-        st.promptText ? `Prompt: (provided)` : `Prompt: (none — infer from codebase)`,
-        `Started: ${new Date(st.startedAt).toISOString()}`,
-        ``,
-        `Progress: Phase ${idx + 1}/${phases.length} — ${meta?.name ?? "?"}`,
-      ],
-    );
-  }
-
-  // ── before_agent_start: inject ONLY current phase's skill ──
-  pi.on("before_agent_start", async (event, ctx) => {
-    const state = getState(ctx);
-    if (!state) return;
-
-    const phases = state.phases && state.phases.length > 0 ? state.phases : ["spec", "redteam", "harden", "implement", "review"];
-    const phaseKey = phases[state.currentPhaseIndex];
-    const meta = PHASE_META[phaseKey];
-    if (!meta) return;
-
-    // Load only the skill for this phase
-    if (!fs.existsSync(meta.skillPath)) return;
-
-    try {
-      const skillContent = fs.readFileSync(meta.skillPath, "utf-8");
-      if (!event.systemPrompt.includes("ralph-pipeline-skill")) {
-        return {
-          systemPrompt:
-            event.systemPrompt +
-            `\n\n<ralph-pipeline-skill>\nYou are executing Phase ${state.currentPhaseIndex + 1} (${meta.name}) of the Ralph pipeline for feature "${state.feature}".\nFollow this skill's instructions:\n\n${skillContent}\n</ralph-pipeline-skill>`,
-        };
-      }
-    } catch {
-      // Skill file not found — continue without injection
-    }
+    if (!state || event.message.role !== "assistant") return;
+    saveState(pi, { ...state, turnWriteCount: 0 });
   });
 
-  // ── session_start: resume from saved phase index ──
+  pi.on("message_update", async (_event, ctx) => {
+    const state = getState(ctx);
+    if (!state || _event.message.role !== "assistant") return;
+    refreshWidget(ctx, state);
+  });
+
   pi.on("session_start", async (_event, ctx) => {
     const state = getState(ctx);
     if (!state) return;
+    const phases = state.phases?.length ? state.phases : ["spec","redteam","harden","implement","review"];
+    ctx.ui.notify(`Ralph loop: ${state.feature} (${phases.join(", ")})`, "info");
+    ctx.ui.setStatus("ralph-loop", `🔄 Ralph | ${state.feature}`);
+    refreshWidget(ctx, state);
 
-    const phases = state.phases && state.phases.length > 0 ? state.phases : ["spec", "redteam", "harden", "implement", "review"];
-    const idx = state.currentPhaseIndex;
+    // Auto-resume if phase was executing when session reloaded
+    const ps = state.phaseStatus;
+    const currentIdx = state.currentPhaseIndex ?? 0;
 
-    ctx.ui.notify(
-      `Ralph loop: ${state.feature} — resuming Phase ${idx + 1}/${phases.length}`,
-      "info",
-    );
+    // Guard against corrupted phase index from aggressive compaction
+    if (!validatePhaseIndex(currentIdx, phases)) {
+      ctx.ui.notify(`⛔ Pipeline state corrupted: currentPhaseIndex=${currentIdx} out of bounds. Run /ralph cancel to reset.`, "error");
+      saveState(pi, { ...state, pipelineStatus: "failed", phaseStatus: "corrupted" });
+      return;
+    }
 
-    // If the current phase was already started (idx matches), re-trigger it
-    // so the agent picks up where it left off with fresh instructions.
-    advanceToNextPhase(ctx);
-  });
+    if (ps === "executing" || ps === "pre_hook") {
+      const pk = phases[currentIdx];
+      const phasePrompt = buildPhasePrompt(pk, state);
+      const steerText = wrapSteerMessage(
+        `⛔ SESSION RELOAD — Resuming Phase ${currentIdx + 1}: ${PHASE_META[pk]?.name}.
 
-  // ── agent_end: deterministic phase advancement ──
-  pi.on("agent_end", async (_event, ctx) => {
-    const state = getState(ctx);
-    if (!state) return;
+You were interrupted mid-phase. The phase-specific instructions are below — follow them completely before the extension advances you to the next phase.
 
-    writeCountSinceGate = 0;
+---
 
-    const phases = state.phases && state.phases.length > 0 ? state.phases : ["spec", "redteam", "harden", "implement", "review"];
-    const idx = state.currentPhaseIndex;
-    const phaseKey = phases[idx];
-
-    // Check for pipeline completion (review phase done)
-    if (phaseKey === "review") {
-      const entries = ctx.sessionManager.getBranch();
-      const lastAssistant = [...entries].reverse().find(
-        (e) => e.type === "message" && e.message?.role === "assistant",
+${phasePrompt}`,
+        MAX_STEER_SIZE
       );
-      if (lastAssistant && lastAssistant.message) {
-        const text = lastAssistant.message.content
-          .filter((c: any) => c.type === "text")
-          .map((c: any) => c.text)
-          .join("\n");
-
-        if (text.includes("LGTM") || text.includes("pipeline complete")) {
-          ctx.ui.notify(`✅ Pipeline complete for "${state.feature}"`, "success");
-          ctx.ui.setStatus("ralph-loop", `✅ Done | ${state.feature}`);
-          // Don't advance — we're done
-          return;
-        }
-      }
+      ctx.ui.notify(`Resuming Phase ${currentIdx+1} (${PHASE_META[pk]?.name})`, "warning");
+      (pi as any).sendMessage({ role: "user", content: [{ type: "text", text: steerText }] }, { triggerTurn: true, deliverAs: "steer" });
     }
 
-    // Run gates after implementation/remediation phases
-    if (GATE_PHASES.has(phaseKey)) {
-      ctx.ui.notify(`🚧 Post-phase gate check for "${phaseKey}"...`, "info");
-      const results = runLintGates(state.workDir);
-      const allPass = results.every((r) => r.pass);
+    // Check for unfinished phases (agent may have shortcut)
+    const unfinished = phases.slice(currentIdx + 1);
+    if (unfinished.length > 0 && ps === "post_hook") {
+      const nextPhaseKey = phases[currentIdx + 1];
+      const phasePrompt = buildPhasePrompt(nextPhaseKey, state);
+      const steerText = wrapSteerMessage(
+        `⛔ PIPELINE RESUMPTION — You skipped a phase. Remaining: ${unfinished.join(", ")}.
+Start with the next required phase now. Full instructions below:
 
-      if (!allPass) {
-        const failed = results.filter((r) => !r.pass).map((r) => r.name);
-        ctx.ui.notify(`❌ Gate failure after phase: ${failed.join(", ")}`, "error");
+---
 
-        // Don't advance — stay on this phase, tell agent to fix gates
-        pi.sendMessage(
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: `⛔ GATE FAILURE after "${phaseKey}" phase.
-
-${formatGateResults(results)}\n\nFix the above gate failures, then respond with "PHASE COMPLETE" when all gates pass.`,
-              },
-            ],
-          },
-          { triggerTurn: true, deliverAs: "steer" },
-        );
-        return;
-      }
-
-      ctx.ui.notify(`✅ Gates passed for "${phaseKey}" phase`, "success");
+${phasePrompt}`,
+        MAX_STEER_SIZE
+      );
+      (pi as any).sendMessage({ role: "user", content: [{ type: "text", text: steerText }] }, { triggerTurn: true, deliverAs: "steer" });
     }
-
-    // Resolve artifacts produced by this phase and update state
-    const newArtifacts = resolvePhaseArtifacts(state, phaseKey);
-    const updatedState: PipelineState = {
-      ...state,
-      currentPhaseIndex: idx + 1,
-      artifacts: { ...(state.artifacts || {}), ...newArtifacts },
-    };
-    saveState(pi, updatedState);
-
-    // Advance to next phase
-    advanceToNextPhase(ctx);
   });
 
-  // ── tool_result: auto-gate during gate phases ──
+  // Auto-gate on write operations during gate phases
   pi.on("tool_result", async (event, ctx) => {
     const state = getState(ctx);
     if (!state) return;
-
-    const phases = state.phases && state.phases.length > 0 ? state.phases : ["spec", "redteam", "harden", "implement", "review"];
-    const phaseKey = phases[state.currentPhaseIndex];
-
-    if (!GATE_PHASES.has(phaseKey)) return;
-
+    if (!GATE_PHASES.has(state.currentPhase ?? "")) return;
+    const currentCount = state.turnWriteCount ?? 0;
     if (event.toolName === "write" || event.toolName === "edit") {
-      writeCountSinceGate++;
-
-      if (writeCountSinceGate >= GATE_THRESHOLD) {
-        writeCountSinceGate = 0;
+      const newCount = currentCount + 1;
+      if (newCount >= GATE_THRESHOLD) {
+        saveState(pi, { ...state, turnWriteCount: 0 });
         ctx.ui.notify("🚧 Auto-gate: running lint checks...", "info");
         const results = runLintGates(state.workDir);
-        const allPass = results.every((r) => r.pass);
-
-        if (allPass) {
-          ctx.ui.notify("✅ All gates passed", "success");
-        } else {
-          const failed = results.filter((r) => !r.pass).map((r) => r.name);
-          ctx.ui.notify(`❌ Gate failure: ${failed.join(", ")}`, "error");
-
-          pi.sendMessage(
-            {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: `⛔ Auto-gate failure:\n\n${formatGateResults(results)}\n\nFix the above issues and continue.`,
-                },
-              ],
-            },
-            { triggerTurn: true, deliverAs: "steer" },
-          );
-        }
+        if (results.every(r => r.pass)) { ctx.ui.notify("✅ All gates passed", "info"); }
+        else { ctx.ui.notify(`❌ Gate failure: ${results.filter(r => !r.pass).map(r => r.name).join(", ")}`, "error"); (pi as any).sendMessage({ role: "user", content: [{ type: "text", text: formatGateResults(results) + "\n\nFix and re-check." }]}, { triggerTurn: true, deliverAs: "steer" }); }
       }
-    } else if (!["write", "edit"].includes(event.toolName)) {
-      writeCountSinceGate = 0;
+      saveState(pi, { ...state, turnWriteCount: newCount });
+    } else {
+      saveState(pi, { ...state, turnWriteCount: 0 });
     }
+  });
+
+  // Agent end → post-hook → state machine advance
+  pi.on("agent_end", async (_event, ctx) => {
+    const state = getState(ctx);
+    if (!state) return;
+    saveState(pi, { ...state, turnWriteCount: 0 });
+    await handleAgentEnd(pi, ctx);
   });
 
   // ── Tool: ralph_gate_check ──────────────────────────────
   pi.registerTool({
-    name: "ralph_gate_check",
-    label: "Ralph Gate Check",
-    description:
-      "Run pre-commit quality gates (ruff check, ruff format, test suite). " +
-      "Use after every implementation step and before proceeding to the next phase. " +
-      "All gates must pass.",
-    promptSnippet: "Run lint gates (ruff check, format, tests) — use after implementation/remediation",
-    promptGuidelines: [
-      "Call ralph_gate_check after completing any code changes during implement or review phases.",
-      "Do not proceed to the next pipeline phase until all ralph_gate_check gates pass.",
-      "If gates fail, fix the issues and re-run ralph_gate_check before continuing.",
-    ],
-    parameters: Type.Object({
-      paths: Type.Optional(
-        Type.Array(Type.String(), {
-          description: "File or directory paths to check. Defaults to entire project ('.').",
-        }),
-      ),
-    }),
-
-    async execute(_toolCallId, params, _signal, onUpdate, ctx) {
+    name: "ralph_gate_check", label: "Ralph Gate Check",
+    description: "Run quality gates (tsc --noEmit, vitest run). Use after every implementation step.",
+    promptSnippet: "Run lint gates — use after implementation/remediation",
+    parameters: Type.Object({ paths: Type.Optional(Type.Array(Type.String())) }),
+    // @ts-expect-error strict Pi SDK type mismatch on execute return
+    async execute(_id, params, _sig, onUpdate, ctx) {
       const state = getState(ctx);
-      if (!state) {
-        return {
-          content: [{ type: "text", text: "No active pipeline. Use /ralph start <feature> first." }],
-        };
-      }
-
-      onUpdate?.({
-        content: [{ type: "text", text: "🚧 Running lint gates..." }],
-      });
-
+      if (!state) return { content: [{ type: "text", text: "No active pipeline." }] };
+      ((onUpdate as any) as Function)?.({ content: [{ type: "text", text: "🚧 Running lint gates..." }] });
       const results = runLintGates(state.workDir, params.paths);
-      writeCountSinceGate = 0;
+      saveState(pi, { ...state, turnWriteCount: 0 });
+      const allPass = results.every(r => r.pass);
+      const failed = results.filter(r => !r.pass);
+      const report = [`## ${allPass ? "✅ All Gates Passed" : "❌ Gate Failures"}`, "", `| Gate | Status |`, `|------|--------|`, ...results.map(r => `| ${r.name} | ${r.pass ? "✅ PASS" : "❌ FAIL"} |`), ""];
+      for (const f of failed) report.push(`\`${f.output.slice(0,3000)}\``);
+      report.push(allPass ? "All gates passed. Proceed to next phase." : "Fix failures and re-run ralph_gate_check.");
+      ctx.ui.setStatus("ralph-loop", allPass ? `✅ Gates clear` : `❌ Gates: ${failed.map(f => f.name).join(", ")}`);
+      return { content: [{ type: "text", text: report.join("\n") }], details: { results, allPass } };
+    },
+  });
 
-      const allPass = results.every((r) => r.pass);
-      const failed = results.filter((r) => !r.pass);
-
-      const report = [
-        `## ${allPass ? "✅ All Gates Passed" : "❌ Gate Failures"}`,
-        ``,
-        `| Gate | Status |`,
-        `|------|--------|`,
-        ...results.map((r) => `| ${r.name} | ${r.pass ? "✅ PASS" : "❌ FAIL"} |`),
-        ``,
-      ];
-
-      for (const f of failed) {
-        report.push(`### ${f.name} output`);
-        report.push("```");
-        report.push(f.output.slice(0, 3000));
-        report.push("```");
-        report.push("");
-      }
-
-      if (allPass) {
-        report.push("All quality gates passed.");
-        ctx.ui.setStatus("ralph-loop", `✅ Gates clear`);
-      } else {
-        report.push(`\`Fix the above failures and re-run ralph_gate_check.\``);
-        ctx.ui.setStatus("ralph-loop", `❌ Gates: ${failed.map((f) => f.name).join(", ")}`);
-      }
-
-      return {
-        content: [{ type: "text", text: report.join("\n") }],
-        details: { results, allPass },
-      };
+  // ── Tool: ralph_review_decision ────────────────────────
+  pi.registerTool({
+    name: "ralph_review_decision", label: "Ralph Review Decision",
+    description: "Submit final review verdict. Only call during review phase.",
+    parameters: Type.Object({ status: Type.Union([Type.Literal("LGTM"), Type.Literal("CRITICAL")]), issues: Type.Optional(Type.Array(Type.String())) }),
+    // @ts-expect-error strict Pi SDK type mismatch on execute return
+    async execute(_id, params, _sig, onUpdate, ctx) {
+      const state = getState(ctx);
+      if (!state) return { content: [{ type: "text", text: "No active pipeline." }] };
+      // Phase gate — reject decisions from non-review phases
+      if (state.currentPhase !== "review") return { content: [{ type: "text", text: `ERROR: ralph_review_decision can only be called during review phase (current: ${state.currentPhase}).` }] };
+      handleReviewDecision(pi, ctx, params as { status: string; issues?: string[] });
+      return { content: [{ type: "text", text: `Decision recorded: ${params.status}` }] };
     },
   });
 
   // ── Command: /ralph ────────────────────────────────────
   pi.registerCommand("ralph", {
-    description: "Dev-cycle pipeline (start <feature> [phases] | status | cancel | gate)",
-    getArgumentCompletions: (prefix: string) => {
-      const commands = ["start", "status", "cancel", "gate"];
-      const phases = ["spec", "redteam", "harden", "implement", "review"];
-      return [...commands, ...phases]
-        .filter((i) => i.startsWith(prefix))
-        .map((v) => ({ value: v, label: v }));
-    },
+    description: "Dev-cycle pipeline (start | status | cancel | gate | resume | pause)",
+    getArgumentCompletions: (prefix: string) => { const items = ["start","status","cancel","gate","resume","pause","spec","redteam","harden","implement","review"].map(v => ({ value: v, label: v })); return items.filter(i => i.value.startsWith(prefix)); },
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
-      const subCmd = parts[0]?.toLowerCase();
-
-      switch (subCmd) {
+      const cmd = parts[0]?.toLowerCase();
+      switch (cmd) {
         case "start": {
-          if (getState(ctx)) {
-            ctx.ui.notify("Pipeline already running. /ralph cancel first.", "error");
-            return;
-          }
-
+          if (getState(ctx)) { ctx.ui.notify("Pipeline already running. /ralph cancel first.", "error"); return; }
           const feature = parts[1];
-          if (!feature) {
-            ctx.ui.notify(
-              'Usage: /ralph start <feature> [prompt-file-or-text] [spec,redteam,harden,implement,review]',
-              "error",
-            );
-            return;
-          }
-
-          const validPhases = new Set(["spec", "redteam", "harden", "implement", "review"]);
-          let phases: string[] = ["spec", "redteam", "harden", "implement", "review"];
+          if (!feature) { ctx.ui.notify('Usage: /ralph start <feature> [prompt] [phases]', "error"); return; }
+          // Check pipeline lock
+          const lockCheck = checkPipelineLock(feature, ctx.cwd);
+          if (lockCheck.locked && !lockCheck.stale) { ctx.ui.notify("Pipeline already running — /ralph cancel first.", "error"); return; }
+          const validPhases = new Set(["spec","redteam","harden","implement","review"]);
+          let phases: string[] = ["spec","redteam","harden","implement","review"];
           let promptText: string | undefined;
-
           if (parts[2]) {
-            const maybePhases = parts[2].split(",").map((p) => p.trim());
-            if (maybePhases.every((p) => validPhases.has(p))) {
-              phases = maybePhases;
-            } else {
-              promptText = resolvePromptInput(parts[2], ctx.cwd);
-              if (parts[3]) {
-                const requested = parts[3].split(",").map((p) => p.trim());
-                phases = requested.filter((p) => validPhases.has(p));
-                if (!phases.length) {
-                  phases = ["spec", "redteam", "harden", "implement", "review"];
-                }
-              }
-            }
+            const mp = parts[2].split(",").map(p => p.trim());
+            if (mp.every(p => validPhases.has(p))) { phases = mp; }
+            else { promptText = resolvePromptInput(parts[2], ctx.cwd); if (parts[3]) { const rp = parts[3].split(",").map(p => p.trim()).filter(p => validPhases.has(p)); if (rp.length) phases = rp; } }
           }
-
-          const state: PipelineState = {
-            feature,
-            workDir: ctx.cwd,
-            phases,
-            maxIterations: 10,
-            startedAt: Date.now(),
-            currentPhaseIndex: 0,
-            promptText,
-          };
-
-          saveState(pi, state);
-
-          const promptSource = promptText ? `(prompt: ${parts[2]})` : "";
-          ctx.ui.notify(`Starting pipeline for "${feature}" (${phases.join(", ")}) ${promptSource}`, "info");
-          refreshWidget(ctx, state);
-          advanceToNextPhase(ctx);
+          // Validate phase order
+          const validation = validatePhaseOrder(phases);
+          if (!validation.valid) { ctx.ui.notify(`Invalid phase order: ${validation.error}`, "error"); return; }
+          createPipelineLock(feature, ctx.cwd);
+          const state: PipelineState = { feature, workDir: ctx.cwd, phases, maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: phases[0], phaseStatus: "executing", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0, promptText };
+          saveState(pi, state); refreshWidget(ctx, state);
+          ctx.ui.notify(`Starting pipeline for "${feature}" (${phases.join(", ")})`, "info");
+          ctx.ui.setStatus("ralph-loop", `🔄 Starting | ${feature}`);
+          // Run pre-hook for first phase
+          if (runPreHook(phases[0], state)) { pi.sendUserMessage(buildPhasePrompt(phases[0], state)); }
+          else { ctx.ui.notify(`Pre-hook failed for phase "${phases[0]}". Check prerequisites and /ralph resume.`, "error"); saveState(pi, { ...state, pipelineStatus: "failed", phaseStatus: "pre_hook" }); removePipelineLock(feature, ctx.cwd); }
           break;
         }
-
+        case "resume": {
+          const state = getState(ctx);
+          if (!state) { ctx.ui.notify("No pipeline to resume.", "error"); return; }
+          if (state.pipelineStatus === "completed") { ctx.ui.notify("Pipeline already completed.", "info"); return; }
+          // Remove stale lock or keep existing
+          removePipelineLock(state.feature, state.workDir);
+          createPipelineLock(state.feature, state.workDir);
+          const phases = state.phases?.length ? state.phases : ["spec","redteam","harden","implement","review"];
+          const resumePhase = parts[1];
+          let targetIdx = state.currentPhaseIndex ?? 0;
+          if (resumePhase) { const ri = phases.indexOf(resumePhase); if (ri >= 0) targetIdx = ri; }
+          // Check completion markers for crash recovery
+          const ralphDir = path.join(state.workDir, ".ralph");
+          const markerPath = path.join(ralphDir, `.phase-${phases[targetIdx]}-done`);
+          if (fs.existsSync(markerPath)) { targetIdx = Math.min(targetIdx + 1, phases.length - 1); }
+          const pk = phases[targetIdx];
+          ctx.ui.notify(`Resuming at Phase ${targetIdx+1} (${PHASE_META[pk]?.name ?? pk})`, "info");
+          const updated: PipelineState = { ...state, currentPhaseIndex: targetIdx, currentPhase: pk, phaseStatus: "executing", pipelineStatus: "running", phaseAttempts: 0 };
+          saveState(pi, updated); refreshWidget(ctx, updated);
+          ctx.ui.setStatus("ralph-loop", `🔄 Resuming | ${state.feature}`);
+          if (runPreHook(pk, updated)) { pi.sendUserMessage(buildPhasePrompt(pk, updated)); }
+          else { ctx.ui.notify(`Pre-hook failed for "${pk}". Fix prerequisites first.`, "error"); saveState(pi, { ...updated, pipelineStatus: "failed", phaseStatus: "pre_hook" }); }
+          break;
+        }
+        case "pause": {
+          const state = getState(ctx);
+          if (!state) { ctx.ui.notify("No active pipeline.", "info"); return; }
+          saveState(pi, { ...state, pipelineStatus: "paused", phaseStatus: "post_hook" });
+          ctx.ui.setStatus("ralph-loop", `⏸ Paused | ${state.feature}`);
+          ctx.ui.notify(`Pipeline paused. Use /ralph resume to continue.`, "warning");
+          break;
+        }
         case "gate": {
           const state = getState(ctx) || { workDir: ctx.cwd };
           const results = runLintGates(state.workDir, parts.slice(1));
-          const allPass = results.every((r) => r.pass);
-
-          ctx.ui.notify(
-            allPass ? "✅ All gates passed" : `❌ Failed: ${results.filter((r) => !r.pass).map((r) => r.name).join(", ")}`,
-            allPass ? "success" : "error",
-          );
-          ctx.ui.setWidget("ralph-gates", formatGateResults(results).split("\n").slice(0, 15));
+          ctx.ui.notify(results.every(r => r.pass) ? "✅ All gates passed" : `❌ Failed: ${results.filter(r => !r.pass).map(r => r.name).join(", ")}`, results.every(r => r.pass) ? "info" : "error");
           break;
         }
-
         case "status": {
           const state = getState(ctx);
-          if (!state) {
-            ctx.ui.notify("No active pipeline. Use /ralph start <feature>", "info");
-            return;
-          }
-
-          const phases = state.phases && state.phases.length > 0 ? state.phases : ["spec", "redteam", "harden", "implement", "review"];
-          const phaseName = PHASE_META[phases[state.currentPhaseIndex]]?.name ?? "(detecting)";
-          ctx.ui.notify(
-            `Feature: ${state.feature}\nCurrent: Phase ${state.currentPhaseIndex + 1}/${phases.length} — ${phaseName}\nPhases: ${phases.join(" → ")}\nStarted: ${new Date(state.startedAt).toISOString()}`,
-            "info",
-          );
+          if (!state) { ctx.ui.notify("No active pipeline.", "info"); return; }
+          const phases = state.phases?.length ? state.phases : ["spec","redteam","harden","implement","review"];
+          const idx = state.currentPhaseIndex ?? 0;
+          const pk = phases[idx];
+          ctx.ui.notify([`Feature: ${state.feature}`, `Status: ${state.pipelineStatus ?? "running"}`, `phaseStatus: ${state.phaseStatus ?? "executing"}`, `Current: Phase ${idx+1} — ${PHASE_META[pk]?.name ?? pk}`, `Phases: ${phases.join(" → ")}`, `reviewIterations: ${state.reviewIterations ?? 0}`, `phaseAttempts: ${state.phaseAttempts ?? 0}`, `Started: ${new Date(state.startedAt).toISOString()}`].join("\n"), "info");
           break;
         }
-
         case "cancel": {
-          ctx.ui.setStatus("ralph-loop", "");
-          ctx.ui.setWidget("ralph-loop", []);
-          writeCountSinceGate = 0;
+          const state = getState(ctx);
+          if (state) removePipelineLock(state.feature, state.workDir);
+          ctx.ui.setStatus("ralph-loop", ""); ctx.ui.setWidget("ralph-loop", []);
           ctx.ui.notify("Pipeline cancelled", "warning");
           break;
         }
-
         default: {
-          const feature = subCmd;
-          if (feature && !["status", "cancel", "gate"].includes(feature)) {
-            // Shorthand: /ralph <feature> [prompt-file] [phases]
-            let promptText: string | undefined;
-            let phases: string[] = ["spec", "redteam", "harden", "implement", "review"];
-
-            if (parts[1]) {
-              const maybePhases = parts[1].split(",").map((p) => p.trim());
-              const validPhases = new Set(["spec", "redteam", "harden", "implement", "review"]);
-              if (!maybePhases.every((p) => validPhases.has(p))) {
-                promptText = resolvePromptInput(parts[1], ctx.cwd);
-              }
-              if (parts[2]) {
-                const requested = parts[2].split(",").map((p) => p.trim());
-                phases = requested.filter((p) => validPhases.has(p));
-                if (!phases.length) {
-                  phases = ["spec", "redteam", "harden", "implement", "review"];
-                }
-              }
+          if (cmd && !cmd.startsWith("-")) { // Shorthand: /ralph <feature>
+            if (!getState(ctx)) {
+              const feature = cmd;
+              const state: PipelineState = { feature, workDir: ctx.cwd, phases: ["spec","redteam","harden","implement","review"], maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: "spec", phaseStatus: "executing", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0 };
+              saveState(pi, state); refreshWidget(ctx, state);
+              createPipelineLock(feature, ctx.cwd);
+              pi.sendUserMessage(buildPhasePrompt("spec", state));
             }
-
-            const state: PipelineState = {
-              feature,
-              workDir: ctx.cwd,
-              phases,
-              maxIterations: 10,
-              startedAt: Date.now(),
-              currentPhaseIndex: 0,
-              promptText,
-            };
-
-            saveState(pi, state);
-            refreshWidget(ctx, state);
-            ctx.ui.notify(`Starting pipeline for "${feature}"`, "info");
-            advanceToNextPhase(ctx);
-          } else {
-            ctx.ui.notify(
-              "Usage: /ralph start <feature> [prompt-file] [phases]\n" +
-                "   or: /ralph <feature> [prompt-file] [phases]\n" +
-                "   or: /ralph gate | status | cancel\n" +
-                "\nPrompt file: .md, .txt file describing the task\n" +
-                "Phases: spec, redteam, harden, implement, review",
-              "info",
-            );
-          }
+          } else { ctx.ui.notify("Usage: /ralph start <feature> | status | cancel | gate | resume | pause", "info"); }
         }
       }
     },
   });
 
-  // ── Contribute skill paths for auto-discovery ──────────
-  pi.on("resources_discover", async () => ({
-    skillPaths: [SKILL_BASE],
-  }));
+  // ── Resources discovery ─────────────────────────────────
+  pi.on("resources_discover", async () => ({ skillPaths: [SKILL_BASE] }));
+
+  // ── Single-skill injection per phase ────────────────────
+  pi.on("before_agent_start", async (event, ctx) => {
+    const state = getState(ctx);
+    if (!state) return;
+    const pk = state.currentPhase;
+    if (!pk || !PHASE_CONFIGS[pk]) return;
+    const skillPath = PHASE_CONFIGS[pk].skillPath;
+    if (!fs.existsSync(skillPath)) return;
+    try {
+      const content = fs.readFileSync(skillPath, "utf-8");
+      if (!event.systemPrompt.includes(pk + "-skill")) {
+        return { systemPrompt: event.systemPrompt + `\n\n<ralph-${pk}-skill>\n${content}\n</ralph-${pk}-skill>` };
+      }
+    } catch {}
+  });
 }

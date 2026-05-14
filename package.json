@@ -18,11 +18,18 @@
       "index.ts"
     ]
   },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.74.0",
-    "typebox": "^0.34.0"
+    "@vitest/ui": "^4.1.6",
+    "typebox": "^1.0.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
   }
 }

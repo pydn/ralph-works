@@ -1,0 +1,7 @@
+.ruff_cache/
+.venv/
+__pycache__/
+.ralph/
+docs/
+node_modules/
+package-lock.json
