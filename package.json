@@ -1,0 +1,28 @@
+{
+  "name": "ralph-works",
+  "version": "0.1.0",
+  "description": "Full dev-cycle pipeline for Pi — spec, red team, harden, TDD implement, and review.",
+  "license": "MIT",
+  "author": "pydn",
+  "keywords": [
+    "pi-extension"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pydn/ralph-works.git"
+  },
+  "bugs": "https://github.com/pydn/ralph-works/issues",
+  "homepage": "https://github.com/pydn/ralph-works#readme",
+  "pi": {
+    "extensions": [
+      "index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.74.0",
+    "typebox": "^0.34.0"
+  }
+}
