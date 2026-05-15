@@ -41,11 +41,41 @@ Reload Pi (`/reload`) to activate.
 
 ## Quality Gates
 
-After every implementation step during TDD and review phases, the extension auto-runs:
+After every implementation step during TDD and review phases, the extension auto-runs language-aware quality gates:
 
-1. `uv run ruff check . --select E,F,W,I` — lint errors (blocker)
-2. `uv run ruff format --check .` — formatting (auto-fixed on failure)
-3. `uv run python -m unittest discover tests -v` — test suite (blocker)
+### Auto-Detection
+Gates are selected based on project type (scanned via filesystem markers):
+
+| Detected Stack | Default Gates |
+|----------------|---------------|
+| TypeScript (`tsconfig.json` + `package.json`) | `tsc --noEmit`, `eslint .`, `vitest run` |
+| JavaScript (`package.json` only) | `eslint .`, `jest` |
+| Python (`pyproject.toml` or `requirements.txt`) | `ruff check .`, `ruff format --check .`, `pytest tests/` |
+| Unknown (no markers) | `tsc --noEmit`, `vitest run` (default fallback) |
+
+### Config Override
+Create `.ralph/gate-config.json` to override defaults:
+```json
+{
+  "version": "1.0",
+  "name": "my-custom-stack",
+  "language": "typescript",
+  "gates": [
+    { "name": "Type Check", "command": "tsc --noEmit", "timeoutMs": 60000 },
+    { "name": "Test", "command": "vitest run --coverage", "timeoutMs": 300000 }
+  ]
+}
+```
+Commands are validated against a whitelist of allowed tools. Non-whitelisted commands fall back to auto-detected defaults.
+
+### Standalone Gate Check
+```bash
+/ralph gate                          # Run gates for current project
+/ralph gate src/foo.ts               # Run lint on specific file(s)
+```
+
+### Auto-Gate Trigger
+During `implement` and `review` phases, gates auto-run after every 3 consecutive code changes. A concurrency lock prevents duplicate execution.
 
 ## Features
 

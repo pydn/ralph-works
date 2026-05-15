@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as child from "node:child_process";
-import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, DEFAULT_PHASES, sanitizeFeatureName } from "./src/stateMachine";
+import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, DEFAULT_PHASES, sanitizeFeatureName, resolveGates, isValidTargetPath } from "./src/stateMachine";
 import { wrapSteerMessage, MAX_STEER_SIZE, validatePhaseIndex } from "./src/steer";
 
 // ── Constants ───────────────────────────────────────────────
@@ -19,8 +19,10 @@ const CUSTOM_TYPE = "ralph-loop-state";
 const SKILL_BASE = process.env.PI_SKILL_BASE ?? path.join(os.homedir(), ".pi", "agent", "skills", "_global");
 const MAX_PHASE_ATTEMPTS = 3;
 const GATE_THRESHOLD = 3;
-const GATE_TIMEOUTS = { tsc: 60_000, vitest: 300_000 };
 const GATE_PHASES = new Set(["implement", "review"]);
+// Concurrency lock — module-level is safe: Pi runs single-threaded per process,
+// and extension supports only one pipeline per session (AGENTS.md §Open Risks #4).
+let isGating = false;
 
 // ── Interfaces ──────────────────────────────────────────────
 interface GateResult { name: string; pass: boolean; output: string; }
@@ -175,20 +177,49 @@ function findLatestSpec(wd: string): string | null {
 
 function runShell(cmd: string, cwd: string, timeoutMs?: number): { ok: boolean; output: string } {
   try {
-    const o = child.execSync(cmd, { cwd, encoding: "utf-8", timeout: timeoutMs ?? GATE_TIMEOUTS.vitest, maxBuffer: 2*1024*1024 });
+    const o = child.execSync(cmd, { cwd, encoding: "utf-8", timeout: timeoutMs ?? 300_000, maxBuffer: 2*1024*1024 });
     return { ok: true, output: o.trim() };
   } catch (err: any) {
     return { ok: err.signal ? false : err.status !== 0, output: sanitizeErrorOutput((err.stdout ?? "") + (err.stderr ?? "") + (err.message ?? "")) };
   }
 }
 
-function runLintGates(wd: string, _targetPaths?: string[]): GateResult[] {
-  const results: GateResult[] = [];
-  const tscRc = runShell("npx tsc --noEmit", wd, GATE_TIMEOUTS.tsc);
-  results.push({ name: "tsc --noEmit", pass: tscRc.ok, output: tscRc.output || "(clean)" });
-  const testRc = runShell("npx vitest run", wd, GATE_TIMEOUTS.vitest);
-  results.push({ name: "vitest run", pass: testRc.ok, output: testRc.output || "(all passed)" });
-  return results;
+function runLintGates(wd: string, targetPaths?: string[]): GateResult[] {
+  // Concurrency lock — prevents auto-gate + manual tool from running simultaneously
+  if (isGating) {
+    return [{ name: "skip", pass: true, output: "Gate check already running — skipping." }];
+  }
+  isGating = true;
+
+  try {
+    const gates = resolveGates(wd);
+    const results: GateResult[] = [];
+
+    for (const gate of gates) {
+      // Build command with optional target paths
+      let cmd = gate.command;
+      if (targetPaths && targetPaths.length > 0) {
+        // Only append paths to commands that support file targeting
+        const firstToken = gate.command.trim().split(/\s+/)[0];
+        const supportedCmds = new Set(["tsc", "eslint", "ruff", "flake8", "pylint"]);
+        if (supportedCmds.has(firstToken)) {
+          // Sanitize paths — reject any containing shell metacharacters
+          const safePaths = targetPaths.filter(p => isValidTargetPath(p));
+          if (safePaths.length > 0) {
+            cmd += " " + safePaths.join(" ");
+          }
+        }
+      }
+
+      const timeout = gate.timeoutMs || 60_000;
+      const rc = runShell(cmd, wd, timeout);
+      results.push({ name: gate.name, pass: rc.ok, output: sanitizeErrorOutput(rc.output || "") });
+    }
+
+    return results;
+  } finally {
+    isGating = false;
+  }
 }
 
 function formatGateResults(results: GateResult[]): string {
