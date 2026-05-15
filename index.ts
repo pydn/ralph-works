@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as child from "node:child_process";
-import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META } from "./src/stateMachine";
+import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, DEFAULT_PHASES, sanitizeFeatureName } from "./src/stateMachine";
 import { wrapSteerMessage, MAX_STEER_SIZE, validatePhaseIndex } from "./src/steer";
 
 // ── Constants ───────────────────────────────────────────────
@@ -103,6 +103,30 @@ const PHASE_CONFIGS: Record<string, {
       if (!fs.existsSync(sp)) return { pass: false, errors: ["Hardened spec not found"] };
       if (!fs.existsSync(clp)) return { pass: false, errors: [`Changelog not found at ${clp}`] };
       if (!fs.readFileSync(sp, "utf-8").includes("HARDENED")) return { pass: false, errors: ["Spec missing HARDENED marker"] };
+      return { pass: true };
+    },
+  },
+  render: {
+    displayName: "Render Markdown → HTML", desc: "Convert hardened markdown spec to polished HTML with Mermaid diagrams and typography",
+    skillPath: path.join(SKILL_BASE, "markdown-to-html", "SKILL.md"),
+    preHook: (_pk, s) => {
+      if (!fs.existsSync(PHASE_CONFIGS["render"].skillPath)) return false;
+      const sp = path.join(s.workDir, "docs", "specs", `${s.feature}.md`);
+      if (!fs.existsSync(sp)) return false;
+      // HARDENED marker check — prevents converting un-audited specs
+      if (!fs.readFileSync(sp, "utf-8").includes("HARDENED")) return false;
+      return true;
+    },
+    postHook: (_pk, s) => {
+      const sanitized = sanitizeFeatureName(s.feature);
+      const htmlPath = path.join(s.workDir, "docs", "specs", `${sanitized}-final.html`);
+      if (!fs.existsSync(htmlPath)) return { pass: false, errors: [`Rendered HTML not found at ${htmlPath}`] };
+      const stat = fs.statSync(htmlPath);
+      if (stat.size < 2048) return { pass: false, errors: [`File size: ${(stat.size / 1024).toFixed(1)}KB, minimum: 2KB`] };
+      const content = fs.readFileSync(htmlPath, "utf-8");
+      if (!content.includes("<") || !content.includes(">")) return { pass: false, errors: ["Output does not appear to be valid HTML"] };
+      if (!content.includes("</html>")) return { pass: false, errors: ["Missing </html> closing tag — document may be truncated"] };
+      if (!content.includes("</body>")) return { pass: false, errors: ["Missing </body> closing tag — document may be truncated"] };
       return { pass: true };
     },
   },
@@ -204,7 +228,19 @@ function buildPhasePrompt(phaseKey: string, state: PipelineState): string {
     case "spec": phaseContext = `## Task\nCreate Markdown engineering specification.\nFeature: ${state.feature}\nSave to: docs/specs/${state.feature}.md`; break;
     case "redteam": phaseContext = `## Task\nAdversarial security review.\nRead: ${specFile || `docs/specs/${state.feature}.md`}\nMark [CRITICAL]/[WARNING].\nSave to: ${auditFile}`; break;
     case "harden": phaseContext = `## Task\nIntegrate red team findings into spec.\nRead findings: ${auditFile}\nPatch spec, write changelog, mark HARDENED`; break;
-    case "implement": phaseContext = `## Task\nImplement via Red-Green-Refactor.\nRun \`ralph_gate_check\` after implementation.`; break;
+    case "render": {
+      const sanitized = sanitizeFeatureName(state.feature);
+      phaseContext = `## Task
+Convert hardened markdown spec to polished HTML.
+Read: docs/specs/${state.feature}.md
+Output: docs/specs/${sanitized}-final.html
+Requirements: Mermaid diagrams rendered, severity badges styled, responsive typography, print-friendly CSS
+Use atomic write pattern: write to ${sanitized}-final.html.tmp then rename to final path.`; break;
+    }
+    case "implement": phaseContext = `## Task
+Implement via Red-Green-Refactor.
+Read spec: docs/specs/${state.feature}-final.html (HTML) or docs/specs/${state.feature}.md (markdown fallback)
+Run \`ralph_gate_check\` after implementation.`; break;
     case "review": phaseContext = `## Task\nMulti-pass PR review. Call \`ralph_review_decision\` with status LGTM or CRITICAL.`; break;
   }
   return `# Ralph Pipeline — Phase: ${cfg.displayName}\n\n${taskSection}\n\n## Skill Context\n<ralph-skill-instructions>\n${skillContent || "(Skill file not available)"}</ralph-skill-instructions>\n\n## Phase Instructions\n${phaseContext}\n\n## Rules\n- After implementation steps, run \`ralph_gate_check\`\n- Complete this phase fully. Extension controller advances phases.`;
@@ -223,7 +259,7 @@ function runPostHook(phaseKey: string, state: PipelineState): PostHookResult {
 }
 
 function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState) {
-  const phases = state.phases?.length ? state.phases : ["spec","redteam","harden","implement","review"];
+  const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
   const idx = state.currentPhaseIndex ?? 0;
   if (idx >= phases.length - 1) {
     const u = { ...state, pipelineStatus: "completed", phaseStatus: "post_hook" };
@@ -262,7 +298,7 @@ function handleReviewDecision(pi: ExtensionAPI, ctx: ExtensionContext, params: {
   } else if (status === "CRITICAL") {
     const maxIters = state.maxIterations ?? 10;
     if (iter >= maxIters) { ctx.ui.notify(`Max review iterations (${maxIters}) reached — halted.`, "error"); saveState(pi, { ...state, pipelineStatus: "halted" }); return; }
-    const phases = state.phases ?? ["spec","redteam","harden","implement","review"];
+    const phases = state.phases ?? DEFAULT_PHASES;
     const implIdx = phases.indexOf("implement");
     const u: PipelineState = { ...state, currentPhaseIndex: implIdx >= 0 ? implIdx : 3, currentPhase: "implement", phaseStatus: "pre_hook", reviewIterations: iter + 1, phaseAttempts: 0, turnWriteCount: 0 };
     saveState(pi, u); refreshWidget(ctx, u);
@@ -277,7 +313,7 @@ async function handleAgentEnd(pi: ExtensionAPI, ctx: ExtensionContext) {
   const state = getState(ctx);
   if (!state) return;
   const updated = { ...state, turnWriteCount: 0 };
-  const phases = updated.phases?.length ? updated.phases : ["spec","redteam","harden","implement","review"];
+  const phases = updated.phases?.length ? updated.phases : DEFAULT_PHASES;
   const idx = updated.currentPhaseIndex ?? 0;
   const pk = phases[idx];
   if (pk) {
@@ -309,7 +345,7 @@ function writePhaseCompletionMarker(phaseKey: string, workDir: string): void {
 function writeDevCycleSummary(state: PipelineState): void {
   const ralphDir = path.join(state.workDir, ".ralph");
   if (!fs.existsSync(ralphDir)) fs.mkdirSync(ralphDir, { recursive: true });
-  const phases = state.phases ?? ["spec","redteam","harden","implement","review"];
+  const phases = state.phases ?? DEFAULT_PHASES;
   const phaseResults = phases.map(p => `- ${PHASE_META[p]?.name ?? p}: ${fs.existsSync(path.join(ralphDir, `.phase-${p}-done`)) ? "✅ Completed" : "❌ Not completed"}`).join("\n");
   try { fs.writeFileSync(path.join(ralphDir, `dev-cycle-${state.feature}.md`), `# Dev-Cycle Summary: ${state.feature}\n\n**Started:** ${new Date(state.startedAt).toISOString()}\n**Completed:** ${new Date().toISOString()}\n**Review Iterations:** ${state.reviewIterations ?? 0}\n\n## Phases\n${phaseResults}`, "utf-8"); } catch {}
 }
@@ -319,7 +355,7 @@ function writeDevCycleSummary(state: PipelineState): void {
 function writeMetrics(state: PipelineState): void {
   const ralphDir = path.join(state.workDir, ".ralph");
   if (!fs.existsSync(ralphDir)) fs.mkdirSync(ralphDir, { recursive: true });
-  const phases = state.phases ?? ["spec","redteam","harden","implement","review"];
+  const phases = state.phases ?? DEFAULT_PHASES;
   const phaseDurations: Record<string, number> = {};
   for (const p of phases) {
     const markerPath = path.join(ralphDir, `.phase-${p}-done`);
@@ -372,7 +408,7 @@ function removePipelineLock(feature: string, wd: string): void {
 // ── Widget ──────────────────────────────────────────────────
 
 function refreshWidget(ctx: ExtensionContext, st: PipelineState) {
-  const phases = st.phases?.length ? st.phases : ["spec","redteam","harden","implement","review"];
+  const phases = st.phases?.length ? st.phases : DEFAULT_PHASES;
   const idx = st.currentPhaseIndex ?? 0;
   const meta = PHASE_META[phases[idx]];
   ctx.ui.setWidget("ralph-loop", [
@@ -407,7 +443,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const state = getState(ctx);
     if (!state) return;
-    const phases = state.phases?.length ? state.phases : ["spec","redteam","harden","implement","review"];
+    const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
     ctx.ui.notify(`Ralph loop: ${state.feature} (${phases.join(", ")})`, "info");
     ctx.ui.setStatus("ralph-loop", `🔄 Ralph | ${state.feature}`);
     refreshWidget(ctx, state);
@@ -529,7 +565,7 @@ ${phasePrompt}`,
   // ── Command: /ralph ────────────────────────────────────
   pi.registerCommand("ralph", {
     description: "Dev-cycle pipeline (start | status | cancel | gate | resume | pause)",
-    getArgumentCompletions: (prefix: string) => { const items = ["start","status","cancel","gate","resume","pause","spec","redteam","harden","implement","review"].map(v => ({ value: v, label: v })); return items.filter(i => i.value.startsWith(prefix)); },
+    getArgumentCompletions: (prefix: string) => { const items = ["start","status","cancel","gate","resume","pause","spec","redteam","harden","render","implement","review"].map(v => ({ value: v, label: v })); return items.filter(i => i.value.startsWith(prefix)); },
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       const cmd = parts[0]?.toLowerCase();
@@ -541,8 +577,8 @@ ${phasePrompt}`,
           // Check pipeline lock
           const lockCheck = checkPipelineLock(feature, ctx.cwd);
           if (lockCheck.locked && !lockCheck.stale) { ctx.ui.notify("Pipeline already running — /ralph cancel first.", "error"); return; }
-          const validPhases = new Set(["spec","redteam","harden","implement","review"]);
-          let phases: string[] = ["spec","redteam","harden","implement","review"];
+          const validPhases = new Set(DEFAULT_PHASES);
+          let phases: string[] = [...DEFAULT_PHASES];
           let promptText: string | undefined;
           if (parts[2]) {
             const mp = parts[2].split(",").map(p => p.trim());
@@ -569,7 +605,7 @@ ${phasePrompt}`,
           // Remove stale lock or keep existing
           removePipelineLock(state.feature, state.workDir);
           createPipelineLock(state.feature, state.workDir);
-          const phases = state.phases?.length ? state.phases : ["spec","redteam","harden","implement","review"];
+          const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
           const resumePhase = parts[1];
           let targetIdx = state.currentPhaseIndex ?? 0;
           if (resumePhase) { const ri = phases.indexOf(resumePhase); if (ri >= 0) targetIdx = ri; }
@@ -603,7 +639,7 @@ ${phasePrompt}`,
         case "status": {
           const state = getState(ctx);
           if (!state) { ctx.ui.notify("No active pipeline.", "info"); return; }
-          const phases = state.phases?.length ? state.phases : ["spec","redteam","harden","implement","review"];
+          const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
           const idx = state.currentPhaseIndex ?? 0;
           const pk = phases[idx];
           ctx.ui.notify([`Feature: ${state.feature}`, `Status: ${state.pipelineStatus ?? "running"}`, `phaseStatus: ${state.phaseStatus ?? "executing"}`, `Current: Phase ${idx+1} — ${PHASE_META[pk]?.name ?? pk}`, `Phases: ${phases.join(" → ")}`, `reviewIterations: ${state.reviewIterations ?? 0}`, `phaseAttempts: ${state.phaseAttempts ?? 0}`, `Started: ${new Date(state.startedAt).toISOString()}`].join("\n"), "info");
@@ -620,7 +656,7 @@ ${phasePrompt}`,
           if (cmd && !cmd.startsWith("-")) { // Shorthand: /ralph <feature>
             if (!getState(ctx)) {
               const feature = cmd;
-              const state: PipelineState = { feature, workDir: ctx.cwd, phases: ["spec","redteam","harden","implement","review"], maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: "spec", phaseStatus: "executing", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0 };
+              const state: PipelineState = { feature, workDir: ctx.cwd, phases: [...DEFAULT_PHASES], maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: "spec", phaseStatus: "executing", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0 };
               saveState(pi, state); refreshWidget(ctx, state);
               createPipelineLock(feature, ctx.cwd);
               pi.sendUserMessage(buildPhasePrompt("spec", state));
