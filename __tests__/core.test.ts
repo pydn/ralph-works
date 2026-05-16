@@ -338,6 +338,14 @@ describe("resolveGates", () => {
     expect(gates.some((g) => g.command.includes("ruff") || g.command.includes("pytest"))).toBe(true);
   });
 
+  it("returns a non-failing setup gate for a fresh directory with no project markers", () => {
+    const fs = makeFsMock(new Set());
+    const gates = resolveGates("/tmp/test-project", undefined, fs);
+    expect(gates).toHaveLength(1);
+    expect(gates[0]?.name).toContain("no project markers detected");
+    expect(gates[0]?.command).toContain("node -e");
+  });
+
   it("falls back to auto-detect when config has non-whitelisted command", () => {
     const badConfig = JSON.stringify({
       version: "1.0",
@@ -391,6 +399,7 @@ describe("gate resolution idempotency", () => {
     const gates1 = resolveGates("/tmp/test-project", undefined, fs);
     const gates2 = resolveGates("/tmp/test-project", undefined, fs);
     expect(gates1).toEqual(gates2);
+    expect(gates1[0]?.name).toContain("no project markers detected");
   });
 });
 

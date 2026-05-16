@@ -332,8 +332,11 @@ function buildDefaultGates(stack: ProjectStack): GateDefinition[] {
       ];
     default:
       return [
-        { name: "Type Check", command: "npx tsc --noEmit", timeoutMs: 60000 },
-        { name: "Test", command: "npx vitest run", timeoutMs: 300000 },
+        {
+          name: "Skip: no project markers detected",
+          command: `node -e "process.stdout.write('No gate configuration or supported project markers detected in this directory; skipping gates.\\n')"`,
+          timeoutMs: 10000,
+        },
       ];
   }
 }
