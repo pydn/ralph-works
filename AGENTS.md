@@ -2,6 +2,17 @@
 
 This is a **TypeScript extension for [Pi](https://github.com/earendil-works/pi-coding-agent)** implementing a full dev-cycle pipeline (Ralph loop). All phases run as a single continuous agent workflow with no subprocess spawning.
 
+## Priority Tracker
+
+Always reference `/workspace/prompts/ralph-extension-priority-action-plan.md` before starting work. Treat that file as the source of truth for backlog order, active ownership, and completion state.
+
+If you are taking a tracked item from that file:
+- Mark it `[in progress]` in the same turn before making code changes so other agents know it is claimed.
+- When the work is complete, mark the task complete in the action plan in the same turn and remove the `[in progress]` marker.
+- If you stop before finishing, leave `[in progress]` in place and add a short note describing the handoff state or blocker.
+
+Do not start a tracked item without checking whether another agent has already claimed it.
+
 ## Quick Start
 
 ```bash
@@ -123,6 +134,28 @@ const phases = st.phases && st.phases.length > 0 ? st.phases : ["spec", "redteam
 
 ### 7. Command Parsing Ambiguity
 `args.trim().split(/\s+/)` creates comma ambiguity. Current heuristic: if arg2 is entirely valid phase names, treat as phase list; otherwise treat as prompt text. Known limitation: prompts with commas (e.g., `"spec, implement"`) are misinterpreted as phase lists.
+
+### 8. Worktree Isolation — NEVER EDIT THE PRIMARY CHECKOUT
+Always do implementation work in a dedicated `git worktree`, never in the primary checkout directory. The main checkout is for coordination, review, and recovery only.
+
+Required workflow:
+1. Check `/workspace/prompts/ralph-extension-priority-action-plan.md` and claim the item with `[in progress]`.
+2. Create or reuse a dedicated worktree for that item.
+3. Do all code edits, tests, and commits inside the worktree path, not the primary repo directory.
+
+Example commands:
+```bash
+git worktree add /tmp/ralph-works-<task> -b <branch-name> HEAD
+git worktree list
+git worktree remove /tmp/ralph-works-<task>
+git worktree prune
+```
+
+Worktree rules:
+- One active task per worktree.
+- One branch per worktree.
+- Do not have two agents editing the same file from different worktrees at the same time.
+- Name the worktree and branch after the claimed action-plan item when possible.
 
 ## TypeScript-Specific Quality Gates
 
