@@ -54,7 +54,7 @@ interface PipelineState {
   turnWriteCount?: number;
   promptText?: string;
   contextClearCount?: number;     // times context has been cleared (default: 0)
-  autoClearContext?: boolean;      // auto-clear at phase boundaries (default: false)
+  autoClearContext?: boolean;      // auto-clear at phase boundaries (default: true)
   lastContextClearAt?: number;     // timestamp of most recent clear for rate-limiting
 }
 
@@ -627,7 +627,7 @@ ${phasePrompt}`,
   // ── Command: /ralph ────────────────────────────────────
   pi.registerCommand("ralph", {
     description: "Dev-cycle pipeline (start | status | cancel | gate | resume | pause)",
-    getArgumentCompletions: (prefix: string) => { const items = ["start","status","cancel","gate","resume","pause","spec","redteam","harden","render","implement","review"].map(v => ({ value: v, label: v })); return items.filter(i => i.value.startsWith(prefix)); },
+    getArgumentCompletions: (prefix: string) => { const items = ["start","status","cancel","gate","resume","pause","clear-context","spec","redteam","harden","render","implement","review"].map(v => ({ value: v, label: v })); return items.filter(i => i.value.startsWith(prefix)); },
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       const cmd = parts[0]?.toLowerCase();
@@ -651,7 +651,7 @@ ${phasePrompt}`,
           const validation = validatePhaseOrder(phases);
           if (!validation.valid) { ctx.ui.notify(`Invalid phase order: ${validation.error}`, "error"); return; }
           createPipelineLock(feature, ctx.cwd);
-          const state: PipelineState = { feature, workDir: ctx.cwd, phases, maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: phases[0], phaseStatus: "executing", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0, promptText };
+          const state: PipelineState = { feature, workDir: ctx.cwd, phases, maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: phases[0], phaseStatus: "executing", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0, promptText, autoClearContext: true };
           saveState(pi, state); refreshWidget(ctx, state);
           ctx.ui.notify(`Starting pipeline for "${feature}" (${phases.join(", ")})`, "info");
           ctx.ui.setStatus("ralph-loop", `🔄 Starting | ${feature}`);
@@ -773,7 +773,7 @@ ${phasePrompt}`,
           if (cmd && !cmd.startsWith("-")) { // Shorthand: /ralph <feature>
             if (!getState(ctx)) {
               const feature = cmd;
-              const state: PipelineState = { feature, workDir: ctx.cwd, phases: [...DEFAULT_PHASES], maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: "spec", phaseStatus: "executing", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0 };
+              const state: PipelineState = { feature, workDir: ctx.cwd, phases: [...DEFAULT_PHASES], maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: "spec", phaseStatus: "executing", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0, autoClearContext: true };
               saveState(pi, state); refreshWidget(ctx, state);
               createPipelineLock(feature, ctx.cwd);
               pi.sendUserMessage(buildPhasePrompt("spec", state));
