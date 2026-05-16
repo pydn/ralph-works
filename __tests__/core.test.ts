@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, PHASE_ORDER, DEFAULT_PHASES, sanitizeFeatureName, detectProjectStack, loadGateConfig, resolveGates, GATE_COMMAND_WHITELIST, isValidGateCommand, isValidTargetPath, resolvePhaseCompletion, resolveSessionStartAction, hasPhaseCompletionMarker, PHASE_COMPLETE_MARKER } from "../src/stateMachine";
+import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, PHASE_ORDER, DEFAULT_PHASES, sanitizeFeatureName, detectProjectStack, loadGateConfig, resolveGates, GATE_COMMAND_WHITELIST, isValidGateCommand, isValidTargetPath, resolvePhaseCompletion, resolveSessionStartAction, hasPhaseCompletionMarker, PHASE_COMPLETE_MARKER, validateHardenedSpecStatus } from "../src/stateMachine";
 
 describe("PHASE_ORDER", () => {
   it("contains all 6 phases in correct order (including render)", () => {
@@ -157,6 +157,47 @@ describe("hasPhaseCompletionMarker", () => {
 
   it("returns false for empty text", () => {
     expect(hasPhaseCompletionMarker("")).toBe(false);
+  });
+});
+
+describe("validateHardenedSpecStatus", () => {
+  it("accepts lowercase hardened status in YAML front matter", () => {
+    const content = `---
+title: Example
+status: hardened
+hardened_date: 2026-05-16
+---
+
+# Example Spec`;
+
+    expect(validateHardenedSpecStatus(content)).toEqual({ valid: true });
+  });
+
+  it("rejects specs without hardened YAML status", () => {
+    const content = `---
+title: Example
+status: draft
+---
+
+# Example Spec`;
+
+    const result = validateHardenedSpecStatus(content);
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain("status");
+  });
+
+  it("rejects legacy uppercase free-text markers without YAML status", () => {
+    const content = `---
+title: Example
+---
+
+# Example Spec
+
+**Status**: HARDENED`;
+
+    const result = validateHardenedSpecStatus(content);
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain("status");
   });
 });
 

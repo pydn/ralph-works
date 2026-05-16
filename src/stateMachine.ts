@@ -109,6 +109,30 @@ export function hasPhaseCompletionMarker(text: string): boolean {
 }
 
 /**
+ * Validate that the spec YAML front matter has a root status: hardened field.
+ */
+export function validateHardenedSpecStatus(content: string): PhaseValidationResult {
+  const yamlMatch = content.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!yamlMatch) return { valid: false, error: "Spec missing YAML front matter" };
+
+  const statusLine = yamlMatch[1].split(/\r?\n/).find(line => /^status[ \t]*:/i.test(line));
+  if (!statusLine) return { valid: false, error: "Spec YAML front matter missing status: hardened" };
+
+  const statusValue = statusLine
+    .replace(/^status[ \t]*:/i, "")
+    .replace(/[ \t]+#.*$/, "")
+    .trim()
+    .replace(/^["'](.*)["']$/, "$1")
+    .trim();
+
+  if (statusValue.toLowerCase() !== "hardened") {
+    return { valid: false, error: "Spec YAML front matter status is not hardened" };
+  }
+
+  return { valid: true };
+}
+
+/**
  * Decide what to do on session reload based on persisted pipeline state.
  */
 export function resolveSessionStartAction(state: SessionStartStateLike | null): SessionStartAction {

@@ -87,6 +87,9 @@ During implement/review phases, the extension tracks write operations:
 
 ## Critical Development Rules
 
+### Red-Green TDD Is Required
+Always implement behavior changes using red-green TDD: add or update the regression test first, run the targeted test to confirm it fails for the expected reason, implement the smallest production change, then rerun the targeted test and relevant gates.
+
 ### 1. State Mutation — ALWAYS CREATE COPIES
 ```typescript
 // WRONG — mutates shared reference
