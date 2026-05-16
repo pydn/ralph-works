@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as child from "node:child_process";
-import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, DEFAULT_PHASES, sanitizeFeatureName, resolveGates, isValidTargetPath, resolvePhaseCompletion, resolveSessionStartAction, hasPhaseCompletionMarker, PHASE_COMPLETE_MARKER } from "./src/stateMachine";
+import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, DEFAULT_PHASES, sanitizeFeatureName, resolveGates, isValidTargetPath, resolvePhaseCompletion, resolveSessionStartAction, hasPhaseCompletionMarker, PHASE_COMPLETE_MARKER, validateHardenedSpecStatus } from "./src/stateMachine";
 import { wrapSteerMessage, MAX_STEER_SIZE, validatePhaseIndex, canClearContext, buildReorientationPrompt, resolveArtifactPaths } from "./src/steer";
 
 // ── Constants ───────────────────────────────────────────────
@@ -113,7 +113,8 @@ const PHASE_CONFIGS: Record<string, {
       const clp = path.join(s.workDir, "docs", "specs", `harden-changelog-${s.feature}.md`);
       if (!fs.existsSync(sp)) return { pass: false, errors: ["Hardened spec not found"] };
       if (!fs.existsSync(clp)) return { pass: false, errors: [`Changelog not found at ${clp}`] };
-      if (!fs.readFileSync(sp, "utf-8").includes("HARDENED")) return { pass: false, errors: ["Spec missing HARDENED marker"] };
+      const status = validateHardenedSpecStatus(fs.readFileSync(sp, "utf-8"));
+      if (!status.valid) return { pass: false, errors: [status.error ?? "Spec YAML front matter does not show status: hardened"] };
       return { pass: true };
     },
   },
@@ -124,8 +125,8 @@ const PHASE_CONFIGS: Record<string, {
       if (!fs.existsSync(PHASE_CONFIGS["render"].skillPath)) return false;
       const sp = path.join(s.workDir, "docs", "specs", `${s.feature}.md`);
       if (!fs.existsSync(sp)) return false;
-      // HARDENED marker check — prevents converting un-audited specs
-      if (!fs.readFileSync(sp, "utf-8").includes("HARDENED")) return false;
+      // Hardened status check prevents converting un-audited specs.
+      if (!validateHardenedSpecStatus(fs.readFileSync(sp, "utf-8")).valid) return false;
       return true;
     },
     postHook: (_pk, s) => {
@@ -267,7 +268,7 @@ function buildPhasePrompt(phaseKey: string, state: PipelineState): string {
   switch (phaseKey) {
     case "spec": phaseContext = `## Task\nCreate Markdown engineering specification.\nFeature: ${state.feature}\nSave to: docs/specs/${state.feature}.md`; break;
     case "redteam": phaseContext = `## Task\nAdversarial security review.\nRead: ${specFile || `docs/specs/${state.feature}.md`}\nMark [CRITICAL]/[WARNING].\nSave to: ${auditFile}`; break;
-    case "harden": phaseContext = `## Task\nIntegrate red team findings into spec.\nRead findings: ${auditFile}\nPatch spec, write changelog, mark HARDENED`; break;
+    case "harden": phaseContext = `## Task\nIntegrate red team findings into spec.\nRead findings: ${auditFile}\nPatch spec, write changelog, set YAML front matter \`status: hardened\``; break;
     case "render": {
       const sanitized = sanitizeFeatureName(state.feature);
       phaseContext = `## Task
