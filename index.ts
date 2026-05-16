@@ -22,9 +22,12 @@ const GATE_THRESHOLD = 3;
 const GATE_PHASES = new Set(["implement", "review"]);
 const WAITING_FOR_USER_PHASE_STATUS = "waiting_for_user";
 const STEER_DEDUP_TTL_MS = 30_000;
+const UI_WIDGET_ID = "ralph-loop";
+const PROGRESS_BAR_WIDTH = 14;
 // Concurrency lock — module-level is safe: Pi runs single-threaded per process,
 // and extension supports only one pipeline per session (AGENTS.md §Open Risks #4).
 let isGating = false;
+const widgetRenderCache = new WeakMap<ExtensionContext, string>();
 
 // ── Interfaces ──────────────────────────────────────────────
 interface GateResult { name: string; pass: boolean; output: string; }
@@ -427,15 +430,131 @@ function getPhaseDisplay(st: PipelineState): { phases: string[]; idx: number; ph
   return { phases, idx, phaseKey, phaseName: PHASE_META[phaseKey ?? ""]?.name ?? phaseKey ?? "?" };
 }
 
-function styleUiText(ctx: ExtensionContext, tone: "warning" | "accent" | "dim", text: string): string {
+type UiTone = "warning" | "accent" | "dim";
+
+function styleUiText(ctx: ExtensionContext, tone: UiTone, text: string): string {
   return ctx.ui.theme?.fg ? ctx.ui.theme.fg(tone, text) : text;
+}
+
+function truncateUiText(value: string | undefined, maxLength: number): string {
+  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  if (maxLength <= 3) return normalized.slice(0, maxLength);
+  return `${normalized.slice(0, maxLength - 3)}...`;
+}
+
+function resolveProgressPercent(st: PipelineState, phaseCount: number, idx: number): number {
+  if (st.pipelineStatus === "completed") return 100;
+  const safeCount = Math.max(phaseCount, 1);
+  const safeIdx = Math.min(Math.max(idx, 0), safeCount - 1);
+  return Math.round(((safeIdx + 1) / safeCount) * 100);
+}
+
+function buildProgressBar(percent: number): string {
+  const safePercent = Math.min(Math.max(percent, 0), 100);
+  const filled = Math.min(PROGRESS_BAR_WIDTH, Math.max(0, Math.round((safePercent / 100) * PROGRESS_BAR_WIDTH)));
+  return `[${"#".repeat(filled)}${"-".repeat(PROGRESS_BAR_WIDTH - filled)}] ${safePercent}%`;
+}
+
+function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; actions: string[] } {
+  if (st.phaseStatus === WAITING_FOR_USER_PHASE_STATUS) {
+    return {
+      label: "WAITING FOR USER INPUT",
+      tone: "warning",
+      actions: ["Reply to the prompt in chat", "/ralph continue relaunches this phase"],
+    };
+  }
+
+  switch (st.pipelineStatus) {
+    case "completed":
+      return { label: "COMPLETE", tone: "accent", actions: ["Review the .ralph summary or start another run"] };
+    case "paused":
+      return { label: "PAUSED", tone: "warning", actions: ["/ralph resume continues the pipeline"] };
+    case "failed":
+    case "halted":
+      return { label: "BLOCKED", tone: "warning", actions: ["Fix the blocker, then run /ralph resume", "/ralph cancel abandons this run"] };
+    case "cancelled":
+      return { label: "CANCELLED", tone: "dim", actions: ["/ralph start <feature> begins a new run"] };
+    default:
+      break;
+  }
+
+  if (st.phaseStatus === "pre_hook") {
+    return { label: "PREPARING", tone: "accent", actions: ["Checking prerequisites for the next phase"] };
+  }
+  if (st.phaseStatus === "post_hook") {
+    return { label: "VALIDATING", tone: "accent", actions: ["Validating phase output before transition"] };
+  }
+  if (st.phaseStatus === "corrupted") {
+    return { label: "STATE ERROR", tone: "warning", actions: ["/ralph cancel resets the pipeline state"] };
+  }
+
+  const gateAction = GATE_PHASES.has(st.currentPhase ?? "")
+    ? "Run ralph_gate_check after implementation changes"
+    : "/ralph status shows details";
+  return {
+    label: "RUNNING",
+    tone: "accent",
+    actions: [gateAction, "/ralph pause pauses safely"],
+  };
+}
+
+function buildPhaseLines(ctx: ExtensionContext, phases: string[], idx: number): string[] {
+  return phases.map((phase, phaseIdx) => {
+    const marker = phaseIdx < idx ? "✓" : phaseIdx === idx ? "▶" : "·";
+    const label = `${marker} ${phaseIdx + 1}. ${truncateUiText(PHASE_META[phase]?.name ?? phase, 34)}`;
+    if (phaseIdx === idx) return styleUiText(ctx, "accent", `│ ${label}`);
+    if (phaseIdx < idx) return styleUiText(ctx, "dim", `│ ${label}`);
+    return `│ ${label}`;
+  });
+}
+
+function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
+  const { phases, idx, phaseName } = getPhaseDisplay(st);
+  const widgetState = resolveWidgetState(st);
+  const percent = resolveProgressPercent(st, phases.length, idx);
+  const startedAt = Number.isFinite(st.startedAt) ? new Date(st.startedAt).toISOString() : "unknown";
+  const detailLines = [
+    `Status: ${st.pipelineStatus ?? "running"} / ${st.phaseStatus ?? "executing"}`,
+    `Started: ${startedAt}`,
+    st.reviewIterations && st.reviewIterations > 0 ? `Review iterations: ${st.reviewIterations}` : "",
+    st.phaseAttempts && st.phaseAttempts > 0 ? `Phase attempts: ${st.phaseAttempts}` : "",
+    st.contextClearCount && st.contextClearCount > 0 ? `Context clears: ${st.contextClearCount}` : "",
+    st.promptText ? "Prompt: provided" : "Prompt: none",
+  ].filter(Boolean);
+
+  return [
+    styleUiText(ctx, widgetState.tone, "╭─ Ralph Pipeline"),
+    styleUiText(ctx, widgetState.tone, `│ ${widgetState.label} · ${truncateUiText(st.feature, 46)}`),
+    `│ Phase ${idx + 1}/${phases.length}: ${truncateUiText(phaseName, 48)}`,
+    `│ ${buildProgressBar(percent)}`,
+    styleUiText(ctx, "dim", "├─ Phases"),
+    ...buildPhaseLines(ctx, phases, idx),
+    styleUiText(ctx, "dim", "├─ Details"),
+    ...detailLines.map(line => `│ ${line}`),
+    styleUiText(ctx, "dim", "├─ Action"),
+    ...widgetState.actions.map(action => styleUiText(ctx, widgetState.tone, `│ ${action}`)),
+    styleUiText(ctx, "dim", "╰─"),
+  ];
+}
+
+function setPipelineWidget(ctx: ExtensionContext, lines: string[], options?: { force?: boolean }): void {
+  const signature = lines.join("\n");
+  if (!options?.force && widgetRenderCache.get(ctx) === signature) return;
+  widgetRenderCache.set(ctx, signature);
+  ctx.ui.setWidget(UI_WIDGET_ID, lines);
+}
+
+function clearPipelineWidgetCache(ctx: ExtensionContext): void {
+  widgetRenderCache.delete(ctx);
 }
 
 function setPipelineWorkingUi(ctx: ExtensionContext, st: PipelineState, label?: string): void {
   ctx.ui.setWorkingVisible?.(true);
   ctx.ui.setWorkingMessage?.();
   ctx.ui.setWorkingIndicator?.();
-  ctx.ui.setStatus("ralph-loop", label ?? `🔄 Ralph | ${st.feature}`);
+  const { phases, idx, phaseName } = getPhaseDisplay(st);
+  ctx.ui.setStatus(UI_WIDGET_ID, label ?? styleUiText(ctx, "accent", `Ralph | ${st.feature} | RUNNING | Phase ${idx + 1}/${phases.length}: ${phaseName}`));
 }
 
 function setPipelineWaitingUi(ctx: ExtensionContext, st: PipelineState): void {
@@ -444,7 +563,7 @@ function setPipelineWaitingUi(ctx: ExtensionContext, st: PipelineState): void {
   ctx.ui.setWorkingVisible?.(false);
   ctx.ui.setWorkingMessage?.("Waiting for user input");
   ctx.ui.setWorkingIndicator?.({ frames: [] });
-  ctx.ui.setStatus("ralph-loop", styleUiText(ctx, "warning", status));
+  ctx.ui.setStatus(UI_WIDGET_ID, styleUiText(ctx, "warning", status));
 }
 
 function enterWaitingForUser(pi: ExtensionAPI, ctx: ExtensionContext, st: PipelineState): void {
@@ -703,28 +822,8 @@ function removePipelineLock(feature: string, wd: string): void {
 
 // ── Widget ──────────────────────────────────────────────────
 
-function refreshWidget(ctx: ExtensionContext, st: PipelineState) {
-  const { phases, idx, phaseName } = getPhaseDisplay(st);
-  if (st.phaseStatus === WAITING_FOR_USER_PHASE_STATUS) {
-    ctx.ui.setWidget("ralph-loop", [
-      styleUiText(ctx, "warning", "Waiting for user input"),
-      `Pipeline: ${st.feature}`,
-      `Current phase: Phase ${idx+1}/${phases.length} — ${phaseName}`,
-      `Status: ${st.pipelineStatus ?? "running"} | Phase: ${WAITING_FOR_USER_PHASE_STATUS}`,
-    ]);
-    return;
-  }
-
-  ctx.ui.setWidget("ralph-loop", [
-    `Pipeline: ${st.feature}`, `Phases: ${phases.join(" → ")}`,
-    st.promptText ? `Prompt: (provided)` : `Prompt: (none)`,
-    `Started: ${new Date(st.startedAt).toISOString()}`,
-    `Status: ${st.pipelineStatus ?? "running"} | Phase: ${st.phaseStatus ?? "executing"}`, "",
-    `Progress: Phase ${idx+1}/${phases.length} — ${phaseName}`,
-    st.reviewIterations ? `Review iterations: ${st.reviewIterations}` : "",
-    st.phaseAttempts && st.phaseAttempts > 0 ? `Phase attempts: ${st.phaseAttempts}` : "",
-    st.contextClearCount && st.contextClearCount > 0 ? `Context clears: ${st.contextClearCount}` : "",
-  ].filter(Boolean));
+function refreshWidget(ctx: ExtensionContext, st: PipelineState, options?: { force?: boolean }) {
+  setPipelineWidget(ctx, buildWidgetLines(ctx, st), options);
 }
 
 // ── Extension Entry Point ──────────────────────────────────
@@ -998,6 +1097,7 @@ ${phasePrompt}`,
         case "cancel": {
           const state = getState(ctx);
           if (state) removePipelineLock(state.feature, state.workDir);
+          clearPipelineWidgetCache(ctx);
           ctx.ui.setStatus("ralph-loop", ""); ctx.ui.setWidget("ralph-loop", []);
           ctx.ui.notify("Pipeline cancelled", "warning");
           break;

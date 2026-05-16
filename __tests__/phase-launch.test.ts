@@ -194,8 +194,10 @@ describe("next-phase launch", () => {
     expect(ctx.ui.setWidget).toHaveBeenLastCalledWith(
       "ralph-loop",
       expect.arrayContaining([
-        "Waiting for user input",
+        expect.stringContaining("Ralph Pipeline"),
+        expect.stringContaining("WAITING FOR USER INPUT"),
         expect.stringContaining("Phase 1/2"),
+        expect.stringContaining("Reply to the prompt"),
       ]),
     );
   });
@@ -240,6 +242,52 @@ describe("next-phase launch", () => {
     expect(ctx.ui.setStatus).toHaveBeenLastCalledWith(
       "ralph-loop",
       expect.stringContaining("Ralph | needs-operator"),
+    );
+  });
+
+  it("renders the active widget once for duplicate streaming updates", async () => {
+    const workDir = makeTempDir("ralph-stream-widget-work-");
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "fast-ui",
+          workDir,
+          phases: ["implement", "review"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "implement",
+          currentPhaseIndex: 0,
+          phaseStatus: "executing",
+          pipelineStatus: "running",
+          reviewIterations: 0,
+          phaseAttempts: 0,
+          turnWriteCount: 0,
+          autoClearContext: false,
+        },
+      },
+    ];
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    const messageUpdate = handlers.get("message_update");
+    expect(messageUpdate).toBeTypeOf("function");
+
+    await messageUpdate?.({ message: { role: "assistant" } }, ctx);
+    await messageUpdate?.({ message: { role: "assistant" } }, ctx);
+
+    expect(ctx.ui.setWidget).toHaveBeenCalledTimes(1);
+    expect(ctx.ui.setWidget).toHaveBeenLastCalledWith(
+      "ralph-loop",
+      expect.arrayContaining([
+        expect.stringContaining("Ralph Pipeline"),
+        expect.stringContaining("RUNNING"),
+        expect.stringContaining("Run ralph_gate_check"),
+      ]),
     );
   });
 
