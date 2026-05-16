@@ -172,6 +172,10 @@ describe("resolveSessionStartAction", () => {
   it("does not auto-resume when the pipeline is paused", () => {
     expect(resolveSessionStartAction({ pipelineStatus: "paused", phaseStatus: "pre_hook" })).toBe("none");
   });
+
+  it("does not auto-resume when the pipeline is waiting for user input", () => {
+    expect(resolveSessionStartAction({ pipelineStatus: "running", phaseStatus: "waiting_for_user" })).toBe("none");
+  });
 });
 
 // ── Gate Check: detectProjectStack ──────────────────────────

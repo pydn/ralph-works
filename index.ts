@@ -20,6 +20,8 @@ const SKILL_BASE = process.env.PI_SKILL_BASE ?? path.join(os.homedir(), ".pi", "
 const MAX_PHASE_ATTEMPTS = 3;
 const GATE_THRESHOLD = 3;
 const GATE_PHASES = new Set(["implement", "review"]);
+const WAITING_FOR_USER_PHASE_STATUS = "waiting_for_user";
+const STEER_DEDUP_TTL_MS = 30_000;
 // Concurrency lock — module-level is safe: Pi runs single-threaded per process,
 // and extension supports only one pipeline per session (AGENTS.md §Open Risks #4).
 let isGating = false;
@@ -56,6 +58,8 @@ interface PipelineState {
   contextClearCount?: number;     // times context has been cleared (default: 0)
   autoClearContext?: boolean;      // auto-clear at phase boundaries (default: true)
   lastContextClearAt?: number;     // timestamp of most recent clear for rate-limiting
+  pendingSteerKey?: string;        // coalesces queued transition nudges
+  pendingSteerSentAt?: number;
 }
 
 // ── Phase Metadata ──────────────────────────────────────────
@@ -311,24 +315,145 @@ function extractMessageText(content: unknown): string {
   return textParts.join("\n").trim();
 }
 
+type PipelineDeliveryMode = "steer" | "followUp";
+
+function transitionSteerKey(state: PipelineState): string {
+  return `phase-transition:${state.currentPhaseIndex ?? 0}:${state.currentPhase ?? "unknown"}`;
+}
+
+function withoutPendingSteer(state: PipelineState): PipelineState {
+  const { pendingSteerKey: _pendingSteerKey, pendingSteerSentAt: _pendingSteerSentAt, ...rest } = state;
+  return rest;
+}
+
+function shouldCoalesceSteer(state: PipelineState, steerKey: string, now = Date.now()): boolean {
+  if (state.pendingSteerKey !== steerKey) return false;
+  const sentAt = state.pendingSteerSentAt ?? 0;
+  return sentAt > 0 && now - sentAt < STEER_DEDUP_TTL_MS;
+}
+
+function markPendingSteer(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState, steerKey: string): boolean {
+  const latest = getState(ctx) ?? state;
+  if (shouldCoalesceSteer(latest, steerKey)) {
+    ctx.ui.notify("Skipped duplicate pending Ralph phase steer.", "info");
+    return false;
+  }
+  saveState(pi, { ...latest, pendingSteerKey: steerKey, pendingSteerSentAt: Date.now() });
+  return true;
+}
+
+function isBusyPromptError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /already processing a prompt|while streaming/i.test(message);
+}
+
+function sendPipelineUserMessage(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  text: string,
+  options?: { deliverAs?: PipelineDeliveryMode; wrapSteer?: boolean },
+): void {
+  const normalized = text.trim();
+  if (!normalized) return;
+
+  const deliverAs = options?.deliverAs;
+  const payload = deliverAs === "steer" && options?.wrapSteer !== false
+    ? wrapSteerMessage(normalized, MAX_STEER_SIZE)
+    : normalized;
+
+  if (!deliverAs) {
+    pi.sendUserMessage(payload);
+    return;
+  }
+
+  const maybeCtx = ctx as ExtensionContext & { isIdle?: () => boolean };
+  const isIdle = typeof maybeCtx.isIdle === "function" ? maybeCtx.isIdle() : false;
+  if (!isIdle) {
+    pi.sendUserMessage(payload, { deliverAs });
+    return;
+  }
+
+  try {
+    pi.sendUserMessage(payload);
+  } catch (error) {
+    if (!isBusyPromptError(error)) throw error;
+    pi.sendUserMessage(payload, { deliverAs });
+  }
+}
+
+function sendDedupedPipelineUserMessage(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+  text: string,
+  options: { deliverAs: PipelineDeliveryMode; wrapSteer?: boolean; dedupeKey?: string },
+): void {
+  const steerKey = options.dedupeKey ?? transitionSteerKey(state);
+  if (!markPendingSteer(pi, ctx, state, steerKey)) return;
+  sendPipelineUserMessage(pi, ctx, text, options);
+}
+
 function sendPhasePrompt(
   pi: ExtensionAPI,
+  ctx: ExtensionContext,
   state: PipelineState,
-  options?: { asSteer?: boolean; asFollowUp?: boolean; prefixText?: string },
+  options?: { asSteer?: boolean; asFollowUp?: boolean; prefixText?: string; dedupeKey?: string },
 ): void {
   const pk = state.currentPhase;
   if (!pk) return;
   const prompt = buildPhasePrompt(pk, state);
   const text = options?.prefixText ? `${options.prefixText}\n\n${prompt}` : prompt;
   if (options?.asFollowUp) {
-    pi.sendUserMessage(text, { deliverAs: "followUp" });
+    sendDedupedPipelineUserMessage(pi, ctx, state, text, {
+      deliverAs: "followUp",
+      dedupeKey: options.dedupeKey,
+    });
     return;
   }
   if (options?.asSteer) {
-    pi.sendUserMessage(wrapSteerMessage(text, MAX_STEER_SIZE), { deliverAs: "steer" });
+    sendDedupedPipelineUserMessage(pi, ctx, state, text, {
+      deliverAs: "steer",
+      dedupeKey: options.dedupeKey,
+    });
     return;
   }
-  pi.sendUserMessage(text);
+  sendPipelineUserMessage(pi, ctx, text);
+}
+
+function getPhaseDisplay(st: PipelineState): { phases: string[]; idx: number; phaseKey: string | undefined; phaseName: string } {
+  const phases = st.phases?.length ? st.phases : DEFAULT_PHASES;
+  const idx = st.currentPhaseIndex ?? 0;
+  const phaseKey = phases[idx];
+  return { phases, idx, phaseKey, phaseName: PHASE_META[phaseKey ?? ""]?.name ?? phaseKey ?? "?" };
+}
+
+function styleUiText(ctx: ExtensionContext, tone: "warning" | "accent" | "dim", text: string): string {
+  return ctx.ui.theme?.fg ? ctx.ui.theme.fg(tone, text) : text;
+}
+
+function setPipelineWorkingUi(ctx: ExtensionContext, st: PipelineState, label?: string): void {
+  ctx.ui.setWorkingVisible?.(true);
+  ctx.ui.setWorkingMessage?.();
+  ctx.ui.setWorkingIndicator?.();
+  ctx.ui.setStatus("ralph-loop", label ?? `🔄 Ralph | ${st.feature}`);
+}
+
+function setPipelineWaitingUi(ctx: ExtensionContext, st: PipelineState): void {
+  const { phases, idx, phaseName } = getPhaseDisplay(st);
+  const status = `⏸ Waiting for user input | ${st.feature} | Phase ${idx + 1}/${phases.length}: ${phaseName}`;
+  ctx.ui.setWorkingVisible?.(false);
+  ctx.ui.setWorkingMessage?.("Waiting for user input");
+  ctx.ui.setWorkingIndicator?.({ frames: [] });
+  ctx.ui.setStatus("ralph-loop", styleUiText(ctx, "warning", status));
+}
+
+function enterWaitingForUser(pi: ExtensionAPI, ctx: ExtensionContext, st: PipelineState): void {
+  if (st.pipelineStatus !== "running") return;
+  if (st.phaseStatus !== "executing" && st.phaseStatus !== WAITING_FOR_USER_PHASE_STATUS) return;
+  const waitingState: PipelineState = { ...st, phaseStatus: WAITING_FOR_USER_PHASE_STATUS, turnWriteCount: 0 };
+  saveState(pi, waitingState);
+  setPipelineWaitingUi(ctx, waitingState);
+  refreshWidget(ctx, waitingState);
 }
 
 function launchPhase(
@@ -349,8 +474,9 @@ function launchPhase(
 
   const executingState: PipelineState = { ...state, phaseStatus: "executing", phaseAttempts: 0, turnWriteCount: 0 };
   saveState(pi, executingState);
+  setPipelineWorkingUi(ctx, executingState);
   refreshWidget(ctx, executingState);
-  sendPhasePrompt(pi, executingState, options);
+  sendPhasePrompt(pi, ctx, executingState, options);
 }
 
 function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState) {
@@ -465,10 +591,7 @@ function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: b
 
     const errList = result.errors?.map(e => `- ${e}`).join("\n") || "Unknown error";
     ctx.ui.notify(`Post-hook failed for "${pk}" (attempt ${attempts+1}/${MAX_PHASE_ATTEMPTS})`, "warning");
-    (pi as any).sendMessage(
-      { role: "user", content: [{ type: "text", text: `⛔ Phase validation failed:\n\n${errList}\nFix and retry. Run \`ralph_gate_check\` after.` }] },
-      { triggerTurn: true, deliverAs: "steer" },
-    );
+    sendPipelineUserMessage(pi, ctx, `⛔ Phase validation failed:\n\n${errList}\nFix and retry. Run \`ralph_gate_check\` after.`, { deliverAs: "steer" });
     const updatedState: PipelineState = { ...state, phaseAttempts: attempts + 1, turnWriteCount: 0 };
     saveState(pi, updatedState);
     refreshWidget(ctx, updatedState);
@@ -483,6 +606,10 @@ function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: b
 async function handleAgentEnd(pi: ExtensionAPI, event: { messages: Array<{ role?: string; content?: unknown }> }, ctx: ExtensionContext) {
   const state = getState(ctx);
   if (!state) return;
+  if (state.pipelineStatus !== "running") {
+    refreshWidget(ctx, state);
+    return;
+  }
   const lastAssistantMessage = [...event.messages].reverse().find(message => message.role === "assistant");
   const assistantText = extractMessageText(lastAssistantMessage?.content);
   const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
@@ -496,7 +623,7 @@ async function handleAgentEnd(pi: ExtensionAPI, event: { messages: Array<{ role?
   }
 
   const completion = resolvePhaseCompletion(phases, idx, "agent_end");
-  if (completion.action === "wait_for_explicit_completion") refreshWidget(ctx, state);
+  if (completion.action === "wait_for_explicit_completion") enterWaitingForUser(pi, ctx, state);
 }
 
 function writePhaseCompletionMarker(phaseKey: string, workDir: string): void {
@@ -577,15 +704,23 @@ function removePipelineLock(feature: string, wd: string): void {
 // ── Widget ──────────────────────────────────────────────────
 
 function refreshWidget(ctx: ExtensionContext, st: PipelineState) {
-  const phases = st.phases?.length ? st.phases : DEFAULT_PHASES;
-  const idx = st.currentPhaseIndex ?? 0;
-  const meta = PHASE_META[phases[idx]];
+  const { phases, idx, phaseName } = getPhaseDisplay(st);
+  if (st.phaseStatus === WAITING_FOR_USER_PHASE_STATUS) {
+    ctx.ui.setWidget("ralph-loop", [
+      styleUiText(ctx, "warning", "Waiting for user input"),
+      `Pipeline: ${st.feature}`,
+      `Current phase: Phase ${idx+1}/${phases.length} — ${phaseName}`,
+      `Status: ${st.pipelineStatus ?? "running"} | Phase: ${WAITING_FOR_USER_PHASE_STATUS}`,
+    ]);
+    return;
+  }
+
   ctx.ui.setWidget("ralph-loop", [
     `Pipeline: ${st.feature}`, `Phases: ${phases.join(" → ")}`,
     st.promptText ? `Prompt: (provided)` : `Prompt: (none)`,
     `Started: ${new Date(st.startedAt).toISOString()}`,
     `Status: ${st.pipelineStatus ?? "running"} | Phase: ${st.phaseStatus ?? "executing"}`, "",
-    `Progress: Phase ${idx+1}/${phases.length} — ${meta?.name ?? "?"}`,
+    `Progress: Phase ${idx+1}/${phases.length} — ${phaseName}`,
     st.reviewIterations ? `Review iterations: ${st.reviewIterations}` : "",
     st.phaseAttempts && st.phaseAttempts > 0 ? `Phase attempts: ${st.phaseAttempts}` : "",
     st.contextClearCount && st.contextClearCount > 0 ? `Context clears: ${st.contextClearCount}` : "",
@@ -601,7 +736,12 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_start", async (event, ctx) => {
     const state = getState(ctx);
     if (!state || event.message.role !== "assistant") return;
-    saveState(pi, { ...state, turnWriteCount: 0 });
+    const nextState = withoutPendingSteer(state);
+    const updated: PipelineState = nextState.phaseStatus === WAITING_FOR_USER_PHASE_STATUS
+      ? { ...nextState, phaseStatus: "executing", turnWriteCount: 0 }
+      : { ...nextState, turnWriteCount: 0 };
+    saveState(pi, updated);
+    setPipelineWorkingUi(ctx, updated);
   });
 
   pi.on("message_update", async (_event, ctx) => {
@@ -610,12 +750,24 @@ export default function (pi: ExtensionAPI) {
     refreshWidget(ctx, state);
   });
 
+  pi.on("input", async (event, ctx) => {
+    const state = getState(ctx);
+    if (!state || state.pipelineStatus !== "running") return;
+    if (state.phaseStatus !== WAITING_FOR_USER_PHASE_STATUS) return;
+    if (event.text.trim().startsWith("/")) return;
+    const updated: PipelineState = { ...state, phaseStatus: "executing", turnWriteCount: 0 };
+    saveState(pi, updated);
+    setPipelineWorkingUi(ctx, updated);
+    refreshWidget(ctx, updated);
+  });
+
   pi.on("session_start", async (_event, ctx) => {
     const state = getState(ctx);
     if (!state) return;
     const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
     ctx.ui.notify(`Ralph loop: ${state.feature} (${phases.join(", ")})`, "info");
-    ctx.ui.setStatus("ralph-loop", `🔄 Ralph | ${state.feature}`);
+    if (state.phaseStatus === WAITING_FOR_USER_PHASE_STATUS) setPipelineWaitingUi(ctx, state);
+    else setPipelineWorkingUi(ctx, state);
     refreshWidget(ctx, state);
 
     const currentIdx = state.currentPhaseIndex ?? 0;
@@ -642,7 +794,10 @@ ${phasePrompt}`,
         MAX_STEER_SIZE
       );
       ctx.ui.notify(`Resuming Phase ${currentIdx+1} (${PHASE_META[pk]?.name})`, "warning");
-      (pi as any).sendMessage({ role: "user", content: [{ type: "text", text: steerText }] }, { triggerTurn: true, deliverAs: "steer" });
+      sendDedupedPipelineUserMessage(pi, ctx, state, steerText, {
+        deliverAs: "steer",
+        wrapSteer: false,
+      });
       return;
     }
 
@@ -669,7 +824,10 @@ ${phasePrompt}`,
         ctx.ui.notify("🚧 Auto-gate: running lint checks...", "info");
         const results = runLintGates(state.workDir);
         if (results.every(r => r.pass)) { ctx.ui.notify("✅ All gates passed", "info"); }
-        else { ctx.ui.notify(`❌ Gate failure: ${results.filter(r => !r.pass).map(r => r.name).join(", ")}`, "error"); (pi as any).sendMessage({ role: "user", content: [{ type: "text", text: formatGateResults(results) + "\n\nFix and re-check." }]}, { triggerTurn: true, deliverAs: "steer" }); }
+        else {
+          ctx.ui.notify(`❌ Gate failure: ${results.filter(r => !r.pass).map(r => r.name).join(", ")}`, "error");
+          sendPipelineUserMessage(pi, ctx, `${formatGateResults(results)}\n\nFix and re-check.`, { deliverAs: "steer" });
+        }
       }
       saveState(pi, { ...state, turnWriteCount: newCount });
     } else {
@@ -726,8 +884,8 @@ ${phasePrompt}`,
 
   // ── Command: /ralph ────────────────────────────────────
   pi.registerCommand("ralph", {
-    description: "Dev-cycle pipeline (start | status | cancel | gate | resume | pause)",
-    getArgumentCompletions: (prefix: string) => { const items = ["start","status","cancel","gate","resume","pause","clear-context","spec","redteam","harden","render","implement","review"].map(v => ({ value: v, label: v })); return items.filter(i => i.value.startsWith(prefix)); },
+    description: "Dev-cycle pipeline (start | status | cancel | gate | continue | resume | pause)",
+    getArgumentCompletions: (prefix: string) => { const items = ["start","status","cancel","gate","continue","resume","pause","clear-context","spec","redteam","harden","render","implement","review"].map(v => ({ value: v, label: v })); return items.filter(i => i.value.startsWith(prefix)); },
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       const cmd = parts[0]?.toLowerCase();
@@ -757,6 +915,38 @@ ${phasePrompt}`,
           ctx.ui.setStatus("ralph-loop", `🔄 Starting | ${feature}`);
           launchPhase(pi, ctx, state);
           if (getState(ctx)?.pipelineStatus === "failed") removePipelineLock(feature, ctx.cwd);
+          break;
+        }
+        case "continue": {
+          const state = getState(ctx);
+          if (!state) { ctx.ui.notify("No pipeline to continue.", "error"); return; }
+          if (state.pipelineStatus === "completed") { ctx.ui.notify("Pipeline already completed.", "info"); return; }
+          if (state.pipelineStatus === "cancelled") { ctx.ui.notify("Pipeline was cancelled. Start a new pipeline with /ralph start.", "error"); return; }
+
+          const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
+          const targetIdx = state.currentPhaseIndex ?? 0;
+          if (!validatePhaseIndex(targetIdx, phases)) {
+            ctx.ui.notify(`⛔ Pipeline state corrupted: currentPhaseIndex=${targetIdx} out of bounds. Run /ralph cancel to reset.`, "error");
+            saveState(pi, { ...state, pipelineStatus: "failed", phaseStatus: "corrupted" });
+            return;
+          }
+
+          const pk = phases[targetIdx];
+          removePipelineLock(state.feature, state.workDir);
+          createPipelineLock(state.feature, state.workDir);
+          const updated: PipelineState = {
+            ...state,
+            currentPhaseIndex: targetIdx,
+            currentPhase: pk,
+            phaseStatus: "pre_hook",
+            pipelineStatus: "running",
+            phaseAttempts: 0,
+            turnWriteCount: 0,
+          };
+          saveState(pi, updated); refreshWidget(ctx, updated);
+          ctx.ui.notify(`Continuing Phase ${targetIdx+1} (${PHASE_META[pk]?.name ?? pk})`, "info");
+          ctx.ui.setStatus("ralph-loop", `🔄 Continuing | ${state.feature}`);
+          launchPhase(pi, ctx, updated);
           break;
         }
         case "resume": {
@@ -833,7 +1023,6 @@ ${phasePrompt}`,
           let artList = "";
           if (artifacts.length > 0) artList = "\nArtifacts on disk:\n" + artifacts.map(a => "- " + a).join("\n");
           // Trigger compaction via ctx, then send steer message in onComplete
-          const piAny = pi as any;
           ctx.compact({
             customInstructions: "Preserve pipeline phase context and file operations. Focus on current task instructions.",
             onComplete: (_result) => {
@@ -842,7 +1031,7 @@ ${phasePrompt}`,
                 if (!canClearContext(cs).ok) { ctx.ui.notify("Context clear skipped — cooldown active", "info"); return; }
                 const prompt = buildReorientationPrompt(cs);
                 const fullMsg = wrapSteerMessage(prompt + artList, MAX_STEER_SIZE);
-                piAny.sendMessage({ role: "user", content: [{ type: "text", text: fullMsg }] }, { triggerTurn: true, deliverAs: "steer" });
+                sendPipelineUserMessage(pi, ctx, fullMsg, { deliverAs: "steer", wrapSteer: false });
                 // Increment counter only after successful send (not before)
                 const updated = { ...cs, contextClearCount: (cs.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
                 saveState(pi, updated);
@@ -856,7 +1045,7 @@ ${phasePrompt}`,
               // Fallback: send steer-only without compaction
               try {
                 const prompt = buildReorientationPrompt(cs);
-                piAny.sendMessage({ role: "user", content: [{ type: "text", text: wrapSteerMessage(prompt, MAX_STEER_SIZE) }] }, { triggerTurn: true, deliverAs: "steer" });
+                sendPipelineUserMessage(pi, ctx, prompt, { deliverAs: "steer" });
                 const updated = { ...cs, contextClearCount: (cs.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
                 saveState(pi, updated);
                 ctx.ui.notify("Context cleared (compaction fallback)", "warning");
@@ -874,9 +1063,9 @@ ${phasePrompt}`,
               const state: PipelineState = { feature, workDir: ctx.cwd, phases: [...DEFAULT_PHASES], maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: "spec", phaseStatus: "executing", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0, autoClearContext: true };
               saveState(pi, state); refreshWidget(ctx, state);
               createPipelineLock(feature, ctx.cwd);
-              pi.sendUserMessage(buildPhasePrompt("spec", state));
+              sendPipelineUserMessage(pi, ctx, buildPhasePrompt("spec", state));
             }
-          } else { ctx.ui.notify("Usage: /ralph start <feature> | status | cancel | gate | resume | pause | clear-context [--auto]", "info"); }
+          } else { ctx.ui.notify("Usage: /ralph start <feature> | status | cancel | gate | continue | resume | pause | clear-context [--auto]", "info"); }
         }
       }
     },
