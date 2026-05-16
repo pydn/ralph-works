@@ -191,15 +191,18 @@ describe("next-phase launch", () => {
       "ralph-loop",
       expect.stringContaining("Waiting for user input"),
     );
+    const widgetLines = ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[];
     expect(ctx.ui.setWidget).toHaveBeenLastCalledWith(
       "ralph-loop",
       expect.arrayContaining([
         expect.stringContaining("Ralph Pipeline"),
         expect.stringContaining("WAITING FOR USER INPUT"),
-        expect.stringContaining("Phase 1/2"),
+        expect.stringContaining("▶ 1. Generate Spec"),
         expect.stringContaining("Reply to the prompt"),
       ]),
     );
+    expect(widgetLines.join("\n")).not.toContain("Phase 1/2");
+    expect(widgetLines.join("\n")).not.toMatch(/\[[#-]+\] \d+%/);
   });
 
   it("restores executing UI state when the operator answers", async () => {

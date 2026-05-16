@@ -23,7 +23,6 @@ const GATE_PHASES = new Set(["implement", "review"]);
 const WAITING_FOR_USER_PHASE_STATUS = "waiting_for_user";
 const STEER_DEDUP_TTL_MS = 30_000;
 const UI_WIDGET_ID = "ralph-loop";
-const PROGRESS_BAR_WIDTH = 14;
 // Concurrency lock — module-level is safe: Pi runs single-threaded per process,
 // and extension supports only one pipeline per session (AGENTS.md §Open Risks #4).
 let isGating = false;
@@ -443,19 +442,6 @@ function truncateUiText(value: string | undefined, maxLength: number): string {
   return `${normalized.slice(0, maxLength - 3)}...`;
 }
 
-function resolveProgressPercent(st: PipelineState, phaseCount: number, idx: number): number {
-  if (st.pipelineStatus === "completed") return 100;
-  const safeCount = Math.max(phaseCount, 1);
-  const safeIdx = Math.min(Math.max(idx, 0), safeCount - 1);
-  return Math.round(((safeIdx + 1) / safeCount) * 100);
-}
-
-function buildProgressBar(percent: number): string {
-  const safePercent = Math.min(Math.max(percent, 0), 100);
-  const filled = Math.min(PROGRESS_BAR_WIDTH, Math.max(0, Math.round((safePercent / 100) * PROGRESS_BAR_WIDTH)));
-  return `[${"#".repeat(filled)}${"-".repeat(PROGRESS_BAR_WIDTH - filled)}] ${safePercent}%`;
-}
-
 function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; actions: string[] } {
   if (st.phaseStatus === WAITING_FOR_USER_PHASE_STATUS) {
     return {
@@ -510,9 +496,8 @@ function buildPhaseLines(ctx: ExtensionContext, phases: string[], idx: number): 
 }
 
 function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
-  const { phases, idx, phaseName } = getPhaseDisplay(st);
+  const { phases, idx } = getPhaseDisplay(st);
   const widgetState = resolveWidgetState(st);
-  const percent = resolveProgressPercent(st, phases.length, idx);
   const startedAt = Number.isFinite(st.startedAt) ? new Date(st.startedAt).toISOString() : "unknown";
   const detailLines = [
     `Status: ${st.pipelineStatus ?? "running"} / ${st.phaseStatus ?? "executing"}`,
@@ -526,8 +511,6 @@ function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
   return [
     styleUiText(ctx, widgetState.tone, "╭─ Ralph Pipeline"),
     styleUiText(ctx, widgetState.tone, `│ ${widgetState.label} · ${truncateUiText(st.feature, 46)}`),
-    `│ Phase ${idx + 1}/${phases.length}: ${truncateUiText(phaseName, 48)}`,
-    `│ ${buildProgressBar(percent)}`,
     styleUiText(ctx, "dim", "├─ Phases"),
     ...buildPhaseLines(ctx, phases, idx),
     styleUiText(ctx, "dim", "├─ Details"),
