@@ -294,6 +294,83 @@ describe("next-phase launch", () => {
     );
   });
 
+  it("keeps full-pipeline transition widgets within Pi's visible line budget", async () => {
+    const workDir = makeTempDir("ralph-transition-widget-work-");
+    const skillBase = makeTempDir("ralph-transition-widget-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "feature-a.md"),
+      `---
+title: Feature A
+status: hardened
+---
+
+# Feature A
+
+${"Hardened spec body.\n".repeat(128)}`,
+      "utf-8",
+    );
+    fs.writeFileSync(path.join(workDir, "docs", "specs", "harden-changelog-feature-a.md"), "Changelog", "utf-8");
+
+    fs.mkdirSync(path.join(skillBase, "markdown-to-html"), { recursive: true });
+    fs.writeFileSync(path.join(skillBase, "markdown-to-html", "SKILL.md"), "# Markdown to HTML", "utf-8");
+
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "feature-a",
+          workDir,
+          phases: ["spec", "redteam", "harden", "render", "implement", "review"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "harden",
+          currentPhaseIndex: 2,
+          phaseStatus: "executing",
+          pipelineStatus: "running",
+          reviewIterations: 0,
+          phaseAttempts: 0,
+          turnWriteCount: 0,
+          autoClearContext: false,
+        },
+      },
+    ];
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: `Hardened spec is complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+          },
+        ],
+      },
+      ctx,
+    );
+
+    const widgetCalls = ctx.ui.setWidget.mock.calls.map((call) => call[1] as string[]);
+    expect(widgetCalls.length).toBeGreaterThanOrEqual(2);
+
+    for (const lines of widgetCalls) {
+      expect(lines.length).toBeLessThanOrEqual(10);
+      expect(lines.at(-1)).toContain("╰─");
+      expect(lines.join("\n")).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
+    }
+
+    const renderedTransition = widgetCalls.map((lines) => lines.join("\n")).join("\n\n");
+    expect(renderedTransition).toContain("PREPARING");
+    expect(renderedTransition).toContain("RUNNING");
+    expect(renderedTransition).toContain("▶ 4. Render Markdown → HTML");
+  });
+
   it("uses queue-safe user messaging when session reload resumes an executing phase", async () => {
     const workDir = makeTempDir("ralph-session-reload-");
     const branch: FakeEntry[] = [];

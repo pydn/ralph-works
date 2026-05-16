@@ -23,6 +23,7 @@ const GATE_PHASES = new Set(["implement", "review"]);
 const WAITING_FOR_USER_PHASE_STATUS = "waiting_for_user";
 const STEER_DEDUP_TTL_MS = 30_000;
 const UI_WIDGET_ID = "ralph-loop";
+const UI_WIDGET_MAX_LINES = 10;
 // Concurrency lock — module-level is safe: Pi runs single-threaded per process,
 // and extension supports only one pipeline per session (AGENTS.md §Open Risks #4).
 let isGating = false;
@@ -436,11 +437,18 @@ function styleUiText(ctx: ExtensionContext, tone: UiTone, text: string): string 
   return ctx.ui.theme?.fg ? ctx.ui.theme.fg(tone, text) : text;
 }
 
+function sanitizeUiText(value: string | undefined): string {
+  return (value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, " ");
+}
+
 function truncateUiText(value: string | undefined, maxLength: number): string {
-  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+  const normalized = sanitizeUiText(value).replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) return normalized;
   if (maxLength <= 3) return normalized.slice(0, maxLength);
-  return `${normalized.slice(0, maxLength - 3)}...`;
+  const candidate = normalized.slice(0, maxLength - 3).trimEnd();
+  const boundary = candidate.lastIndexOf(" ");
+  if (boundary >= Math.floor(maxLength * 0.6)) return `${candidate.slice(0, boundary)}...`;
+  return `${candidate}...`;
 }
 
 function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; actions: string[] } {
@@ -496,6 +504,20 @@ function buildPhaseLines(ctx: ExtensionContext, phases: string[], idx: number): 
   });
 }
 
+function appendWidgetSection(lines: string[], heading: string, entries: string[]): void {
+  const available = UI_WIDGET_MAX_LINES - lines.length - 1;
+  if (available <= 0 || entries.length === 0) return;
+  if (available === 1) {
+    lines.push(entries[0] ?? "");
+    return;
+  }
+
+  lines.push(heading);
+  for (const entry of entries.slice(0, available - 1)) {
+    lines.push(entry);
+  }
+}
+
 function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
   const { phases, idx } = getPhaseDisplay(st);
   const widgetState = resolveWidgetState(st);
@@ -509,17 +531,27 @@ function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
     st.promptText ? "Prompt: provided" : "Prompt: none",
   ].filter(Boolean);
 
-  return [
+  const lines = [
     styleUiText(ctx, widgetState.tone, "╭─ Ralph Pipeline"),
     styleUiText(ctx, widgetState.tone, `│ ${widgetState.label} · ${truncateUiText(st.feature, 46)}`),
     styleUiText(ctx, "dim", "├─ Phases"),
     ...buildPhaseLines(ctx, phases, idx),
-    styleUiText(ctx, "dim", "├─ Details"),
-    ...detailLines.map(line => `│ ${line}`),
-    styleUiText(ctx, "dim", "├─ Action"),
-    ...widgetState.actions.map(action => styleUiText(ctx, widgetState.tone, `│ ${action}`)),
-    styleUiText(ctx, "dim", "╰─"),
   ];
+
+  appendWidgetSection(
+    lines,
+    styleUiText(ctx, "dim", "├─ Action"),
+    widgetState.actions.map(action => styleUiText(ctx, widgetState.tone, `│ ${truncateUiText(action, 54)}`)),
+  );
+  appendWidgetSection(
+    lines,
+    styleUiText(ctx, "dim", "├─ Details"),
+    detailLines.map(line => `│ ${truncateUiText(line, 54)}`),
+  );
+  const bottomLine = styleUiText(ctx, "dim", "╰─");
+  if (lines.length >= UI_WIDGET_MAX_LINES) return [...lines.slice(0, UI_WIDGET_MAX_LINES - 1), bottomLine];
+  lines.push(bottomLine);
+  return lines;
 }
 
 function setPipelineWidget(ctx: ExtensionContext, lines: string[], options?: { force?: boolean }): void {
