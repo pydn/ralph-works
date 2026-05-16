@@ -154,11 +154,11 @@ describe("session_start reload behavior", () => {
 
     await sessionStart?.({}, ctx);
 
-    expect(sendUserMessages).toHaveLength(0);
-    expect(sendMessages).toHaveLength(1);
-    expect(sendMessages[0]?.options?.deliverAs).toBe("steer");
-    expect(JSON.stringify(sendMessages[0]?.message)).toContain("SESSION RELOAD");
-    expect(JSON.stringify(sendMessages[0]?.message)).toContain("Phase 2: Red Team Audit");
+    expect(sendMessages).toHaveLength(0);
+    expect(sendUserMessages).toHaveLength(1);
+    expect(sendUserMessages[0]?.options?.deliverAs).toBe("steer");
+    expect(String(sendUserMessages[0]?.content)).toContain("SESSION RELOAD");
+    expect(String(sendUserMessages[0]?.content)).toContain("Phase 2: Red Team Audit");
   });
 
   it("launches a queued phase on reload without skipping past it", async () => {

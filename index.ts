@@ -20,6 +20,7 @@ const SKILL_BASE = process.env.PI_SKILL_BASE ?? path.join(os.homedir(), ".pi", "
 const MAX_PHASE_ATTEMPTS = 3;
 const GATE_THRESHOLD = 3;
 const GATE_PHASES = new Set(["implement", "review"]);
+const STEER_DEDUP_TTL_MS = 30_000;
 // Concurrency lock — module-level is safe: Pi runs single-threaded per process,
 // and extension supports only one pipeline per session (AGENTS.md §Open Risks #4).
 let isGating = false;
@@ -56,6 +57,8 @@ interface PipelineState {
   contextClearCount?: number;     // times context has been cleared (default: 0)
   autoClearContext?: boolean;      // auto-clear at phase boundaries (default: true)
   lastContextClearAt?: number;     // timestamp of most recent clear for rate-limiting
+  pendingSteerKey?: string;        // coalesces queued transition nudges
+  pendingSteerSentAt?: number;
 }
 
 // ── Phase Metadata ──────────────────────────────────────────
@@ -313,6 +316,31 @@ function extractMessageText(content: unknown): string {
 
 type PipelineDeliveryMode = "steer" | "followUp";
 
+function transitionSteerKey(state: PipelineState): string {
+  return `phase-transition:${state.currentPhaseIndex ?? 0}:${state.currentPhase ?? "unknown"}`;
+}
+
+function withoutPendingSteer(state: PipelineState): PipelineState {
+  const { pendingSteerKey: _pendingSteerKey, pendingSteerSentAt: _pendingSteerSentAt, ...rest } = state;
+  return rest;
+}
+
+function shouldCoalesceSteer(state: PipelineState, steerKey: string, now = Date.now()): boolean {
+  if (state.pendingSteerKey !== steerKey) return false;
+  const sentAt = state.pendingSteerSentAt ?? 0;
+  return sentAt > 0 && now - sentAt < STEER_DEDUP_TTL_MS;
+}
+
+function markPendingSteer(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState, steerKey: string): boolean {
+  const latest = getState(ctx) ?? state;
+  if (shouldCoalesceSteer(latest, steerKey)) {
+    ctx.ui.notify("Skipped duplicate pending Ralph phase steer.", "info");
+    return false;
+  }
+  saveState(pi, { ...latest, pendingSteerKey: steerKey, pendingSteerSentAt: Date.now() });
+  return true;
+}
+
 function isBusyPromptError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /already processing a prompt|while streaming/i.test(message);
@@ -352,22 +380,40 @@ function sendPipelineUserMessage(
   }
 }
 
+function sendDedupedPipelineUserMessage(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+  text: string,
+  options: { deliverAs: PipelineDeliveryMode; wrapSteer?: boolean; dedupeKey?: string },
+): void {
+  const steerKey = options.dedupeKey ?? transitionSteerKey(state);
+  if (!markPendingSteer(pi, ctx, state, steerKey)) return;
+  sendPipelineUserMessage(pi, ctx, text, options);
+}
+
 function sendPhasePrompt(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   state: PipelineState,
-  options?: { asSteer?: boolean; asFollowUp?: boolean; prefixText?: string },
+  options?: { asSteer?: boolean; asFollowUp?: boolean; prefixText?: string; dedupeKey?: string },
 ): void {
   const pk = state.currentPhase;
   if (!pk) return;
   const prompt = buildPhasePrompt(pk, state);
   const text = options?.prefixText ? `${options.prefixText}\n\n${prompt}` : prompt;
   if (options?.asFollowUp) {
-    sendPipelineUserMessage(pi, ctx, text, { deliverAs: "followUp" });
+    sendDedupedPipelineUserMessage(pi, ctx, state, text, {
+      deliverAs: "followUp",
+      dedupeKey: options.dedupeKey,
+    });
     return;
   }
   if (options?.asSteer) {
-    sendPipelineUserMessage(pi, ctx, text, { deliverAs: "steer" });
+    sendDedupedPipelineUserMessage(pi, ctx, state, text, {
+      deliverAs: "steer",
+      dedupeKey: options.dedupeKey,
+    });
     return;
   }
   sendPipelineUserMessage(pi, ctx, text);
@@ -640,7 +686,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_start", async (event, ctx) => {
     const state = getState(ctx);
     if (!state || event.message.role !== "assistant") return;
-    saveState(pi, { ...state, turnWriteCount: 0 });
+    saveState(pi, { ...withoutPendingSteer(state), turnWriteCount: 0 });
   });
 
   pi.on("message_update", async (_event, ctx) => {
@@ -681,7 +727,10 @@ ${phasePrompt}`,
         MAX_STEER_SIZE
       );
       ctx.ui.notify(`Resuming Phase ${currentIdx+1} (${PHASE_META[pk]?.name})`, "warning");
-      sendPipelineUserMessage(pi, ctx, steerText, { deliverAs: "steer", wrapSteer: false });
+      sendDedupedPipelineUserMessage(pi, ctx, state, steerText, {
+        deliverAs: "steer",
+        wrapSteer: false,
+      });
       return;
     }
 

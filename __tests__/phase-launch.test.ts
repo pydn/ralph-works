@@ -225,4 +225,57 @@ describe("next-phase launch", () => {
     const latestState = branch[branch.length - 1]?.data as { phaseAttempts?: number };
     expect(latestState.phaseAttempts).toBe(1);
   });
+
+  it("coalesces duplicate pending phase-transition steers", async () => {
+    const workDir = makeTempDir("ralph-phase-work-");
+    const skillBase = makeTempDir("ralph-phase-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "feature-a.md"),
+      `# Feature A\n\n${"Spec body.\n".repeat(256)}`,
+      "utf-8",
+    );
+
+    fs.mkdirSync(path.join(skillBase, "red-team-audit"), { recursive: true });
+    fs.writeFileSync(path.join(skillBase, "red-team-audit", "SKILL.md"), "# Red Team Audit", "utf-8");
+
+    const branch: FakeEntry[] = [];
+    branch.push({
+      type: "custom",
+      customType: "ralph-loop-state",
+      data: {
+        feature: "feature-a",
+        workDir,
+        phases: ["spec", "redteam"],
+        maxIterations: 10,
+        startedAt: Date.now(),
+        currentPhase: "redteam",
+        currentPhaseIndex: 1,
+        phaseStatus: "pre_hook",
+        pipelineStatus: "running",
+        reviewIterations: 0,
+        phaseAttempts: 0,
+        turnWriteCount: 0,
+        autoClearContext: false,
+      },
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages, sendMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    const sessionStart = handlers.get("session_start");
+    expect(sessionStart).toBeTypeOf("function");
+
+    await sessionStart?.({}, ctx);
+    await sessionStart?.({}, ctx);
+
+    expect(sendUserMessages).toHaveLength(1);
+    expect(sendUserMessages[0]?.options?.deliverAs).toBe("steer");
+    expect(String(sendUserMessages[0]?.content)).toContain("Phase: Red Team Audit");
+    expect(sendMessages).toHaveLength(0);
+  });
 });
