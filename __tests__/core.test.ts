@@ -82,6 +82,16 @@ describe("validatePhaseOrder", () => {
     expect(result.valid).toBe(false);
     expect(result.error).toContain("harden");
   });
+
+  it("rejects duplicate phases as invalid ordering", () => {
+    const result = validatePhaseOrder(["spec", "spec"]);
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain("cannot come after");
+  });
+
+  it("treats an empty phase array as syntactically valid for callers that apply defaults", () => {
+    expect(validatePhaseOrder([]).valid).toBe(true);
+  });
 });
 
 describe("sanitizeErrorOutput", () => {
@@ -111,6 +121,17 @@ describe("sanitizeErrorOutput", () => {
     const input = "TypeError: Cannot read property of undefined";
     const output = sanitizeErrorOutput(input);
     expect(output).toBe(input);
+  });
+
+  it("truncates long stack traces while preserving the root error", () => {
+    const stack = [
+      "Error: bad thing",
+      ...Array.from({ length: 12 }, (_value, i) => `    at frame${i} (/home/me/project/file${i}.ts:1:1)`),
+    ].join("\n");
+    const output = sanitizeErrorOutput(stack);
+    expect(output).toContain("Error: bad thing");
+    expect(output).toContain("frame0");
+    expect(output).not.toContain("frame10");
   });
 });
 
@@ -142,6 +163,16 @@ describe("resolvePhaseCompletion", () => {
     const result = resolvePhaseCompletion(["spec", "redteam", "harden"], 2, "explicit_signal");
     expect(result.action).toBe("complete_pipeline");
   });
+
+  it("completes the pipeline for explicit completion when the phase list is empty", () => {
+    const result = resolvePhaseCompletion([], 0, "explicit_signal");
+    expect(result.action).toBe("complete_pipeline");
+  });
+
+  it("does not advance on agent_end even when the current index points at the final phase", () => {
+    const result = resolvePhaseCompletion(["spec"], 0, "agent_end");
+    expect(result.action).toBe("wait_for_explicit_completion");
+  });
 });
 
 describe("hasPhaseCompletionMarker", () => {
@@ -157,6 +188,14 @@ describe("hasPhaseCompletionMarker", () => {
 
   it("returns false for empty text", () => {
     expect(hasPhaseCompletionMarker("")).toBe(false);
+  });
+
+  it("accepts the marker with trailing blank lines", () => {
+    expect(hasPhaseCompletionMarker(`done\n${PHASE_COMPLETE_MARKER}\n\n`)).toBe(true);
+  });
+
+  it("rejects the marker when any later non-empty content follows it", () => {
+    expect(hasPhaseCompletionMarker(`${PHASE_COMPLETE_MARKER}\nextra note`)).toBe(false);
   });
 });
 
@@ -216,6 +255,11 @@ describe("resolveSessionStartAction", () => {
 
   it("does not auto-resume when the pipeline is waiting for user input", () => {
     expect(resolveSessionStartAction({ pipelineStatus: "running", phaseStatus: "waiting_for_user" })).toBe("none");
+  });
+
+  it("does not auto-resume missing or non-running state", () => {
+    expect(resolveSessionStartAction(null)).toBe("none");
+    expect(resolveSessionStartAction({ phaseStatus: "executing" })).toBe("none");
   });
 });
 
@@ -331,6 +375,31 @@ describe("loadGateConfig", () => {
     expect(config).toBeNull();
   });
 
+  it("returns null when the config is missing a name", () => {
+    const missingName = JSON.stringify({
+      version: "1.0",
+      gates: [{ name: "test", command: "npx vitest run" }],
+    });
+    const fs = {
+      existsSync: (_p: string) => true,
+      readFileSync: () => missingName,
+    };
+    expect(loadGateConfig("/tmp/test-project", fs)).toBeNull();
+  });
+
+  it("returns null when any gate is missing command text", () => {
+    const missingCommand = JSON.stringify({
+      version: "1.0",
+      name: "bad-stack",
+      gates: [{ name: "test" }],
+    });
+    const fs = {
+      existsSync: (_p: string) => true,
+      readFileSync: () => missingCommand,
+    };
+    expect(loadGateConfig("/tmp/test-project", fs)).toBeNull();
+  });
+
   it("returns null when config file does not exist", () => {
     const fs = {
       existsSync: (_p: string) => false,
@@ -423,6 +492,24 @@ describe("resolveGates", () => {
     expect(gates.length).toBe(2);
     expect(gates[0].command).toBe("uv run ruff check .");
   });
+
+  it("fills in default timeouts for valid config gates that omit timeoutMs", () => {
+    const noTimeoutConfig = JSON.stringify({
+      version: "1.0",
+      name: "timeout-stack",
+      gates: [
+        { name: "lint", command: "npx eslint ." },
+        { name: "test", command: "npx vitest run" },
+        { name: "format", command: "npx prettier --check ." },
+      ],
+    });
+    const fs = {
+      existsSync: (_p: string) => true,
+      readFileSync: () => noTimeoutConfig,
+    };
+    const gates = resolveGates("/tmp/test-project", undefined, fs);
+    expect(gates.map(g => g.timeoutMs)).toEqual([60000, 300000, 30000]);
+  });
 });
 
 // ── Gate Check: concurrency lock (verify via resolveGates idempotency) ─
@@ -511,6 +598,11 @@ describe("isValidTargetPath", () => {
     expect(isValidTargetPath("src/foo.ts; rm -rf /")).toBe(false);
     expect(isValidTargetPath("src/$(whoami).ts")).toBe(false);
     expect(isValidTargetPath("src/foo|bar.ts")).toBe(false);
+  });
+
+  it("rejects backslashes and newline injection in target paths", () => {
+    expect(isValidTargetPath("src\\foo.ts")).toBe(false);
+    expect(isValidTargetPath("src/foo.ts\nsrc/bar.ts")).toBe(false);
   });
 });
 

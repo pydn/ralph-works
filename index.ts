@@ -911,6 +911,7 @@ ${phasePrompt}`,
           ctx.ui.notify(`❌ Gate failure: ${results.filter(r => !r.pass).map(r => r.name).join(", ")}`, "error");
           sendPipelineUserMessage(pi, ctx, `${formatGateResults(results)}\n\nFix and re-check.`, { deliverAs: "steer" });
         }
+        return;
       }
       saveState(pi, { ...state, turnWriteCount: newCount });
     } else {

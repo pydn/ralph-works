@@ -56,7 +56,7 @@ export function wrapSteerMessage(text: string, maxSize: number): string {
  * @returns true if `0 <= idx < phases.length`, false otherwise
  */
 export function validatePhaseIndex(idx: number, phases: string[]): boolean {
-  return idx >= 0 && idx < phases.length;
+  return Number.isInteger(idx) && idx >= 0 && idx < phases.length;
 }
 
 // ── Clear Context Guards ───────────────────────────────────
