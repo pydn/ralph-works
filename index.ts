@@ -311,8 +311,50 @@ function extractMessageText(content: unknown): string {
   return textParts.join("\n").trim();
 }
 
+type PipelineDeliveryMode = "steer" | "followUp";
+
+function isBusyPromptError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /already processing a prompt|while streaming/i.test(message);
+}
+
+function sendPipelineUserMessage(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  text: string,
+  options?: { deliverAs?: PipelineDeliveryMode; wrapSteer?: boolean },
+): void {
+  const normalized = text.trim();
+  if (!normalized) return;
+
+  const deliverAs = options?.deliverAs;
+  const payload = deliverAs === "steer" && options?.wrapSteer !== false
+    ? wrapSteerMessage(normalized, MAX_STEER_SIZE)
+    : normalized;
+
+  if (!deliverAs) {
+    pi.sendUserMessage(payload);
+    return;
+  }
+
+  const maybeCtx = ctx as ExtensionContext & { isIdle?: () => boolean };
+  const isIdle = typeof maybeCtx.isIdle === "function" ? maybeCtx.isIdle() : false;
+  if (!isIdle) {
+    pi.sendUserMessage(payload, { deliverAs });
+    return;
+  }
+
+  try {
+    pi.sendUserMessage(payload);
+  } catch (error) {
+    if (!isBusyPromptError(error)) throw error;
+    pi.sendUserMessage(payload, { deliverAs });
+  }
+}
+
 function sendPhasePrompt(
   pi: ExtensionAPI,
+  ctx: ExtensionContext,
   state: PipelineState,
   options?: { asSteer?: boolean; asFollowUp?: boolean; prefixText?: string },
 ): void {
@@ -321,14 +363,14 @@ function sendPhasePrompt(
   const prompt = buildPhasePrompt(pk, state);
   const text = options?.prefixText ? `${options.prefixText}\n\n${prompt}` : prompt;
   if (options?.asFollowUp) {
-    pi.sendUserMessage(text, { deliverAs: "followUp" });
+    sendPipelineUserMessage(pi, ctx, text, { deliverAs: "followUp" });
     return;
   }
   if (options?.asSteer) {
-    pi.sendUserMessage(wrapSteerMessage(text, MAX_STEER_SIZE), { deliverAs: "steer" });
+    sendPipelineUserMessage(pi, ctx, text, { deliverAs: "steer" });
     return;
   }
-  pi.sendUserMessage(text);
+  sendPipelineUserMessage(pi, ctx, text);
 }
 
 function launchPhase(
@@ -350,7 +392,7 @@ function launchPhase(
   const executingState: PipelineState = { ...state, phaseStatus: "executing", phaseAttempts: 0, turnWriteCount: 0 };
   saveState(pi, executingState);
   refreshWidget(ctx, executingState);
-  sendPhasePrompt(pi, executingState, options);
+  sendPhasePrompt(pi, ctx, executingState, options);
 }
 
 function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState) {
@@ -465,10 +507,7 @@ function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: b
 
     const errList = result.errors?.map(e => `- ${e}`).join("\n") || "Unknown error";
     ctx.ui.notify(`Post-hook failed for "${pk}" (attempt ${attempts+1}/${MAX_PHASE_ATTEMPTS})`, "warning");
-    (pi as any).sendMessage(
-      { role: "user", content: [{ type: "text", text: `⛔ Phase validation failed:\n\n${errList}\nFix and retry. Run \`ralph_gate_check\` after.` }] },
-      { triggerTurn: true, deliverAs: "steer" },
-    );
+    sendPipelineUserMessage(pi, ctx, `⛔ Phase validation failed:\n\n${errList}\nFix and retry. Run \`ralph_gate_check\` after.`, { deliverAs: "steer" });
     const updatedState: PipelineState = { ...state, phaseAttempts: attempts + 1, turnWriteCount: 0 };
     saveState(pi, updatedState);
     refreshWidget(ctx, updatedState);
@@ -642,7 +681,7 @@ ${phasePrompt}`,
         MAX_STEER_SIZE
       );
       ctx.ui.notify(`Resuming Phase ${currentIdx+1} (${PHASE_META[pk]?.name})`, "warning");
-      (pi as any).sendMessage({ role: "user", content: [{ type: "text", text: steerText }] }, { triggerTurn: true, deliverAs: "steer" });
+      sendPipelineUserMessage(pi, ctx, steerText, { deliverAs: "steer", wrapSteer: false });
       return;
     }
 
@@ -669,7 +708,10 @@ ${phasePrompt}`,
         ctx.ui.notify("🚧 Auto-gate: running lint checks...", "info");
         const results = runLintGates(state.workDir);
         if (results.every(r => r.pass)) { ctx.ui.notify("✅ All gates passed", "info"); }
-        else { ctx.ui.notify(`❌ Gate failure: ${results.filter(r => !r.pass).map(r => r.name).join(", ")}`, "error"); (pi as any).sendMessage({ role: "user", content: [{ type: "text", text: formatGateResults(results) + "\n\nFix and re-check." }]}, { triggerTurn: true, deliverAs: "steer" }); }
+        else {
+          ctx.ui.notify(`❌ Gate failure: ${results.filter(r => !r.pass).map(r => r.name).join(", ")}`, "error");
+          sendPipelineUserMessage(pi, ctx, `${formatGateResults(results)}\n\nFix and re-check.`, { deliverAs: "steer" });
+        }
       }
       saveState(pi, { ...state, turnWriteCount: newCount });
     } else {
@@ -833,7 +875,6 @@ ${phasePrompt}`,
           let artList = "";
           if (artifacts.length > 0) artList = "\nArtifacts on disk:\n" + artifacts.map(a => "- " + a).join("\n");
           // Trigger compaction via ctx, then send steer message in onComplete
-          const piAny = pi as any;
           ctx.compact({
             customInstructions: "Preserve pipeline phase context and file operations. Focus on current task instructions.",
             onComplete: (_result) => {
@@ -842,7 +883,7 @@ ${phasePrompt}`,
                 if (!canClearContext(cs).ok) { ctx.ui.notify("Context clear skipped — cooldown active", "info"); return; }
                 const prompt = buildReorientationPrompt(cs);
                 const fullMsg = wrapSteerMessage(prompt + artList, MAX_STEER_SIZE);
-                piAny.sendMessage({ role: "user", content: [{ type: "text", text: fullMsg }] }, { triggerTurn: true, deliverAs: "steer" });
+                sendPipelineUserMessage(pi, ctx, fullMsg, { deliverAs: "steer", wrapSteer: false });
                 // Increment counter only after successful send (not before)
                 const updated = { ...cs, contextClearCount: (cs.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
                 saveState(pi, updated);
@@ -856,7 +897,7 @@ ${phasePrompt}`,
               // Fallback: send steer-only without compaction
               try {
                 const prompt = buildReorientationPrompt(cs);
-                piAny.sendMessage({ role: "user", content: [{ type: "text", text: wrapSteerMessage(prompt, MAX_STEER_SIZE) }] }, { triggerTurn: true, deliverAs: "steer" });
+                sendPipelineUserMessage(pi, ctx, prompt, { deliverAs: "steer" });
                 const updated = { ...cs, contextClearCount: (cs.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
                 saveState(pi, updated);
                 ctx.ui.notify("Context cleared (compaction fallback)", "warning");
@@ -874,7 +915,7 @@ ${phasePrompt}`,
               const state: PipelineState = { feature, workDir: ctx.cwd, phases: [...DEFAULT_PHASES], maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: "spec", phaseStatus: "executing", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0, autoClearContext: true };
               saveState(pi, state); refreshWidget(ctx, state);
               createPipelineLock(feature, ctx.cwd);
-              pi.sendUserMessage(buildPhasePrompt("spec", state));
+              sendPipelineUserMessage(pi, ctx, buildPhasePrompt("spec", state));
             }
           } else { ctx.ui.notify("Usage: /ralph start <feature> | status | cancel | gate | resume | pause | clear-context [--auto]", "info"); }
         }

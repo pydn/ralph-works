@@ -35,10 +35,10 @@ function makeFakePi(branch: FakeEntry[]) {
   return { pi, handlers, sendUserMessages, sendMessages };
 }
 
-function makeFakeContext(branch: FakeEntry[], cwd: string) {
+function makeFakeContext(branch: FakeEntry[], cwd: string, options?: { idle?: boolean }) {
   return {
     cwd,
-    isIdle: () => false,
+    isIdle: () => options?.idle ?? false,
     sessionManager: {
       getBranch: () => branch,
     },
@@ -133,5 +133,96 @@ describe("next-phase launch", () => {
     const latestState = branch[branch.length - 1]?.data as { currentPhase?: string; phaseStatus?: string };
     expect(latestState.currentPhase).toBe("redteam");
     expect(latestState.phaseStatus).toBe("executing");
+  });
+
+  it("uses queue-safe user messaging when session reload resumes an executing phase", async () => {
+    const workDir = makeTempDir("ralph-session-reload-");
+    const branch: FakeEntry[] = [];
+    branch.push({
+      type: "custom",
+      customType: "ralph-loop-state",
+      data: {
+        feature: "reload-feature",
+        workDir,
+        phases: ["spec", "redteam"],
+        maxIterations: 10,
+        startedAt: Date.now(),
+        currentPhase: "spec",
+        currentPhaseIndex: 0,
+        phaseStatus: "executing",
+        pipelineStatus: "running",
+        reviewIterations: 0,
+        phaseAttempts: 0,
+        turnWriteCount: 0,
+        autoClearContext: false,
+      },
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages, sendMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir, { idle: true });
+    const sessionStart = handlers.get("session_start");
+    expect(sessionStart).toBeTypeOf("function");
+
+    await sessionStart?.({}, ctx);
+
+    expect(sendUserMessages).toHaveLength(1);
+    expect(sendUserMessages[0]?.options).toBeUndefined();
+    expect(String(sendUserMessages[0]?.content)).toContain("SESSION RELOAD");
+    expect(sendMessages).toHaveLength(0);
+  });
+
+  it("uses queue-safe user messaging when post-hook validation fails", async () => {
+    const workDir = makeTempDir("ralph-post-hook-fail-");
+    const branch: FakeEntry[] = [];
+    branch.push({
+      type: "custom",
+      customType: "ralph-loop-state",
+      data: {
+        feature: "missing-audit",
+        workDir,
+        phases: ["redteam"],
+        maxIterations: 10,
+        startedAt: Date.now(),
+        currentPhase: "redteam",
+        currentPhaseIndex: 0,
+        phaseStatus: "executing",
+        pipelineStatus: "running",
+        reviewIterations: 0,
+        phaseAttempts: 0,
+        turnWriteCount: 0,
+        autoClearContext: false,
+      },
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages, sendMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    const agentEnd = handlers.get("agent_end");
+    expect(agentEnd).toBeTypeOf("function");
+
+    await agentEnd?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: `Audit complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+          },
+        ],
+      },
+      ctx,
+    );
+
+    expect(sendUserMessages).toHaveLength(1);
+    expect(sendUserMessages[0]?.options?.deliverAs).toBe("steer");
+    expect(String(sendUserMessages[0]?.content)).toContain("Phase validation failed");
+    expect(sendMessages).toHaveLength(0);
+
+    const latestState = branch[branch.length - 1]?.data as { phaseAttempts?: number };
+    expect(latestState.phaseAttempts).toBe(1);
   });
 });
