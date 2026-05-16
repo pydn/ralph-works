@@ -40,6 +40,7 @@ Reload Pi (`/reload`) to activate.
 | `/ralph start <feature> "..." spec,redteam,harden,render,implement` | Prompt + specific phases |
 | `/ralph status` | Show current pipeline state |
 | `/ralph pause` | Pause the active pipeline |
+| `/ralph continue` | Re-launch the current or queued phase without advancing it |
 | `/ralph resume` | Resume the active pipeline at its current phase |
 | `/ralph resume <phase>` | Resume at a specific phase |
 | `/ralph gate [paths...]` | Run standalone quality gates |
