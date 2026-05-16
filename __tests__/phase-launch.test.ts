@@ -46,6 +46,12 @@ function makeFakeContext(branch: FakeEntry[], cwd: string, options?: { idle?: bo
       notify: vi.fn(),
       setStatus: vi.fn(),
       setWidget: vi.fn(),
+      setWorkingVisible: vi.fn(),
+      setWorkingMessage: vi.fn(),
+      setWorkingIndicator: vi.fn(),
+      theme: {
+        fg: (_tone: string, text: string) => text,
+      },
     },
     compact: vi.fn(),
   };
@@ -133,6 +139,108 @@ describe("next-phase launch", () => {
     const latestState = branch[branch.length - 1]?.data as { currentPhase?: string; phaseStatus?: string };
     expect(latestState.currentPhase).toBe("redteam");
     expect(latestState.phaseStatus).toBe("executing");
+  });
+
+  it("marks the pipeline as waiting for user input when a phase ends without completion", async () => {
+    const workDir = makeTempDir("ralph-wait-work-");
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "needs-operator",
+          workDir,
+          phases: ["spec", "redteam"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "spec",
+          currentPhaseIndex: 0,
+          phaseStatus: "executing",
+          pipelineStatus: "running",
+          reviewIterations: 0,
+          phaseAttempts: 0,
+          turnWriteCount: 0,
+          autoClearContext: false,
+        },
+      },
+    ];
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    const agentEnd = handlers.get("agent_end");
+    await agentEnd?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "Should I proceed with the stricter behavior?" }],
+          },
+        ],
+      },
+      ctx,
+    );
+
+    const latestState = branch[branch.length - 1]?.data as { phaseStatus?: string };
+    expect(latestState.phaseStatus).toBe("waiting_for_user");
+    expect(ctx.ui.setWorkingVisible).toHaveBeenLastCalledWith(false);
+    expect(ctx.ui.setWorkingIndicator).toHaveBeenLastCalledWith({ frames: [] });
+    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith(
+      "ralph-loop",
+      expect.stringContaining("Waiting for user input"),
+    );
+    expect(ctx.ui.setWidget).toHaveBeenLastCalledWith(
+      "ralph-loop",
+      expect.arrayContaining([
+        "Waiting for user input",
+        expect.stringContaining("Phase 1/2"),
+      ]),
+    );
+  });
+
+  it("restores executing UI state when the operator answers", async () => {
+    const workDir = makeTempDir("ralph-answer-work-");
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "needs-operator",
+          workDir,
+          phases: ["spec", "redteam"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "spec",
+          currentPhaseIndex: 0,
+          phaseStatus: "waiting_for_user",
+          pipelineStatus: "running",
+          reviewIterations: 0,
+          phaseAttempts: 0,
+          turnWriteCount: 0,
+          autoClearContext: false,
+        },
+      },
+    ];
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    const input = handlers.get("input");
+    await input?.({ text: "Use the stricter behavior.", source: "interactive" }, ctx);
+
+    const latestState = branch[branch.length - 1]?.data as { phaseStatus?: string };
+    expect(latestState.phaseStatus).toBe("executing");
+    expect(ctx.ui.setWorkingVisible).toHaveBeenLastCalledWith(true);
+    expect(ctx.ui.setWorkingMessage).toHaveBeenLastCalledWith();
+    expect(ctx.ui.setWorkingIndicator).toHaveBeenLastCalledWith();
+    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith(
+      "ralph-loop",
+      expect.stringContaining("Ralph | needs-operator"),
+    );
   });
 
   it("uses queue-safe user messaging when session reload resumes an executing phase", async () => {
