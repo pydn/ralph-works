@@ -56,6 +56,56 @@ export function validatePhaseOrder(phases: string[]): PhaseValidationResult {
  */
 export const DEFAULT_PHASES: string[] = [...PHASE_ORDER];
 
+export type PhaseCompletionTrigger = "agent_end" | "explicit_tool";
+export type PhaseCompletionAction = "wait_for_explicit_completion" | "queue_next_phase" | "complete_pipeline";
+export type SessionStartAction = "none" | "resume_execution" | "launch_pending_phase";
+
+export interface PhaseCompletionResult {
+  action: PhaseCompletionAction;
+  nextPhaseIndex?: number;
+  nextPhase?: string;
+}
+
+export interface SessionStartStateLike {
+  pipelineStatus?: string;
+  phaseStatus?: string;
+}
+
+/**
+ * Resolve phase-completion behavior for the controller.
+ * A normal agent turn ending is not enough to advance the phase.
+ */
+export function resolvePhaseCompletion(
+  phases: string[],
+  currentPhaseIndex: number,
+  trigger: PhaseCompletionTrigger,
+): PhaseCompletionResult {
+  if (trigger === "agent_end") {
+    return { action: "wait_for_explicit_completion" };
+  }
+
+  if (phases.length === 0 || currentPhaseIndex >= phases.length - 1) {
+    return { action: "complete_pipeline" };
+  }
+
+  const nextPhaseIndex = currentPhaseIndex + 1;
+  return {
+    action: "queue_next_phase",
+    nextPhaseIndex,
+    nextPhase: phases[nextPhaseIndex],
+  };
+}
+
+/**
+ * Decide what to do on session reload based on persisted pipeline state.
+ */
+export function resolveSessionStartAction(state: SessionStartStateLike | null): SessionStartAction {
+  if (!state || state.pipelineStatus !== "running") return "none";
+  if (state.phaseStatus === "executing") return "resume_execution";
+  if (state.phaseStatus === "pre_hook") return "launch_pending_phase";
+  return "none";
+}
+
 /**
  * Sanitize feature name for safe use as a filename within docs/specs/.
  * Strips path separators (/ \), null bytes, and directory traversal (..).

@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as child from "node:child_process";
-import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, DEFAULT_PHASES, sanitizeFeatureName, resolveGates, isValidTargetPath } from "./src/stateMachine";
+import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, DEFAULT_PHASES, sanitizeFeatureName, resolveGates, isValidTargetPath, resolvePhaseCompletion, resolveSessionStartAction } from "./src/stateMachine";
 import { wrapSteerMessage, MAX_STEER_SIZE, validatePhaseIndex, canClearContext, buildReorientationPrompt, resolveArtifactPaths } from "./src/steer";
 
 // ── Constants ───────────────────────────────────────────────
@@ -277,7 +277,13 @@ Read spec: docs/specs/${state.feature}-final.html (HTML) or docs/specs/${state.f
 Run \`ralph_gate_check\` after implementation.`; break;
     case "review": phaseContext = `## Task\nMulti-pass PR review. Call \`ralph_review_decision\` with status LGTM or CRITICAL.`; break;
   }
-  return `# Ralph Pipeline — Phase: ${cfg.displayName}\n\n${taskSection}\n\n## Skill Context\n<ralph-skill-instructions>\n${skillContent || "(Skill file not available)"}</ralph-skill-instructions>\n\n## Phase Instructions\n${phaseContext}\n\n## Rules\n- After implementation steps, run \`ralph_gate_check\`\n- Complete this phase fully. Extension controller advances phases.`;
+  const rules = [
+    phaseKey === "implement" ? "- After implementation steps, run `ralph_gate_check`." : "",
+    phaseKey === "review"
+      ? "- End the review by calling `ralph_review_decision` with status LGTM or CRITICAL."
+      : "- When this phase is fully complete, call `ralph_phase_complete` exactly once. The controller will not advance automatically at turn end.",
+  ].filter(Boolean).join("\n");
+  return `# Ralph Pipeline — Phase: ${cfg.displayName}\n\n${taskSection}\n\n## Skill Context\n<ralph-skill-instructions>\n${skillContent || "(Skill file not available)"}</ralph-skill-instructions>\n\n## Phase Instructions\n${phaseContext}\n\n## Rules\n${rules}`;
 }
 
 function runPreHook(phaseKey: string, state: PipelineState): boolean {
@@ -292,10 +298,52 @@ function runPostHook(phaseKey: string, state: PipelineState): PostHookResult {
   return cfg.postHook(phaseKey, state);
 }
 
+function sendPhasePrompt(
+  pi: ExtensionAPI,
+  state: PipelineState,
+  options?: { asSteer?: boolean; prefixText?: string },
+): void {
+  const pk = state.currentPhase;
+  if (!pk) return;
+  const prompt = buildPhasePrompt(pk, state);
+  const text = options?.prefixText ? `${options.prefixText}\n\n${prompt}` : prompt;
+  if (options?.asSteer) {
+    (pi as any).sendMessage(
+      { role: "user", content: [{ type: "text", text: wrapSteerMessage(text, MAX_STEER_SIZE) }] },
+      { triggerTurn: true, deliverAs: "steer" },
+    );
+    return;
+  }
+  pi.sendUserMessage(text);
+}
+
+function launchPhase(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+  options?: { asSteer?: boolean; prefixText?: string },
+): void {
+  const pk = state.currentPhase;
+  if (!pk) return;
+  if (!runPreHook(pk, state)) {
+    ctx.ui.notify(`Pre-hook failed for phase "${pk}". Fix prerequisites and /ralph resume.`, "error");
+    const failedState: PipelineState = { ...state, pipelineStatus: "failed", phaseStatus: "pre_hook" };
+    saveState(pi, failedState);
+    refreshWidget(ctx, failedState);
+    return;
+  }
+
+  const executingState: PipelineState = { ...state, phaseStatus: "executing", phaseAttempts: 0, turnWriteCount: 0 };
+  saveState(pi, executingState);
+  refreshWidget(ctx, executingState);
+  sendPhasePrompt(pi, executingState, options);
+}
+
 function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState) {
   const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
   const idx = state.currentPhaseIndex ?? 0;
-  if (idx >= phases.length - 1) {
+  const completion = resolvePhaseCompletion(phases, idx, "explicit_tool");
+  if (completion.action === "complete_pipeline") {
     const u = { ...state, pipelineStatus: "completed", phaseStatus: "post_hook" };
     saveState(pi, u); refreshWidget(ctx, u);
     ctx.ui.notify(`✅ Ralph loop complete for "${state.feature}"`, "info");
@@ -304,8 +352,9 @@ function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineSt
     writeMetrics(state);
     return;
   }
-  const nextIdx = idx + 1;
-  const nextPhase = phases[nextIdx];
+
+  const nextIdx = completion.nextPhaseIndex ?? Math.min(idx + 1, phases.length - 1);
+  const nextPhase = completion.nextPhase ?? phases[nextIdx];
   const meta = PHASE_META[nextPhase];
   const u: PipelineState = { ...state, currentPhaseIndex: nextIdx, currentPhase: nextPhase, phaseStatus: "pre_hook", phaseAttempts: 0, turnWriteCount: 0 };
   saveState(pi, u); refreshWidget(ctx, u);
@@ -318,25 +367,30 @@ function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineSt
     const autoCheckState = { ...u, phaseStatus: "executing" } as PipelineState;
     const autoCheck = canClearContext(autoCheckState);
     if (autoCheck.ok) {
-      const piAny = pi as any;
       ctx.compact({
         customInstructions: "Preserve pipeline phase context. Focus on transitioning to the new phase.",
         onComplete: () => {
           try {
             // Re-validate cooldown before committing (race guard)
             if (!canClearContext(autoCheckState).ok) return; // skip — manual clear raced ahead
-            const prompt = buildReorientationPrompt(u);
-            piAny.sendMessage({ role: "user", content: [{ type: "text", text: wrapSteerMessage(prompt, MAX_STEER_SIZE) }] }, { triggerTurn: true, deliverAs: "steer" });
             const updated = { ...u, contextClearCount: (u.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
-            saveState(pi, updated);
-            refreshWidget(ctx, updated);
+            launchPhase(pi, ctx, updated, {
+              asSteer: true,
+              prefixText: `⛔ CONTEXT RESET — Continue with Phase ${nextIdx + 1}: ${meta?.name ?? nextPhase}.`,
+            });
           } catch (e) {
             // Silent failure — auto-clear is best-effort
           }
         },
+        onError: () => {
+          launchPhase(pi, ctx, u, { asSteer: true });
+        },
       });
+      return;
     }
   }
+
+  launchPhase(pi, ctx, u, { asSteer: true });
 }
 
 function handleReviewDecision(pi: ExtensionAPI, ctx: ExtensionContext, params: { status: string; issues?: string[] }) {
@@ -364,31 +418,61 @@ function handleReviewDecision(pi: ExtensionAPI, ctx: ExtensionContext, params: {
     const u: PipelineState = { ...state, currentPhaseIndex: implIdx >= 0 ? implIdx : 3, currentPhase: "implement", phaseStatus: "pre_hook", reviewIterations: iter + 1, phaseAttempts: 0, turnWriteCount: 0 };
     saveState(pi, u); refreshWidget(ctx, u);
     ctx.ui.notify(`⚠️ Review CRITICAL (iteration ${iter+1}/${maxIters}) — backtracking to implement`, "warning");
-    const prompt = buildPhasePrompt("implement", u);
     const steerText = params.issues?.length ? `\n\nCRITICAL issues:\n${params.issues.map(i => `- ${i}`).join("\n")}` : "";
-    (pi as any).sendMessage({ role: "user", content: [{ type: "text", text: `⛔ REVIEW CRITICAL — Backtrack to implement.\n\n${prompt}${steerText}` }] }, { triggerTurn: true, deliverAs: "steer" });
+    launchPhase(pi, ctx, u, {
+      asSteer: true,
+      prefixText: `⛔ REVIEW CRITICAL — Backtrack to implement.${steerText}`,
+    });
   }
+}
+
+function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: boolean; message: string } {
+  const state = getState(ctx);
+  if (!state) return { ok: false, message: "No active pipeline." };
+  if (state.pipelineStatus !== "running") return { ok: false, message: `Pipeline is not running (status: ${state.pipelineStatus ?? "unknown"}).` };
+  if (state.currentPhase === "review") return { ok: false, message: "Review phase must end via `ralph_review_decision`, not `ralph_phase_complete`." };
+  if (state.phaseStatus !== "executing") return { ok: false, message: `Current phase is not executing (status: ${state.phaseStatus ?? "unknown"}).` };
+
+  const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
+  const idx = state.currentPhaseIndex ?? 0;
+  const pk = phases[idx];
+  if (!pk) return { ok: false, message: "Current phase is invalid." };
+
+  const result = runPostHook(pk, state);
+  if (!result.pass) {
+    const attempts = state.phaseAttempts ?? 0;
+    if (attempts >= MAX_PHASE_ATTEMPTS) {
+      const failedState: PipelineState = { ...state, pipelineStatus: "failed", phaseStatus: "post_hook" };
+      saveState(pi, failedState);
+      refreshWidget(ctx, failedState);
+      ctx.ui.notify(`Phase "${pk}" failed ${MAX_PHASE_ATTEMPTS} times — halted.`, "error");
+      return { ok: false, message: `Phase "${pk}" failed validation too many times.` };
+    }
+
+    const errList = result.errors?.map(e => `- ${e}`).join("\n") || "Unknown error";
+    ctx.ui.notify(`Post-hook failed for "${pk}" (attempt ${attempts+1}/${MAX_PHASE_ATTEMPTS})`, "warning");
+    (pi as any).sendMessage(
+      { role: "user", content: [{ type: "text", text: `⛔ Phase validation failed:\n\n${errList}\nFix and retry. Run \`ralph_gate_check\` after.` }] },
+      { triggerTurn: true, deliverAs: "steer" },
+    );
+    const updatedState: PipelineState = { ...state, phaseAttempts: attempts + 1, turnWriteCount: 0 };
+    saveState(pi, updatedState);
+    refreshWidget(ctx, updatedState);
+    return { ok: false, message: `Phase "${pk}" failed validation.` };
+  }
+
+  writePhaseCompletionMarker(pk, state.workDir);
+  advancePhase(pi, ctx, { ...state, pipelineStatus: "running", phaseStatus: "post_hook", turnWriteCount: 0 });
+  return { ok: true, message: `Phase "${pk}" completion recorded.` };
 }
 
 async function handleAgentEnd(pi: ExtensionAPI, ctx: ExtensionContext) {
   const state = getState(ctx);
   if (!state) return;
-  const updated = { ...state, turnWriteCount: 0 };
-  const phases = updated.phases?.length ? updated.phases : DEFAULT_PHASES;
-  const idx = updated.currentPhaseIndex ?? 0;
-  const pk = phases[idx];
-  if (pk) {
-    const result = runPostHook(pk, updated);
-    if (result.pass) { writePhaseCompletionMarker(pk, state.workDir); advancePhase(pi, ctx, { ...updated, pipelineStatus: "running" }); }
-    else {
-      const attempts = updated.phaseAttempts ?? 0;
-      if (attempts >= MAX_PHASE_ATTEMPTS) { ctx.ui.notify(`Phase "${pk}" failed ${MAX_PHASE_ATTEMPTS} times — halted.`, "error"); saveState(pi, { ...updated, pipelineStatus: "failed", phaseStatus: "post_hook" }); return; }
-      const errList = result.errors?.map(e => `- ${e}`).join("\n") || "Unknown error";
-      ctx.ui.notify(`Post-hook failed for "${pk}" (attempt ${attempts+1}/${MAX_PHASE_ATTEMPTS})`, "warning");
-      (pi as any).sendMessage({ role: "user", content: [{ type: "text", text: `⛔ Phase validation failed:\n\n${errList}\nFix and retry. Run \`ralph_gate_check\` after.` }] }, { triggerTurn: true, deliverAs: "steer" });
-      saveState(pi, { ...updated, phaseAttempts: attempts + 1 });
-    }
-  }
+  const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
+  const idx = state.currentPhaseIndex ?? 0;
+  const completion = resolvePhaseCompletion(phases, idx, "agent_end");
+  if (completion.action === "wait_for_explicit_completion") refreshWidget(ctx, state);
 }
 
 function writePhaseCompletionMarker(phaseKey: string, workDir: string): void {
@@ -510,8 +594,6 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus("ralph-loop", `🔄 Ralph | ${state.feature}`);
     refreshWidget(ctx, state);
 
-    // Auto-resume if phase was executing when session reloaded
-    const ps = state.phaseStatus;
     const currentIdx = state.currentPhaseIndex ?? 0;
 
     // Guard against corrupted phase index from aggressive compaction
@@ -521,7 +603,8 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    if (ps === "executing" || ps === "pre_hook") {
+    const action = resolveSessionStartAction(state);
+    if (action === "resume_execution") {
       const pk = phases[currentIdx];
       const phasePrompt = buildPhasePrompt(pk, state);
       const steerText = wrapSteerMessage(
@@ -536,23 +619,16 @@ ${phasePrompt}`,
       );
       ctx.ui.notify(`Resuming Phase ${currentIdx+1} (${PHASE_META[pk]?.name})`, "warning");
       (pi as any).sendMessage({ role: "user", content: [{ type: "text", text: steerText }] }, { triggerTurn: true, deliverAs: "steer" });
+      return;
     }
 
-    // Check for unfinished phases (agent may have shortcut)
-    const unfinished = phases.slice(currentIdx + 1);
-    if (unfinished.length > 0 && ps === "post_hook") {
-      const nextPhaseKey = phases[currentIdx + 1];
-      const phasePrompt = buildPhasePrompt(nextPhaseKey, state);
-      const steerText = wrapSteerMessage(
-        `⛔ PIPELINE RESUMPTION — You skipped a phase. Remaining: ${unfinished.join(", ")}.
-Start with the next required phase now. Full instructions below:
-
----
-
-${phasePrompt}`,
-        MAX_STEER_SIZE
-      );
-      (pi as any).sendMessage({ role: "user", content: [{ type: "text", text: steerText }] }, { triggerTurn: true, deliverAs: "steer" });
+    if (action === "launch_pending_phase") {
+      const pk = phases[currentIdx];
+      ctx.ui.notify(`Launching queued Phase ${currentIdx+1} (${PHASE_META[pk]?.name ?? pk})`, "warning");
+      launchPhase(pi, ctx, state, {
+        asSteer: true,
+        prefixText: `⛔ SESSION RELOAD — Launch queued Phase ${currentIdx + 1}: ${PHASE_META[pk]?.name ?? pk}.`,
+      });
     }
   });
 
@@ -608,6 +684,18 @@ ${phasePrompt}`,
     },
   });
 
+  // ── Tool: ralph_phase_complete ──────────────────────────
+  pi.registerTool({
+    name: "ralph_phase_complete", label: "Ralph Phase Complete",
+    description: "Mark the current non-review phase complete and run its post-hook validation.",
+    promptSnippet: "Call when the current non-review phase is fully complete",
+    parameters: Type.Object({ summary: Type.Optional(Type.String()) }),
+    async execute(_id, _params, _sig, _onUpdate, ctx) {
+      const result = handlePhaseCompletion(pi, ctx);
+      return { content: [{ type: "text", text: result.message }], details: { ok: result.ok } };
+    },
+  });
+
   // ── Tool: ralph_review_decision ────────────────────────
   pi.registerTool({
     name: "ralph_review_decision", label: "Ralph Review Decision",
@@ -651,13 +739,12 @@ ${phasePrompt}`,
           const validation = validatePhaseOrder(phases);
           if (!validation.valid) { ctx.ui.notify(`Invalid phase order: ${validation.error}`, "error"); return; }
           createPipelineLock(feature, ctx.cwd);
-          const state: PipelineState = { feature, workDir: ctx.cwd, phases, maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: phases[0], phaseStatus: "executing", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0, promptText, autoClearContext: true };
+          const state: PipelineState = { feature, workDir: ctx.cwd, phases, maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: phases[0], phaseStatus: "pre_hook", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0, promptText, autoClearContext: true };
           saveState(pi, state); refreshWidget(ctx, state);
           ctx.ui.notify(`Starting pipeline for "${feature}" (${phases.join(", ")})`, "info");
           ctx.ui.setStatus("ralph-loop", `🔄 Starting | ${feature}`);
-          // Run pre-hook for first phase
-          if (runPreHook(phases[0], state)) { pi.sendUserMessage(buildPhasePrompt(phases[0], state)); }
-          else { ctx.ui.notify(`Pre-hook failed for phase "${phases[0]}". Check prerequisites and /ralph resume.`, "error"); saveState(pi, { ...state, pipelineStatus: "failed", phaseStatus: "pre_hook" }); removePipelineLock(feature, ctx.cwd); }
+          launchPhase(pi, ctx, state);
+          if (getState(ctx)?.pipelineStatus === "failed") removePipelineLock(feature, ctx.cwd);
           break;
         }
         case "resume": {
@@ -677,11 +764,10 @@ ${phasePrompt}`,
           if (fs.existsSync(markerPath)) { targetIdx = Math.min(targetIdx + 1, phases.length - 1); }
           const pk = phases[targetIdx];
           ctx.ui.notify(`Resuming at Phase ${targetIdx+1} (${PHASE_META[pk]?.name ?? pk})`, "info");
-          const updated: PipelineState = { ...state, currentPhaseIndex: targetIdx, currentPhase: pk, phaseStatus: "executing", pipelineStatus: "running", phaseAttempts: 0 };
+          const updated: PipelineState = { ...state, currentPhaseIndex: targetIdx, currentPhase: pk, phaseStatus: "pre_hook", pipelineStatus: "running", phaseAttempts: 0 };
           saveState(pi, updated); refreshWidget(ctx, updated);
           ctx.ui.setStatus("ralph-loop", `🔄 Resuming | ${state.feature}`);
-          if (runPreHook(pk, updated)) { pi.sendUserMessage(buildPhasePrompt(pk, updated)); }
-          else { ctx.ui.notify(`Pre-hook failed for "${pk}". Fix prerequisites first.`, "error"); saveState(pi, { ...updated, pipelineStatus: "failed", phaseStatus: "pre_hook" }); }
+          launchPhase(pi, ctx, updated);
           break;
         }
         case "pause": {

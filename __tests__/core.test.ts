@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, PHASE_ORDER, DEFAULT_PHASES, sanitizeFeatureName, detectProjectStack, loadGateConfig, resolveGates, GATE_COMMAND_WHITELIST, isValidGateCommand, isValidTargetPath } from "../src/stateMachine";
+import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, PHASE_ORDER, DEFAULT_PHASES, sanitizeFeatureName, detectProjectStack, loadGateConfig, resolveGates, GATE_COMMAND_WHITELIST, isValidGateCommand, isValidTargetPath, resolvePhaseCompletion, resolveSessionStartAction } from "../src/stateMachine";
 
 describe("PHASE_ORDER", () => {
   it("contains all 6 phases in correct order (including render)", () => {
@@ -122,6 +122,39 @@ describe("DEFAULT_PHASES", () => {
   it("has all 6 phases including render", () => {
     expect(DEFAULT_PHASES.length).toBe(6);
     expect(DEFAULT_PHASES).toContain("render");
+  });
+});
+
+describe("resolvePhaseCompletion", () => {
+  it("does not auto-complete a phase on agent_end", () => {
+    const result = resolvePhaseCompletion(["spec", "redteam", "harden"], 0, "agent_end");
+    expect(result.action).toBe("wait_for_explicit_completion");
+  });
+
+  it("queues the next phase after explicit completion of a non-final phase", () => {
+    const result = resolvePhaseCompletion(["spec", "redteam", "harden"], 1, "explicit_tool");
+    expect(result.action).toBe("queue_next_phase");
+    expect(result.nextPhaseIndex).toBe(2);
+    expect(result.nextPhase).toBe("harden");
+  });
+
+  it("completes the pipeline after explicit completion of the final phase", () => {
+    const result = resolvePhaseCompletion(["spec", "redteam", "harden"], 2, "explicit_tool");
+    expect(result.action).toBe("complete_pipeline");
+  });
+});
+
+describe("resolveSessionStartAction", () => {
+  it("resumes the current phase when the pipeline was executing", () => {
+    expect(resolveSessionStartAction({ pipelineStatus: "running", phaseStatus: "executing" })).toBe("resume_execution");
+  });
+
+  it("launches the queued phase when the pipeline was left in pre_hook", () => {
+    expect(resolveSessionStartAction({ pipelineStatus: "running", phaseStatus: "pre_hook" })).toBe("launch_pending_phase");
+  });
+
+  it("does not auto-resume when the pipeline is paused", () => {
+    expect(resolveSessionStartAction({ pipelineStatus: "paused", phaseStatus: "pre_hook" })).toBe("none");
   });
 });
 
