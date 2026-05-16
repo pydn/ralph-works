@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as child from "node:child_process";
-import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, DEFAULT_PHASES, sanitizeFeatureName, resolveGates, isValidTargetPath, resolvePhaseCompletion, resolveSessionStartAction } from "./src/stateMachine";
+import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, DEFAULT_PHASES, sanitizeFeatureName, resolveGates, isValidTargetPath, resolvePhaseCompletion, resolveSessionStartAction, hasPhaseCompletionMarker, PHASE_COMPLETE_MARKER } from "./src/stateMachine";
 import { wrapSteerMessage, MAX_STEER_SIZE, validatePhaseIndex, canClearContext, buildReorientationPrompt, resolveArtifactPaths } from "./src/steer";
 
 // ── Constants ───────────────────────────────────────────────
@@ -281,7 +281,7 @@ Run \`ralph_gate_check\` after implementation.`; break;
     phaseKey === "implement" ? "- After implementation steps, run `ralph_gate_check`." : "",
     phaseKey === "review"
       ? "- End the review by calling `ralph_review_decision` with status LGTM or CRITICAL."
-      : "- When this phase is fully complete, call `ralph_phase_complete` exactly once. The controller will not advance automatically at turn end.",
+      : `- When this phase is fully complete, end your final assistant message with the exact line \`${PHASE_COMPLETE_MARKER}\`. The controller will not advance automatically at turn end.`,
   ].filter(Boolean).join("\n");
   return `# Ralph Pipeline — Phase: ${cfg.displayName}\n\n${taskSection}\n\n## Skill Context\n<ralph-skill-instructions>\n${skillContent || "(Skill file not available)"}</ralph-skill-instructions>\n\n## Phase Instructions\n${phaseContext}\n\n## Rules\n${rules}`;
 }
@@ -296,6 +296,19 @@ function runPostHook(phaseKey: string, state: PipelineState): PostHookResult {
   const cfg = PHASE_CONFIGS[phaseKey];
   if (!cfg) return { pass: false, errors: [`Unknown phase config for ${phaseKey}`] };
   return cfg.postHook(phaseKey, state);
+}
+
+function extractMessageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  const textParts: string[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const block = part as { type?: string; text?: string };
+    if (block.type === "text" && typeof block.text === "string") textParts.push(block.text);
+  }
+  return textParts.join("\n").trim();
 }
 
 function sendPhasePrompt(
@@ -342,7 +355,7 @@ function launchPhase(
 function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState) {
   const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
   const idx = state.currentPhaseIndex ?? 0;
-  const completion = resolvePhaseCompletion(phases, idx, "explicit_tool");
+  const completion = resolvePhaseCompletion(phases, idx, "explicit_signal");
   if (completion.action === "complete_pipeline") {
     const u = { ...state, pipelineStatus: "completed", phaseStatus: "post_hook" };
     saveState(pi, u); refreshWidget(ctx, u);
@@ -430,7 +443,7 @@ function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: b
   const state = getState(ctx);
   if (!state) return { ok: false, message: "No active pipeline." };
   if (state.pipelineStatus !== "running") return { ok: false, message: `Pipeline is not running (status: ${state.pipelineStatus ?? "unknown"}).` };
-  if (state.currentPhase === "review") return { ok: false, message: "Review phase must end via `ralph_review_decision`, not `ralph_phase_complete`." };
+  if (state.currentPhase === "review") return { ok: false, message: "Review phase must end via `ralph_review_decision`, not the completion marker." };
   if (state.phaseStatus !== "executing") return { ok: false, message: `Current phase is not executing (status: ${state.phaseStatus ?? "unknown"}).` };
 
   const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
@@ -466,11 +479,21 @@ function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: b
   return { ok: true, message: `Phase "${pk}" completion recorded.` };
 }
 
-async function handleAgentEnd(pi: ExtensionAPI, ctx: ExtensionContext) {
+async function handleAgentEnd(pi: ExtensionAPI, event: { messages: Array<{ role?: string; content?: unknown }> }, ctx: ExtensionContext) {
   const state = getState(ctx);
   if (!state) return;
+  const lastAssistantMessage = [...event.messages].reverse().find(message => message.role === "assistant");
+  const assistantText = extractMessageText(lastAssistantMessage?.content);
   const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
   const idx = state.currentPhaseIndex ?? 0;
+  if (state.currentPhase !== "review" && hasPhaseCompletionMarker(assistantText)) {
+    const completion = resolvePhaseCompletion(phases, idx, "explicit_signal");
+    if (completion.action !== "wait_for_explicit_completion") {
+      handlePhaseCompletion(pi, ctx);
+      return;
+    }
+  }
+
   const completion = resolvePhaseCompletion(phases, idx, "agent_end");
   if (completion.action === "wait_for_explicit_completion") refreshWidget(ctx, state);
 }
@@ -654,11 +677,11 @@ ${phasePrompt}`,
   });
 
   // Agent end → post-hook → state machine advance
-  pi.on("agent_end", async (_event, ctx) => {
+  pi.on("agent_end", async (event, ctx) => {
     const state = getState(ctx);
     if (!state) return;
     saveState(pi, { ...state, turnWriteCount: 0 });
-    await handleAgentEnd(pi, ctx);
+    await handleAgentEnd(pi, event as { messages: Array<{ role?: string; content?: unknown }> }, ctx);
   });
 
   // ── Tool: ralph_gate_check ──────────────────────────────
@@ -681,18 +704,6 @@ ${phasePrompt}`,
       report.push(allPass ? "All gates passed. Proceed to next phase." : "Fix failures and re-run ralph_gate_check.");
       ctx.ui.setStatus("ralph-loop", allPass ? `✅ Gates clear` : `❌ Gates: ${failed.map(f => f.name).join(", ")}`);
       return { content: [{ type: "text", text: report.join("\n") }], details: { results, allPass } };
-    },
-  });
-
-  // ── Tool: ralph_phase_complete ──────────────────────────
-  pi.registerTool({
-    name: "ralph_phase_complete", label: "Ralph Phase Complete",
-    description: "Mark the current non-review phase complete and run its post-hook validation.",
-    promptSnippet: "Call when the current non-review phase is fully complete",
-    parameters: Type.Object({ summary: Type.Optional(Type.String()) }),
-    async execute(_id, _params, _sig, _onUpdate, ctx) {
-      const result = handlePhaseCompletion(pi, ctx);
-      return { content: [{ type: "text", text: result.message }], details: { ok: result.ok } };
     },
   });
 

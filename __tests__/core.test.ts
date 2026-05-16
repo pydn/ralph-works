@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, PHASE_ORDER, DEFAULT_PHASES, sanitizeFeatureName, detectProjectStack, loadGateConfig, resolveGates, GATE_COMMAND_WHITELIST, isValidGateCommand, isValidTargetPath, resolvePhaseCompletion, resolveSessionStartAction } from "../src/stateMachine";
+import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, PHASE_ORDER, DEFAULT_PHASES, sanitizeFeatureName, detectProjectStack, loadGateConfig, resolveGates, GATE_COMMAND_WHITELIST, isValidGateCommand, isValidTargetPath, resolvePhaseCompletion, resolveSessionStartAction, hasPhaseCompletionMarker, PHASE_COMPLETE_MARKER } from "../src/stateMachine";
 
 describe("PHASE_ORDER", () => {
   it("contains all 6 phases in correct order (including render)", () => {
@@ -132,15 +132,31 @@ describe("resolvePhaseCompletion", () => {
   });
 
   it("queues the next phase after explicit completion of a non-final phase", () => {
-    const result = resolvePhaseCompletion(["spec", "redteam", "harden"], 1, "explicit_tool");
+    const result = resolvePhaseCompletion(["spec", "redteam", "harden"], 1, "explicit_signal");
     expect(result.action).toBe("queue_next_phase");
     expect(result.nextPhaseIndex).toBe(2);
     expect(result.nextPhase).toBe("harden");
   });
 
   it("completes the pipeline after explicit completion of the final phase", () => {
-    const result = resolvePhaseCompletion(["spec", "redteam", "harden"], 2, "explicit_tool");
+    const result = resolvePhaseCompletion(["spec", "redteam", "harden"], 2, "explicit_signal");
     expect(result.action).toBe("complete_pipeline");
+  });
+});
+
+describe("hasPhaseCompletionMarker", () => {
+  it("returns true when the final non-empty line is the exact marker", () => {
+    const text = `Implemented the spec and wrote the files.\n\n${PHASE_COMPLETE_MARKER}`;
+    expect(hasPhaseCompletionMarker(text)).toBe(true);
+  });
+
+  it("returns false when the marker is only mentioned in prose", () => {
+    const text = `I will call ${PHASE_COMPLETE_MARKER} after the next step.`;
+    expect(hasPhaseCompletionMarker(text)).toBe(false);
+  });
+
+  it("returns false for empty text", () => {
+    expect(hasPhaseCompletionMarker("")).toBe(false);
   });
 });
 

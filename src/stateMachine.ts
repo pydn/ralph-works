@@ -56,7 +56,9 @@ export function validatePhaseOrder(phases: string[]): PhaseValidationResult {
  */
 export const DEFAULT_PHASES: string[] = [...PHASE_ORDER];
 
-export type PhaseCompletionTrigger = "agent_end" | "explicit_tool";
+export const PHASE_COMPLETE_MARKER = "RALPH_PHASE_COMPLETE";
+
+export type PhaseCompletionTrigger = "agent_end" | "explicit_signal";
 export type PhaseCompletionAction = "wait_for_explicit_completion" | "queue_next_phase" | "complete_pipeline";
 export type SessionStartAction = "none" | "resume_execution" | "launch_pending_phase";
 
@@ -94,6 +96,16 @@ export function resolvePhaseCompletion(
     nextPhaseIndex,
     nextPhase: phases[nextPhaseIndex],
   };
+}
+
+/**
+ * Require the exact completion marker on the final non-empty line so prose
+ * mentions of the marker do not advance the pipeline accidentally.
+ */
+export function hasPhaseCompletionMarker(text: string): boolean {
+  const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
+  if (lines.length === 0) return false;
+  return lines[lines.length - 1] === PHASE_COMPLETE_MARKER;
 }
 
 /**
