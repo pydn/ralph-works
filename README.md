@@ -37,6 +37,8 @@ Reload Pi (`/reload`) to activate.
 | `/ralph start <feature> .ralph/task.md` | Prompt from file |
 | `/ralph start <feature> "..." spec,implement` | Prompt + specific phases |
 | `/ralph status` | Show current pipeline state |
+| `/ralph clear-context` | Manually clear context and reorient the agent |
+| `/ralph clear-context --auto` | Enable auto-clear at every phase boundary |
 | `/ralph cancel` | Abort pipeline |
 
 ## Quality Gates
@@ -77,10 +79,41 @@ Commands are validated against a whitelist of allowed tools. Non-whitelisted com
 ### Auto-Gate Trigger
 During `implement` and `review` phases, gates auto-run after every 3 consecutive code changes. A concurrency lock prevents duplicate execution.
 
+## Context Clearing
+
+During long pipelines the agent's context window can fill with stale conversation history, reducing attention on the current task. The clear-context feature compacts the session and sends a reorientation steer message so the agent knows where it left off.
+
+### Usage
+
+```
+/ralph clear-context              # Clear once now
+/ralph clear-context --auto       # Enable auto-clear at every phase boundary
+```
+
+### Auto-Clear Behavior
+
+When `autoClearContext` is **enabled** (default), the extension auto-clears at each phase transition:
+
+- Compacts conversation via `ctx.compact()` with instructions to preserve pipeline state
+- On completion, sends a steer message listing current phase, artifact paths, and reorientation context
+- Skips the implement → review transition (so review retains implementation context)
+- Enforces a cooldown between clears to prevent rapid-fire compaction
+- Best-effort — failures are silently ignored so they never block the pipeline
+
+### Status Check
+
+`/ralph status` shows clear-context metrics:
+
+```
+Context clears: 3
+Auto clear: ON
+```
+
 ## Features
 
 - **Live TUI widget** — Shows current phase, updates in real-time during streaming
 - **Compaction-safe state** — Phase index persists across context compaction via session JSONL
+- **Auto-clear context** — Compacts conversation at phase boundaries to keep the agent focused (enabled by default)
 - **Anti-shortcut detection** — Detects if the agent writes a summary before finishing all phases and steers it back
 - **Auto-resume on reload** — If pipeline has unfinished phases, sends steering message immediately on session start
 
