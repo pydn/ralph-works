@@ -12,7 +12,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as child from "node:child_process";
 import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, DEFAULT_PHASES, sanitizeFeatureName, resolveGates, isValidTargetPath } from "./src/stateMachine";
-import { wrapSteerMessage, MAX_STEER_SIZE, validatePhaseIndex } from "./src/steer";
+import { wrapSteerMessage, MAX_STEER_SIZE, validatePhaseIndex, canClearContext, buildReorientationPrompt, resolveArtifactPaths } from "./src/steer";
 
 // ── Constants ───────────────────────────────────────────────
 const CUSTOM_TYPE = "ralph-loop-state";
@@ -53,6 +53,9 @@ interface PipelineState {
   phaseAttempts?: number;
   turnWriteCount?: number;
   promptText?: string;
+  contextClearCount?: number;     // times context has been cleared (default: 0)
+  autoClearContext?: boolean;      // auto-clear at phase boundaries (default: false)
+  lastContextClearAt?: number;     // timestamp of most recent clear for rate-limiting
 }
 
 // ── Phase Metadata ──────────────────────────────────────────
@@ -307,6 +310,33 @@ function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineSt
   const u: PipelineState = { ...state, currentPhaseIndex: nextIdx, currentPhase: nextPhase, phaseStatus: "pre_hook", phaseAttempts: 0, turnWriteCount: 0 };
   saveState(pi, u); refreshWidget(ctx, u);
   ctx.ui.notify(`→ Phase ${nextIdx+1}/${phases.length} (${meta?.name ?? nextPhase})`, "info");
+
+  // Auto-clear at phase boundary (except implement→review transition)
+  // Check BEFORE pre_hook blocks it: pass "executing" so cooldown/status gates still apply
+  const prevPhase = phases[idx];
+  if (state.autoClearContext && !(prevPhase === "implement" && nextPhase === "review")) {
+    const autoCheckState = { ...u, phaseStatus: "executing" } as PipelineState;
+    const autoCheck = canClearContext(autoCheckState);
+    if (autoCheck.ok) {
+      const piAny = pi as any;
+      ctx.compact({
+        customInstructions: "Preserve pipeline phase context. Focus on transitioning to the new phase.",
+        onComplete: () => {
+          try {
+            // Re-validate cooldown before committing (race guard)
+            if (!canClearContext(autoCheckState).ok) return; // skip — manual clear raced ahead
+            const prompt = buildReorientationPrompt(u);
+            piAny.sendMessage({ role: "user", content: [{ type: "text", text: wrapSteerMessage(prompt, MAX_STEER_SIZE) }] }, { triggerTurn: true, deliverAs: "steer" });
+            const updated = { ...u, contextClearCount: (u.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
+            saveState(pi, updated);
+            refreshWidget(ctx, updated);
+          } catch (e) {
+            // Silent failure — auto-clear is best-effort
+          }
+        },
+      });
+    }
+  }
 }
 
 function handleReviewDecision(pi: ExtensionAPI, ctx: ExtensionContext, params: { status: string; issues?: string[] }) {
@@ -450,6 +480,7 @@ function refreshWidget(ctx: ExtensionContext, st: PipelineState) {
     `Progress: Phase ${idx+1}/${phases.length} — ${meta?.name ?? "?"}`,
     st.reviewIterations ? `Review iterations: ${st.reviewIterations}` : "",
     st.phaseAttempts && st.phaseAttempts > 0 ? `Phase attempts: ${st.phaseAttempts}` : "",
+    st.contextClearCount && st.contextClearCount > 0 ? `Context clears: ${st.contextClearCount}` : "",
   ].filter(Boolean));
 }
 
@@ -673,7 +704,7 @@ ${phasePrompt}`,
           const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
           const idx = state.currentPhaseIndex ?? 0;
           const pk = phases[idx];
-          ctx.ui.notify([`Feature: ${state.feature}`, `Status: ${state.pipelineStatus ?? "running"}`, `phaseStatus: ${state.phaseStatus ?? "executing"}`, `Current: Phase ${idx+1} — ${PHASE_META[pk]?.name ?? pk}`, `Phases: ${phases.join(" → ")}`, `reviewIterations: ${state.reviewIterations ?? 0}`, `phaseAttempts: ${state.phaseAttempts ?? 0}`, `Started: ${new Date(state.startedAt).toISOString()}`].join("\n"), "info");
+          ctx.ui.notify([`Feature: ${state.feature}`, `Status: ${state.pipelineStatus ?? "running"}`, `phaseStatus: ${state.phaseStatus ?? "executing"}`, `Current: Phase ${idx+1} — ${PHASE_META[pk]?.name ?? pk}`, `Phases: ${phases.join(" → ")}`, `reviewIterations: ${state.reviewIterations ?? 0}`, `phaseAttempts: ${state.phaseAttempts ?? 0}`, `Context clears: ${state.contextClearCount ?? 0}`, `Auto clear: ${(state.autoClearContext ?? false) ? "ON" : "OFF"}`, `Started: ${new Date(state.startedAt).toISOString()}`].join("\n"), "info");
           break;
         }
         case "cancel": {
@@ -681,6 +712,61 @@ ${phasePrompt}`,
           if (state) removePipelineLock(state.feature, state.workDir);
           ctx.ui.setStatus("ralph-loop", ""); ctx.ui.setWidget("ralph-loop", []);
           ctx.ui.notify("Pipeline cancelled", "warning");
+          break;
+        }
+        case "clear-context": {
+          const cs = getState(ctx);
+          if (!cs) { ctx.ui.notify("No active pipeline.", "error"); return; }
+          // Parse flags
+          const flag = parts[1];
+          if (flag && flag !== "--auto") {
+            ctx.ui.notify("Unknown flag. Usage: /ralph clear-context [--auto]", "error");
+            return;
+          }
+          if (flag === "--auto") {
+            const updatedAuto = { ...cs, autoClearContext: true };
+            saveState(pi, updatedAuto);
+          }
+          // Validate clear
+          const check = canClearContext(cs);
+          if (!check.ok) { ctx.ui.notify("Cannot clear context: " + (check.reason ?? "unknown"), "error"); return; }
+          // Build artifact list for prompt augmentation
+          const artifacts = resolveArtifactPaths(cs);
+          let artList = "";
+          if (artifacts.length > 0) artList = "\nArtifacts on disk:\n" + artifacts.map(a => "- " + a).join("\n");
+          // Trigger compaction via ctx, then send steer message in onComplete
+          const piAny = pi as any;
+          ctx.compact({
+            customInstructions: "Preserve pipeline phase context and file operations. Focus on current task instructions.",
+            onComplete: (_result) => {
+              try {
+                // Re-validate cooldown before committing (race guard)
+                if (!canClearContext(cs).ok) { ctx.ui.notify("Context clear skipped — cooldown active", "info"); return; }
+                const prompt = buildReorientationPrompt(cs);
+                const fullMsg = wrapSteerMessage(prompt + artList, MAX_STEER_SIZE);
+                piAny.sendMessage({ role: "user", content: [{ type: "text", text: fullMsg }] }, { triggerTurn: true, deliverAs: "steer" });
+                // Increment counter only after successful send (not before)
+                const updated = { ...cs, contextClearCount: (cs.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
+                saveState(pi, updated);
+                refreshWidget(ctx, updated);
+                ctx.ui.notify("Context cleared — Phase " + ((cs.currentPhaseIndex ?? 0) + 1) + "/" + (cs.phases?.length ?? "?") + " resumed", "info");
+              } catch (e) {
+                ctx.ui.notify("Steer failed: " + String(e), "error");
+              }
+            },
+            onError: (_err) => {
+              // Fallback: send steer-only without compaction
+              try {
+                const prompt = buildReorientationPrompt(cs);
+                piAny.sendMessage({ role: "user", content: [{ type: "text", text: wrapSteerMessage(prompt, MAX_STEER_SIZE) }] }, { triggerTurn: true, deliverAs: "steer" });
+                const updated = { ...cs, contextClearCount: (cs.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
+                saveState(pi, updated);
+                ctx.ui.notify("Context cleared (compaction fallback)", "warning");
+              } catch (e) {
+                ctx.ui.notify("Clear failed entirely: " + String(e), "error");
+              }
+            },
+          });
           break;
         }
         default: {
@@ -692,7 +778,7 @@ ${phasePrompt}`,
               createPipelineLock(feature, ctx.cwd);
               pi.sendUserMessage(buildPhasePrompt("spec", state));
             }
-          } else { ctx.ui.notify("Usage: /ralph start <feature> | status | cancel | gate | resume | pause", "info"); }
+          } else { ctx.ui.notify("Usage: /ralph start <feature> | status | cancel | gate | resume | pause | clear-context [--auto]", "info"); }
         }
       }
     },
