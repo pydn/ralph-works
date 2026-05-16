@@ -314,17 +314,18 @@ function extractMessageText(content: unknown): string {
 function sendPhasePrompt(
   pi: ExtensionAPI,
   state: PipelineState,
-  options?: { asSteer?: boolean; prefixText?: string },
+  options?: { asSteer?: boolean; asFollowUp?: boolean; prefixText?: string },
 ): void {
   const pk = state.currentPhase;
   if (!pk) return;
   const prompt = buildPhasePrompt(pk, state);
   const text = options?.prefixText ? `${options.prefixText}\n\n${prompt}` : prompt;
+  if (options?.asFollowUp) {
+    pi.sendUserMessage(text, { deliverAs: "followUp" });
+    return;
+  }
   if (options?.asSteer) {
-    (pi as any).sendMessage(
-      { role: "user", content: [{ type: "text", text: wrapSteerMessage(text, MAX_STEER_SIZE) }] },
-      { triggerTurn: true, deliverAs: "steer" },
-    );
+    pi.sendUserMessage(wrapSteerMessage(text, MAX_STEER_SIZE), { deliverAs: "steer" });
     return;
   }
   pi.sendUserMessage(text);
@@ -334,7 +335,7 @@ function launchPhase(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   state: PipelineState,
-  options?: { asSteer?: boolean; prefixText?: string },
+  options?: { asSteer?: boolean; asFollowUp?: boolean; prefixText?: string },
 ): void {
   const pk = state.currentPhase;
   if (!pk) return;
@@ -388,7 +389,7 @@ function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineSt
             if (!canClearContext(autoCheckState).ok) return; // skip — manual clear raced ahead
             const updated = { ...u, contextClearCount: (u.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
             launchPhase(pi, ctx, updated, {
-              asSteer: true,
+              asFollowUp: true,
               prefixText: `⛔ CONTEXT RESET — Continue with Phase ${nextIdx + 1}: ${meta?.name ?? nextPhase}.`,
             });
           } catch (e) {
@@ -396,14 +397,14 @@ function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineSt
           }
         },
         onError: () => {
-          launchPhase(pi, ctx, u, { asSteer: true });
+          launchPhase(pi, ctx, u, { asFollowUp: true });
         },
       });
       return;
     }
   }
 
-  launchPhase(pi, ctx, u, { asSteer: true });
+  launchPhase(pi, ctx, u, { asFollowUp: true });
 }
 
 function handleReviewDecision(pi: ExtensionAPI, ctx: ExtensionContext, params: { status: string; issues?: string[] }) {
