@@ -768,8 +768,8 @@ ${phasePrompt}`,
 
   // ── Command: /ralph ────────────────────────────────────
   pi.registerCommand("ralph", {
-    description: "Dev-cycle pipeline (start | status | cancel | gate | resume | pause)",
-    getArgumentCompletions: (prefix: string) => { const items = ["start","status","cancel","gate","resume","pause","clear-context","spec","redteam","harden","render","implement","review"].map(v => ({ value: v, label: v })); return items.filter(i => i.value.startsWith(prefix)); },
+    description: "Dev-cycle pipeline (start | status | cancel | gate | continue | resume | pause)",
+    getArgumentCompletions: (prefix: string) => { const items = ["start","status","cancel","gate","continue","resume","pause","clear-context","spec","redteam","harden","render","implement","review"].map(v => ({ value: v, label: v })); return items.filter(i => i.value.startsWith(prefix)); },
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       const cmd = parts[0]?.toLowerCase();
@@ -799,6 +799,38 @@ ${phasePrompt}`,
           ctx.ui.setStatus("ralph-loop", `🔄 Starting | ${feature}`);
           launchPhase(pi, ctx, state);
           if (getState(ctx)?.pipelineStatus === "failed") removePipelineLock(feature, ctx.cwd);
+          break;
+        }
+        case "continue": {
+          const state = getState(ctx);
+          if (!state) { ctx.ui.notify("No pipeline to continue.", "error"); return; }
+          if (state.pipelineStatus === "completed") { ctx.ui.notify("Pipeline already completed.", "info"); return; }
+          if (state.pipelineStatus === "cancelled") { ctx.ui.notify("Pipeline was cancelled. Start a new pipeline with /ralph start.", "error"); return; }
+
+          const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
+          const targetIdx = state.currentPhaseIndex ?? 0;
+          if (!validatePhaseIndex(targetIdx, phases)) {
+            ctx.ui.notify(`⛔ Pipeline state corrupted: currentPhaseIndex=${targetIdx} out of bounds. Run /ralph cancel to reset.`, "error");
+            saveState(pi, { ...state, pipelineStatus: "failed", phaseStatus: "corrupted" });
+            return;
+          }
+
+          const pk = phases[targetIdx];
+          removePipelineLock(state.feature, state.workDir);
+          createPipelineLock(state.feature, state.workDir);
+          const updated: PipelineState = {
+            ...state,
+            currentPhaseIndex: targetIdx,
+            currentPhase: pk,
+            phaseStatus: "pre_hook",
+            pipelineStatus: "running",
+            phaseAttempts: 0,
+            turnWriteCount: 0,
+          };
+          saveState(pi, updated); refreshWidget(ctx, updated);
+          ctx.ui.notify(`Continuing Phase ${targetIdx+1} (${PHASE_META[pk]?.name ?? pk})`, "info");
+          ctx.ui.setStatus("ralph-loop", `🔄 Continuing | ${state.feature}`);
+          launchPhase(pi, ctx, updated);
           break;
         }
         case "resume": {
@@ -917,7 +949,7 @@ ${phasePrompt}`,
               createPipelineLock(feature, ctx.cwd);
               sendPipelineUserMessage(pi, ctx, buildPhasePrompt("spec", state));
             }
-          } else { ctx.ui.notify("Usage: /ralph start <feature> | status | cancel | gate | resume | pause | clear-context [--auto]", "info"); }
+          } else { ctx.ui.notify("Usage: /ralph start <feature> | status | cancel | gate | continue | resume | pause | clear-context [--auto]", "info"); }
         }
       }
     },
