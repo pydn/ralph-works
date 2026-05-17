@@ -135,6 +135,10 @@ describe("next-phase launch", () => {
     expect(sendUserMessages[0]?.options?.deliverAs).toBe("followUp");
     expect(String(sendUserMessages[0]?.content)).toContain("Phase: Red Team Audit");
     expect(sendMessages).toHaveLength(0);
+    expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("→ Phase"), "info");
+    const widgetText = ctx.ui.setWidget.mock.calls.map((call) => (call[1] as string[]).join("\n")).join("\n");
+    expect(widgetText).not.toContain("/ralph status shows details");
+    expect(widgetText).not.toContain("/ralph pause pauses safely");
 
     const latestState = branch[branch.length - 1]?.data as { currentPhase?: string; phaseStatus?: string };
     expect(latestState.currentPhase).toBe("redteam");
@@ -198,22 +202,18 @@ describe("next-phase launch", () => {
     );
 
     expect(ctx.compact).toHaveBeenCalledTimes(1);
-    const compactingStatus = ctx.ui.setStatus.mock.calls.find((call) =>
-      String(call[1]).includes("COMPACTING CONTEXT"),
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith("ralph-loop", "COMPACTING; this may take a minute");
+    const compactingStatusCall = ctx.ui.setStatus.mock.calls.find((call) =>
+      call[1] === "COMPACTING; this may take a minute",
     );
-    expect(compactingStatus?.[1]).toEqual(expect.stringContaining("not frozen"));
-    expect(ctx.ui.setWorkingMessage).toHaveBeenCalledWith(expect.stringContaining("Compacting context"));
-    const compactingNotify = ctx.ui.notify.mock.calls.find((call) =>
-      String(call[0]).includes("Compacting context"),
-    );
-    expect(compactingNotify?.[0]).toEqual(expect.stringContaining("not frozen"));
-    expect(ctx.ui.notify.mock.invocationCallOrder.at(-1)).toBeLessThan(ctx.compact.mock.invocationCallOrder[0]);
+    expect(compactingStatusCall).toBeDefined();
+    expect(ctx.ui.setStatus.mock.invocationCallOrder.at(-1)).toBeLessThan(ctx.compact.mock.invocationCallOrder[0]);
+    expect(ctx.ui.setWorkingMessage).not.toHaveBeenCalledWith(expect.stringContaining("Compacting"));
+    expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("Compacting"), expect.anything());
     const compactingWidget = ctx.ui.setWidget.mock.calls
       .map((call) => (call[1] as string[]).join("\n"))
-      .find((text) => text.includes("COMPACTING CONTEXT"));
-    expect(compactingWidget).toEqual(expect.stringContaining("not frozen"));
-    expect(ctx.ui.setWidget.mock.invocationCallOrder.at(-1)).toBeLessThan(ctx.compact.mock.invocationCallOrder[0]);
-    expect(ctx.ui.setStatus.mock.invocationCallOrder.at(-1)).toBeLessThan(ctx.compact.mock.invocationCallOrder[0]);
+      .find((text) => text.includes("COMPACTING"));
+    expect(compactingWidget).toBeUndefined();
 
     const compactOptions = ctx.compact.mock.calls[0]?.[0] as { onComplete?: () => void };
     compactOptions.onComplete?.();
@@ -375,6 +375,12 @@ describe("next-phase launch", () => {
         expect.stringContaining("Run ralph_gate_check"),
       ]),
     );
+    const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
+    expect(widgetText).not.toContain("/ralph pause pauses safely");
+    expect(widgetText).not.toContain("/ralph status shows details");
+    expect(widgetText).not.toContain("Status: running");
+    expect(widgetText).not.toContain("Started:");
+    expect(widgetText).not.toContain("Prompt: none");
   });
 
   it("dedupes identical widget renders across fresh event contexts", async () => {
