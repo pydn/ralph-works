@@ -165,6 +165,30 @@ describe("/ralph start command", () => {
     expect(sendUserMessages).toHaveLength(1);
   });
 
+  it("persists yolo mode from the start command", async () => {
+    const workDir = makeTempDir("ralph-start-yolo-");
+    const skillBase = makeTempDir("ralph-start-yolo-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "generate-spec");
+    seedSkill(skillBase, "red-team-audit");
+    seedSkill(skillBase, "harden-spec");
+    seedSkill(skillBase, "tdd-implement");
+    seedSkill(skillBase, "pi-skills/pr-reviewer");
+
+    const branch: FakeEntry[] = [];
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await commands.get("ralph")?.("start feature-a --yolo", makeFakeContext(branch, workDir));
+
+    const state = latestState<{ yoloMode?: boolean; phases?: string[]; promptText?: string }>(branch);
+    expect(state.yoloMode).toBe(true);
+    expect(state.phases).toEqual(["spec", "redteam", "harden", "implement", "review"]);
+    expect(state.promptText).toBeUndefined();
+    expect(sendUserMessages).toHaveLength(1);
+  });
+
   it("reads prompt text from a workspace file and applies an explicit phase list", async () => {
     const workDir = makeTempDir("ralph-start-work-");
     const skillBase = makeTempDir("ralph-start-skills-");
@@ -402,6 +426,106 @@ describe("gate tool and auto-gate paths", () => {
 });
 
 describe("review decision and completion paths", () => {
+  it("pauses before first implementation when earlier phases already ran", async () => {
+    const workDir = makeTempDir("ralph-implement-checkpoint-");
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "feature-a.md"),
+      `# Feature A\n\n${"Spec body.\n".repeat(256)}`,
+      "utf-8",
+    );
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["spec", "implement", "review"],
+      currentPhase: "spec",
+      currentPhaseIndex: 0,
+      phaseStatus: "executing",
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: `Spec complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+          },
+        ],
+      },
+      ctx,
+    );
+
+    const state = latestState<{
+      currentPhase?: string;
+      currentPhaseIndex?: number;
+      phaseStatus?: string;
+      waitingReason?: string;
+    }>(branch);
+    expect(state.currentPhase).toBe("implement");
+    expect(state.currentPhaseIndex).toBe(1);
+    expect(state.phaseStatus).toBe("waiting_for_user");
+    expect(state.waitingReason).toBe("implement_checkpoint");
+    expect(sendUserMessages).toHaveLength(0);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Review the completed planning phases"), "warning");
+  });
+
+  it("lets yolo mode proceed directly from planning into implementation", async () => {
+    const workDir = makeTempDir("ralph-yolo-implement-");
+    const skillBase = makeTempDir("ralph-yolo-implement-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "tdd-implement");
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "feature-a.md"),
+      `# Feature A\n\n${"Spec body.\n".repeat(256)}`,
+      "utf-8",
+    );
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["spec", "implement", "review"],
+      currentPhase: "spec",
+      currentPhaseIndex: 0,
+      phaseStatus: "executing",
+      yoloMode: true,
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: `Spec complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+          },
+        ],
+      },
+      makeFakeContext(branch, workDir),
+    );
+
+    const state = latestState<{
+      currentPhase?: string;
+      phaseStatus?: string;
+      yoloMode?: boolean;
+      waitingReason?: string;
+    }>(branch);
+    expect(state.currentPhase).toBe("implement");
+    expect(state.phaseStatus).toBe("executing");
+    expect(state.yoloMode).toBe(true);
+    expect(state.waitingReason).toBeUndefined();
+    expect(sendUserMessages).toHaveLength(1);
+    expect(sendUserMessages[0]?.options?.deliverAs).toBe("followUp");
+    expect(String(sendUserMessages[0]?.content)).toContain("Phase: TDD Implement");
+  });
+
   it("launches review when the reviewer skill is installed at the global skill root", async () => {
     const workDir = makeTempDir("ralph-review-root-skill-");
     const skillBase = makeTempDir("ralph-review-root-skills-");
@@ -440,6 +564,56 @@ describe("review decision and completion paths", () => {
     expect(sendUserMessages).toHaveLength(1);
     expect(sendUserMessages[0]?.options?.deliverAs).toBe("followUp");
     expect(String(sendUserMessages[0]?.content)).toContain("# pr-reviewer");
+  });
+
+  it("launches review after a passing TDD gate even when the implement marker is omitted", async () => {
+    const workDir = makeTempDir("ralph-implement-gate-review-");
+    const skillBase = makeTempDir("ralph-implement-gate-review-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "pr-reviewer");
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 0,
+      phaseStatus: "executing",
+      autoClearContext: false,
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, tools, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    const gateResult = await tools.get("ralph_gate_check")?.execute(
+      "gate-1",
+      {},
+      undefined,
+      vi.fn(),
+      ctx,
+    ) as { details?: { allPass?: boolean } };
+    expect(gateResult.details?.allPass).toBe(true);
+
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "Implementation complete and gates pass." }],
+          },
+        ],
+      },
+      ctx,
+    );
+
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; readyToAdvancePhase?: string }>(branch);
+    expect(state.currentPhase).toBe("review");
+    expect(state.phaseStatus).toBe("executing");
+    expect(state.readyToAdvancePhase).toBeUndefined();
+    expect(sendUserMessages).toHaveLength(1);
+    expect(sendUserMessages[0]?.options?.deliverAs).toBe("followUp");
+    expect(String(sendUserMessages[0]?.content)).toContain("Phase: Ralph Review Loop");
   });
 
   it("rejects review decisions made outside the review phase", async () => {

@@ -21,7 +21,9 @@ const MAX_PHASE_ATTEMPTS = 3;
 const GATE_THRESHOLD = 3;
 const GATE_PHASES = new Set(["implement", "review"]);
 const WAITING_FOR_USER_PHASE_STATUS = "waiting_for_user";
+const IMPLEMENT_CHECKPOINT_WAIT_REASON = "implement_checkpoint";
 const RENDER_HTML_FLAG = "--render-html";
+const YOLO_FLAG = "--yolo";
 const RENDER_PHASE = "render";
 const STEER_DEDUP_TTL_MS = 30_000;
 const UI_WIDGET_ID = "ralph-loop";
@@ -65,6 +67,10 @@ interface PipelineState {
   lastContextClearAt?: number;     // timestamp of most recent clear for rate-limiting
   pendingSteerKey?: string;        // coalesces queued transition nudges
   pendingSteerSentAt?: number;
+  waitingReason?: string;
+  yoloMode?: boolean;
+  implementCheckpointApproved?: boolean;
+  readyToAdvancePhase?: string;
 }
 
 // ── Phase Metadata ──────────────────────────────────────────
@@ -283,9 +289,13 @@ function resolvePromptInput(arg: string, wd: string): string | undefined {
   return arg;
 }
 
-function parseRenderHtmlFlag(args: string[]): { args: string[]; renderHtml: boolean } {
-  const filtered = args.filter(arg => arg !== RENDER_HTML_FLAG);
-  return { args: filtered, renderHtml: filtered.length !== args.length };
+function parseRalphFlags(args: string[]): { args: string[]; renderHtml: boolean; yolo: boolean } {
+  const filtered = args.filter(arg => arg !== RENDER_HTML_FLAG && arg !== YOLO_FLAG);
+  return {
+    args: filtered,
+    renderHtml: args.includes(RENDER_HTML_FLAG),
+    yolo: args.includes(YOLO_FLAG),
+  };
 }
 
 function addRenderPhase(phases: string[]): string[] {
@@ -515,6 +525,13 @@ function truncateUiText(value: string | undefined, maxLength: number): string {
 
 function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; actions: string[] } {
   if (st.phaseStatus === WAITING_FOR_USER_PHASE_STATUS) {
+    if (st.waitingReason === IMPLEMENT_CHECKPOINT_WAIT_REASON) {
+      return {
+        label: "WAITING FOR IMPLEMENT REVIEW",
+        tone: "warning",
+        actions: ["/ralph continue approves TDD implementation"],
+      };
+    }
     return {
       label: "WAITING FOR USER INPUT",
       tone: "warning",
@@ -631,6 +648,34 @@ function enterWaitingForUser(pi: ExtensionAPI, ctx: ExtensionContext, st: Pipeli
   refreshWidget(ctx, waitingState);
 }
 
+function shouldPauseBeforeImplementCheckpoint(
+  state: PipelineState,
+  phases: string[],
+  currentIdx: number,
+  nextIdx: number,
+  nextPhase: string,
+): boolean {
+  if (nextPhase !== "implement") return false;
+  if (state.yoloMode || state.implementCheckpointApproved) return false;
+  if (nextIdx <= 0) return false;
+  if (phases[currentIdx] === "review") return false;
+  return true;
+}
+
+function enterImplementCheckpoint(pi: ExtensionAPI, ctx: ExtensionContext, st: PipelineState): void {
+  const checkpointState: PipelineState = {
+    ...st,
+    phaseStatus: WAITING_FOR_USER_PHASE_STATUS,
+    waitingReason: IMPLEMENT_CHECKPOINT_WAIT_REASON,
+    turnWriteCount: 0,
+    readyToAdvancePhase: undefined,
+  };
+  saveState(pi, checkpointState);
+  setPipelineWaitingUi(ctx, checkpointState);
+  refreshWidget(ctx, checkpointState);
+  ctx.ui.notify("Review the completed planning phases before TDD implementation. Run /ralph continue to approve, or start with --yolo to run straight through.", "warning");
+}
+
 function launchPhase(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
@@ -647,7 +692,14 @@ function launchPhase(
     return;
   }
 
-  const executingState: PipelineState = { ...state, phaseStatus: "executing", phaseAttempts: 0, turnWriteCount: 0 };
+  const executingState: PipelineState = {
+    ...state,
+    phaseStatus: "executing",
+    phaseAttempts: 0,
+    turnWriteCount: 0,
+    waitingReason: undefined,
+    readyToAdvancePhase: undefined,
+  };
   saveState(pi, executingState);
   setPipelineWorkingUi(ctx, executingState);
   refreshWidget(ctx, executingState);
@@ -671,7 +723,22 @@ function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineSt
   const nextIdx = completion.nextPhaseIndex ?? Math.min(idx + 1, phases.length - 1);
   const nextPhase = completion.nextPhase ?? phases[nextIdx];
   const meta = PHASE_META[nextPhase];
-  const u: PipelineState = { ...state, currentPhaseIndex: nextIdx, currentPhase: nextPhase, phaseStatus: "pre_hook", phaseAttempts: 0, turnWriteCount: 0 };
+  const u: PipelineState = {
+    ...state,
+    currentPhaseIndex: nextIdx,
+    currentPhase: nextPhase,
+    phaseStatus: "pre_hook",
+    phaseAttempts: 0,
+    turnWriteCount: 0,
+    waitingReason: undefined,
+    readyToAdvancePhase: undefined,
+  };
+
+  if (shouldPauseBeforeImplementCheckpoint(state, phases, idx, nextIdx, nextPhase)) {
+    enterImplementCheckpoint(pi, ctx, u);
+    return;
+  }
+
   saveState(pi, u); refreshWidget(ctx, u);
 
   // Auto-clear at phase boundary (except implement→review transition)
@@ -734,7 +801,18 @@ function handleReviewDecision(pi: ExtensionAPI, ctx: ExtensionContext, params: {
     if (iter >= maxIters) { ctx.ui.notify(`Max review iterations (${maxIters}) reached — halted.`, "error"); saveState(pi, { ...state, pipelineStatus: "halted" }); return; }
     const phases = state.phases ?? DEFAULT_PHASES;
     const implIdx = phases.indexOf("implement");
-    const u: PipelineState = { ...state, currentPhaseIndex: implIdx >= 0 ? implIdx : 3, currentPhase: "implement", phaseStatus: "pre_hook", reviewIterations: iter + 1, phaseAttempts: 0, turnWriteCount: 0 };
+    const u: PipelineState = {
+      ...state,
+      currentPhaseIndex: implIdx >= 0 ? implIdx : 3,
+      currentPhase: "implement",
+      phaseStatus: "pre_hook",
+      reviewIterations: iter + 1,
+      phaseAttempts: 0,
+      turnWriteCount: 0,
+      waitingReason: undefined,
+      implementCheckpointApproved: true,
+      readyToAdvancePhase: undefined,
+    };
     saveState(pi, u); refreshWidget(ctx, u);
     ctx.ui.notify(`⚠️ Review CRITICAL (iteration ${iter+1}/${maxIters}) — backtracking to implement`, "warning");
     const steerText = params.issues?.length ? `\n\nCRITICAL issues:\n${params.issues.map(i => `- ${i}`).join("\n")}` : "";
@@ -778,7 +856,14 @@ function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: b
   }
 
   writePhaseCompletionMarker(pk, state.workDir);
-  advancePhase(pi, ctx, { ...state, pipelineStatus: "running", phaseStatus: "post_hook", turnWriteCount: 0 });
+  advancePhase(pi, ctx, {
+    ...state,
+    pipelineStatus: "running",
+    phaseStatus: "post_hook",
+    turnWriteCount: 0,
+    waitingReason: undefined,
+    readyToAdvancePhase: undefined,
+  });
   return { ok: true, message: `Phase "${pk}" completion recorded.` };
 }
 
@@ -799,6 +884,15 @@ async function handleAgentEnd(pi: ExtensionAPI, event: { messages: Array<{ role?
       handlePhaseCompletion(pi, ctx);
       return;
     }
+  }
+
+  if (
+    state.currentPhase === "implement" &&
+    state.phaseStatus === "executing" &&
+    state.readyToAdvancePhase === "implement"
+  ) {
+    handlePhaseCompletion(pi, ctx);
+    return;
   }
 
   const completion = resolvePhaseCompletion(phases, idx, "agent_end");
@@ -895,6 +989,11 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_start", async (event, ctx) => {
     const state = getState(ctx);
     if (!state || event.message.role !== "assistant") return;
+    if (state.waitingReason === IMPLEMENT_CHECKPOINT_WAIT_REASON) {
+      setPipelineWaitingUi(ctx, state);
+      refreshWidget(ctx, state);
+      return;
+    }
     const nextState = withoutPendingSteer(state);
     const updated: PipelineState = nextState.phaseStatus === WAITING_FOR_USER_PHASE_STATUS
       ? { ...nextState, phaseStatus: "executing", turnWriteCount: 0 }
@@ -914,6 +1013,12 @@ export default function (pi: ExtensionAPI) {
     if (!state || state.pipelineStatus !== "running") return;
     if (state.phaseStatus !== WAITING_FOR_USER_PHASE_STATUS) return;
     if (event.text.trim().startsWith("/")) return;
+    if (state.waitingReason === IMPLEMENT_CHECKPOINT_WAIT_REASON) {
+      ctx.ui.notify("TDD implementation is waiting for review approval. Run /ralph continue to launch it.", "warning");
+      setPipelineWaitingUi(ctx, state);
+      refreshWidget(ctx, state);
+      return;
+    }
     const updated: PipelineState = { ...state, phaseStatus: "executing", turnWriteCount: 0 };
     saveState(pi, updated);
     setPipelineWorkingUi(ctx, updated);
@@ -982,9 +1087,13 @@ ${phasePrompt}`,
         saveState(pi, { ...state, turnWriteCount: 0 });
         ctx.ui.notify("🚧 Auto-gate: running lint checks...", "info");
         const results = runLintGates(state.workDir);
-        if (results.every(r => r.pass)) { ctx.ui.notify("✅ All gates passed", "info"); }
+        if (results.every(r => r.pass)) {
+          ctx.ui.notify("✅ All gates passed", "info");
+          if (state.currentPhase === "implement") saveState(pi, { ...state, turnWriteCount: 0, readyToAdvancePhase: "implement" });
+        }
         else {
           ctx.ui.notify(`❌ Gate failure: ${results.filter(r => !r.pass).map(r => r.name).join(", ")}`, "error");
+          if (state.readyToAdvancePhase) saveState(pi, { ...state, turnWriteCount: 0, readyToAdvancePhase: undefined });
           sendPipelineUserMessage(pi, ctx, `${formatGateResults(results)}\n\nFix and re-check.`, { deliverAs: "steer" });
         }
         return;
@@ -1015,8 +1124,12 @@ ${phasePrompt}`,
       if (!state) return { content: [{ type: "text", text: "No active pipeline." }] };
       ((onUpdate as any) as Function)?.({ content: [{ type: "text", text: "🚧 Running lint gates..." }] });
       const results = runLintGates(state.workDir, params.paths);
-      saveState(pi, { ...state, turnWriteCount: 0 });
       const allPass = results.every(r => r.pass);
+      saveState(pi, {
+        ...state,
+        turnWriteCount: 0,
+        readyToAdvancePhase: allPass && state.currentPhase === "implement" ? "implement" : undefined,
+      });
       const failed = results.filter(r => !r.pass);
       const report = [`## ${allPass ? "✅ All Gates Passed" : "❌ Gate Failures"}`, "", `| Gate | Status |`, `|------|--------|`, ...results.map(r => `| ${r.name} | ${r.pass ? "✅ PASS" : "❌ FAIL"} |`), ""];
       for (const f of failed) report.push(`\`${f.output.slice(0,3000)}\``);
@@ -1045,7 +1158,7 @@ ${phasePrompt}`,
   // ── Command: /ralph ────────────────────────────────────
   pi.registerCommand("ralph", {
     description: "Dev-cycle pipeline (start | status | cancel | gate | continue | resume | pause)",
-    getArgumentCompletions: (prefix: string) => { const items = ["start","status","cancel","gate","continue","resume","pause","clear-context",RENDER_HTML_FLAG,"spec","redteam","harden","render","implement","review"].map(v => ({ value: v, label: v })); return items.filter(i => i.value.startsWith(prefix)); },
+    getArgumentCompletions: (prefix: string) => { const items = ["start","status","cancel","gate","continue","resume","pause","clear-context",RENDER_HTML_FLAG,YOLO_FLAG,"spec","redteam","harden","render","implement","review"].map(v => ({ value: v, label: v })); return items.filter(i => i.value.startsWith(prefix)); },
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       const cmd = parts[0]?.toLowerCase();
@@ -1053,11 +1166,11 @@ ${phasePrompt}`,
         case "start": {
           if (getState(ctx)) { ctx.ui.notify("Pipeline already running. /ralph cancel first.", "error"); return; }
           const feature = parts[1];
-          if (!feature) { ctx.ui.notify('Usage: /ralph start <feature> [prompt] [phases] [--render-html]', "error"); return; }
+          if (!feature) { ctx.ui.notify('Usage: /ralph start <feature> [prompt] [phases] [--render-html] [--yolo]', "error"); return; }
           const validPhases = new Set<string>(PHASE_ORDER);
           let phases: string[] = [...DEFAULT_PHASES];
           let promptArg: string | undefined;
-          const parsedStartArgs = parseRenderHtmlFlag(parts.slice(2));
+          const parsedStartArgs = parseRalphFlags(parts.slice(2));
           if (parsedStartArgs.args[0]) {
             const mp = parsedStartArgs.args[0].split(",").map(p => p.trim());
             if (mp.every(p => validPhases.has(p))) { phases = mp; }
@@ -1077,7 +1190,7 @@ ${phasePrompt}`,
           const lockCheck = checkPipelineLock(feature, ctx.cwd);
           if (lockCheck.locked && !lockCheck.stale) { ctx.ui.notify("Pipeline already running — /ralph cancel first.", "error"); return; }
           createPipelineLock(feature, ctx.cwd);
-          const state: PipelineState = { feature, workDir: ctx.cwd, phases, maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: phases[0], phaseStatus: "pre_hook", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0, promptText, autoClearContext: true };
+          const state: PipelineState = { feature, workDir: ctx.cwd, phases, maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: phases[0], phaseStatus: "pre_hook", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0, promptText, autoClearContext: true, yoloMode: parsedStartArgs.yolo };
           saveState(pi, state); refreshWidget(ctx, state);
           ctx.ui.notify(`Starting pipeline for "${feature}" (${phases.join(", ")})`, "info");
           ctx.ui.setStatus("ralph-loop", `🔄 Starting | ${feature}`);
@@ -1091,7 +1204,7 @@ ${phasePrompt}`,
           if (state.pipelineStatus === "completed") { ctx.ui.notify("Pipeline already completed.", "info"); return; }
           if (state.pipelineStatus === "cancelled") { ctx.ui.notify("Pipeline was cancelled. Start a new pipeline with /ralph start.", "error"); return; }
 
-          const continueArgs = parseRenderHtmlFlag(parts.slice(1));
+          const continueArgs = parseRalphFlags(parts.slice(1));
           const basePhases = state.phases?.length ? state.phases : DEFAULT_PHASES;
           let phases = [...basePhases];
           let targetIdx = state.currentPhaseIndex ?? 0;
@@ -1112,6 +1225,8 @@ ${phasePrompt}`,
           if (!validation.valid) { ctx.ui.notify(`Invalid phase order: ${validation.error}`, "error"); return; }
 
           const pk = phases[targetIdx];
+          const yoloMode = state.yoloMode || continueArgs.yolo;
+          const approvingImplementCheckpoint = state.waitingReason === IMPLEMENT_CHECKPOINT_WAIT_REASON && pk === "implement";
           removePipelineLock(state.feature, state.workDir);
           createPipelineLock(state.feature, state.workDir);
           const updated: PipelineState = {
@@ -1123,6 +1238,10 @@ ${phasePrompt}`,
             pipelineStatus: "running",
             phaseAttempts: 0,
             turnWriteCount: 0,
+            waitingReason: undefined,
+            yoloMode,
+            implementCheckpointApproved: state.implementCheckpointApproved || approvingImplementCheckpoint || yoloMode,
+            readyToAdvancePhase: undefined,
           };
           saveState(pi, updated); refreshWidget(ctx, updated);
           ctx.ui.notify(`Continuing Phase ${targetIdx+1} (${PHASE_META[pk]?.name ?? pk})`, "info");
@@ -1147,7 +1266,17 @@ ${phasePrompt}`,
           if (fs.existsSync(markerPath)) { targetIdx = Math.min(targetIdx + 1, phases.length - 1); }
           const pk = phases[targetIdx];
           ctx.ui.notify(`Resuming at Phase ${targetIdx+1} (${PHASE_META[pk]?.name ?? pk})`, "info");
-          const updated: PipelineState = { ...state, currentPhaseIndex: targetIdx, currentPhase: pk, phaseStatus: "pre_hook", pipelineStatus: "running", phaseAttempts: 0 };
+          const updated: PipelineState = {
+            ...state,
+            currentPhaseIndex: targetIdx,
+            currentPhase: pk,
+            phaseStatus: "pre_hook",
+            pipelineStatus: "running",
+            phaseAttempts: 0,
+            waitingReason: undefined,
+            implementCheckpointApproved: state.implementCheckpointApproved || pk === "implement",
+            readyToAdvancePhase: undefined,
+          };
           saveState(pi, updated); refreshWidget(ctx, updated);
           ctx.ui.setStatus("ralph-loop", `🔄 Resuming | ${state.feature}`);
           launchPhase(pi, ctx, updated);
@@ -1173,7 +1302,7 @@ ${phasePrompt}`,
           const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
           const idx = state.currentPhaseIndex ?? 0;
           const pk = phases[idx];
-          ctx.ui.notify([`Feature: ${state.feature}`, `Status: ${state.pipelineStatus ?? "running"}`, `phaseStatus: ${state.phaseStatus ?? "executing"}`, `Current: Phase ${idx+1} — ${PHASE_META[pk]?.name ?? pk}`, `Phases: ${phases.join(" → ")}`, `reviewIterations: ${state.reviewIterations ?? 0}`, `phaseAttempts: ${state.phaseAttempts ?? 0}`, `Context clears: ${state.contextClearCount ?? 0}`, `Auto clear: ${(state.autoClearContext ?? false) ? "ON" : "OFF"}`, `Started: ${new Date(state.startedAt).toISOString()}`].join("\n"), "info");
+          ctx.ui.notify([`Feature: ${state.feature}`, `Status: ${state.pipelineStatus ?? "running"}`, `phaseStatus: ${state.phaseStatus ?? "executing"}`, `Current: Phase ${idx+1} — ${PHASE_META[pk]?.name ?? pk}`, `Phases: ${phases.join(" → ")}`, `reviewIterations: ${state.reviewIterations ?? 0}`, `phaseAttempts: ${state.phaseAttempts ?? 0}`, `Context clears: ${state.contextClearCount ?? 0}`, `Auto clear: ${(state.autoClearContext ?? false) ? "ON" : "OFF"}`, `Yolo mode: ${(state.yoloMode ?? false) ? "ON" : "OFF"}`, `Started: ${new Date(state.startedAt).toISOString()}`].join("\n"), "info");
           break;
         }
         case "cancel": {
@@ -1260,7 +1389,7 @@ ${phasePrompt}`,
               createPipelineLock(feature, ctx.cwd);
               sendPipelineUserMessage(pi, ctx, buildPhasePrompt("spec", state));
             }
-          } else { ctx.ui.notify("Usage: /ralph start <feature> [--render-html] | status | cancel | gate | continue [--render-html] | resume | pause | clear-context [--auto]", "info"); }
+          } else { ctx.ui.notify("Usage: /ralph start <feature> [--render-html] [--yolo] | status | cancel | gate | continue [--render-html] [--yolo] | resume | pause | clear-context [--auto]", "info"); }
         }
       }
     },

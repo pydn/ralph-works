@@ -34,6 +34,7 @@ Reload Pi (`/reload`) to activate.
 |---------|-------------|
 | `/ralph start <feature>` | Start the default five-phase pipeline without HTML rendering |
 | `/ralph start <feature> --render-html` | Start with Markdown-to-HTML rendering enabled |
+| `/ralph start <feature> --yolo` | Start without the pre-implementation human review checkpoint |
 | `/ralph <feature>` | Shorthand for starting the default pipeline without HTML rendering |
 | `/ralph start <feature> spec,implement` | Run selected phases only |
 | `/ralph start <feature> "reduce nesting depth"` | With inline prompt |
@@ -43,6 +44,7 @@ Reload Pi (`/reload`) to activate.
 | `/ralph pause` | Pause the active pipeline |
 | `/ralph continue` | Re-launch the current or queued phase without advancing it |
 | `/ralph continue --render-html` | Enable HTML rendering before the render point, then continue |
+| `/ralph continue --yolo` | Continue and keep straight-through mode enabled for later phases |
 | `/ralph resume` | Resume the active pipeline at its current phase |
 | `/ralph resume <phase>` | Resume at a specific phase |
 | `/ralph gate [paths...]` | Run standalone quality gates |
@@ -54,17 +56,19 @@ Valid phase names are `spec`, `redteam`, `harden`, `render`, `implement`, and `r
 
 ## Phase Completion
 
-Normal assistant turn completion does not advance the pipeline. For non-review phases, the assistant must finish its final message with this exact final non-empty line:
+Normal assistant turn completion does not advance the pipeline. For non-review phases, the assistant should finish its final message with this exact final non-empty line:
 
 ```text
 RALPH_PHASE_COMPLETE
 ```
 
-The controller then runs the phase post-hook and queues the next phase as a follow-up message. The `review` phase ends through the `ralph_review_decision` tool instead of the completion marker.
+The controller then runs the phase post-hook and queues the next phase as a follow-up message. `implement` also advances at turn end after a passing `ralph_gate_check`, so a completed TDD pass can hand off to review even if the marker was omitted. By default, if earlier planning phases ran before `implement`, the controller pauses at a human review checkpoint before TDD starts; run `/ralph continue` to approve or start with `--yolo` to skip that checkpoint. The `review` phase ends through the `ralph_review_decision` tool instead of the completion marker.
 
 ## Quality Gates
 
 During TDD and review phases, the extension auto-runs language-aware quality gates after 3 consecutive code write/edit tool results. Manual gate checks are also available through `/ralph gate [paths...]`.
+
+When implementation gates pass, the controller can hand off from `implement` to `review` at turn end even if the assistant omitted the final completion marker. A `CRITICAL` review decision backtracks to `implement`; `LGTM` completes the pipeline.
 
 ### Auto-Detection
 Gates are selected based on project type (scanned via filesystem markers):
@@ -137,6 +141,8 @@ Auto clear: ON
 - **Auto-clear context** — Compacts conversation at phase boundaries to keep the agent focused (enabled by default)
 - **Explicit phase completion** — Non-review phases advance only after the `RALPH_PHASE_COMPLETE` marker passes post-hook validation
 - **Deterministic phase launch** — Successful phases queue the next phase as a follow-up message
+- **Conservative implementation checkpoint** — Default runs pause for human review before TDD after planning phases, with `--yolo` for straight-through execution
+- **Default TDD/review loop** — Passing implementation gates launch review, and critical reviews return to TDD until LGTM
 - **Auto-resume on reload** — Running pipelines resume the current executing phase or launch a queued `pre_hook` phase; paused pipelines stay paused
 
 ## Development Workflow

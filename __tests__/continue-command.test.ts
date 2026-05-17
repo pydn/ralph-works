@@ -174,6 +174,54 @@ describe("/ralph continue", () => {
     expect(latestState.phaseAttempts).toBe(0);
     expect(latestState.turnWriteCount).toBe(0);
   });
+
+  it("approves the pre-implementation checkpoint and launches TDD", async () => {
+    const workDir = makeTempDir("ralph-continue-implement-checkpoint-");
+    const skillBase = makeTempDir("ralph-continue-implement-checkpoint-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+
+    fs.mkdirSync(path.join(skillBase, "tdd-implement"), { recursive: true });
+    fs.writeFileSync(path.join(skillBase, "tdd-implement", "SKILL.md"), "# TDD Implement", "utf-8");
+
+    const branch: FakeEntry[] = [{
+      type: "custom",
+      customType: "ralph-loop-state",
+      data: {
+        feature: "feature-a",
+        workDir,
+        phases: ["spec", "implement", "review"],
+        maxIterations: 10,
+        startedAt: Date.now(),
+        currentPhase: "implement",
+        currentPhaseIndex: 1,
+        phaseStatus: "waiting_for_user",
+        waitingReason: "implement_checkpoint",
+        pipelineStatus: "running",
+        reviewIterations: 0,
+        phaseAttempts: 0,
+        turnWriteCount: 0,
+        autoClearContext: false,
+      },
+    }];
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await commands.get("ralph")?.("continue", makeFakeContext(branch, workDir));
+
+    expect(sendUserMessages).toHaveLength(1);
+    expect(String(sendUserMessages[0]?.content)).toContain("Phase: TDD Implement");
+
+    const latestState = branch[branch.length - 1]?.data as {
+      phaseStatus?: string;
+      waitingReason?: string;
+      implementCheckpointApproved?: boolean;
+    };
+    expect(latestState.phaseStatus).toBe("executing");
+    expect(latestState.waitingReason).toBeUndefined();
+    expect(latestState.implementCheckpointApproved).toBe(true);
+  });
 });
 
 describe("/ralph clear-context", () => {
