@@ -165,6 +165,24 @@ describe("/ralph start command", () => {
     expect(sendUserMessages).toHaveLength(1);
   });
 
+  it("tells implement agents to call the registered gate tool instead of running a shell command", async () => {
+    const workDir = makeTempDir("ralph-implement-tool-prompt-");
+    const skillBase = makeTempDir("ralph-implement-tool-prompt-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "tdd-implement");
+
+    const branch: FakeEntry[] = [];
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await commands.get("ralph")?.("start feature-a implement", makeFakeContext(branch, workDir));
+
+    expect(sendUserMessages).toHaveLength(1);
+    expect(String(sendUserMessages[0]?.content)).toContain("Call the registered `ralph_gate_check` tool");
+    expect(String(sendUserMessages[0]?.content)).toContain("Do not run `ralph_gate_check` in `bash`");
+  });
+
   it("persists yolo mode from the start command", async () => {
     const workDir = makeTempDir("ralph-start-yolo-");
     const skillBase = makeTempDir("ralph-start-yolo-skills-");
@@ -423,6 +441,47 @@ describe("gate tool and auto-gate paths", () => {
     expect(latestState<{ turnWriteCount?: number }>(branch).turnWriteCount).toBe(0);
     expect(ctx.ui.setStatus).toHaveBeenCalledWith("ralph-loop", "✅ Gates clear");
   });
+
+  it("manual ralph_gate_check reports nonzero gate commands as failures", async () => {
+    const workDir = makeTempDir("ralph-manual-gate-fails-");
+    fs.mkdirSync(path.join(workDir, ".ralph"), { recursive: true });
+    fs.writeFileSync(path.join(workDir, "fail-gate.js"), "process.exit(2);\n", "utf-8");
+    fs.writeFileSync(
+      path.join(workDir, ".ralph", "gate-config.json"),
+      JSON.stringify({
+        version: "1.0",
+        name: "controlled-failure",
+        gates: [{ name: "Failing Script", command: "node fail-gate.js" }],
+      }),
+      "utf-8",
+    );
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 0,
+      turnWriteCount: 2,
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, tools } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    const result = await tools.get("ralph_gate_check")?.execute(
+      "gate-1",
+      {},
+      undefined,
+      vi.fn(),
+      ctx,
+    ) as { content?: Array<{ text?: string }>; details?: { allPass?: boolean } };
+
+    expect(result.details?.allPass).toBe(false);
+    expect(result.content?.[0]?.text).toContain("Gate Failures");
+    expect(latestState<{ readyToAdvancePhase?: string }>(branch).readyToAdvancePhase).toBeUndefined();
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith("ralph-loop", expect.stringContaining("Failing Script"));
+  });
 });
 
 describe("review decision and completion paths", () => {
@@ -614,6 +673,43 @@ describe("review decision and completion paths", () => {
     expect(sendUserMessages).toHaveLength(1);
     expect(sendUserMessages[0]?.options?.deliverAs).toBe("followUp");
     expect(String(sendUserMessages[0]?.content)).toContain("Phase: Ralph Review Loop");
+  });
+
+  it("keeps implement running and steers toward the registered gate tool instead of pausing after TDD", async () => {
+    const workDir = makeTempDir("ralph-implement-missing-gate-");
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 0,
+      phaseStatus: "executing",
+      readyToAdvancePhase: undefined,
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "Implementation is complete; tests passed." }],
+          },
+        ],
+      },
+      ctx,
+    );
+
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string }>(branch);
+    expect(state.currentPhase).toBe("implement");
+    expect(state.phaseStatus).toBe("executing");
+    expect(sendUserMessages).toHaveLength(1);
+    expect(sendUserMessages[0]?.options?.deliverAs).toBe("steer");
+    expect(String(sendUserMessages[0]?.content)).toContain("Call the registered `ralph_gate_check` tool");
+    expect(ctx.ui.setWorkingMessage).not.toHaveBeenCalledWith("Waiting for user input");
   });
 
   it("rejects review decisions made outside the review phase", async () => {

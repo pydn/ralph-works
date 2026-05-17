@@ -228,7 +228,7 @@ function runShell(cmd: string, cwd: string, timeoutMs?: number): { ok: boolean; 
     const o = child.execSync(cmd, { cwd, encoding: "utf-8", timeout: timeoutMs ?? 300_000, maxBuffer: 2*1024*1024 });
     return { ok: true, output: o.trim() };
   } catch (err: any) {
-    return { ok: err.signal ? false : err.status !== 0, output: sanitizeErrorOutput((err.stdout ?? "") + (err.stderr ?? "") + (err.message ?? "")) };
+    return { ok: false, output: sanitizeErrorOutput((err.stdout ?? "") + (err.stderr ?? "") + (err.message ?? "")) };
   }
 }
 
@@ -354,11 +354,11 @@ Use atomic write pattern: write to ${sanitized}-final.html.tmp then rename to fi
     case "implement": phaseContext = `## Task
 Implement via Red-Green-Refactor.
 Read spec: docs/specs/${state.feature}-final.html (HTML) or docs/specs/${state.feature}.md (markdown fallback)
-Run \`ralph_gate_check\` after implementation.`; break;
+Call the registered \`ralph_gate_check\` tool after implementation. Do not run \`ralph_gate_check\` in \`bash\`; it is a Pi extension tool, not a shell command.`; break;
     case "review": phaseContext = `## Task\nMulti-pass PR review. Call \`ralph_review_decision\` with status LGTM or CRITICAL.`; break;
   }
   const rules = [
-    phaseKey === "implement" ? "- After implementation steps, run `ralph_gate_check`." : "",
+    phaseKey === "implement" ? "- After implementation steps, call the registered `ralph_gate_check` tool. Do not run `ralph_gate_check` in `bash`." : "",
     phaseKey === "review"
       ? "- End the review by calling `ralph_review_decision` with status LGTM or CRITICAL."
       : `- When this phase is fully complete, end your final assistant message with the exact line \`${PHASE_COMPLETE_MARKER}\`. The controller will not advance automatically at turn end.`,
@@ -848,7 +848,7 @@ function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: b
 
     const errList = result.errors?.map(e => `- ${e}`).join("\n") || "Unknown error";
     ctx.ui.notify(`Post-hook failed for "${pk}" (attempt ${attempts+1}/${MAX_PHASE_ATTEMPTS})`, "warning");
-    sendPipelineUserMessage(pi, ctx, `⛔ Phase validation failed:\n\n${errList}\nFix and retry. Run \`ralph_gate_check\` after.`, { deliverAs: "steer" });
+    sendPipelineUserMessage(pi, ctx, `⛔ Phase validation failed:\n\n${errList}\nFix and retry. Call the registered \`ralph_gate_check\` tool after; do not run it in \`bash\`.`, { deliverAs: "steer" });
     const updatedState: PipelineState = { ...state, phaseAttempts: attempts + 1, turnWriteCount: 0 };
     saveState(pi, updatedState);
     refreshWidget(ctx, updatedState);
@@ -892,6 +892,17 @@ async function handleAgentEnd(pi: ExtensionAPI, event: { messages: Array<{ role?
     state.readyToAdvancePhase === "implement"
   ) {
     handlePhaseCompletion(pi, ctx);
+    return;
+  }
+
+  if (state.currentPhase === "implement" && state.phaseStatus === "executing") {
+    sendDedupedPipelineUserMessage(
+      pi,
+      ctx,
+      state,
+      "Implementation is still in the TDD phase. Call the registered `ralph_gate_check` tool now if implementation is complete. Do not run `ralph_gate_check` in `bash`; it is a Pi extension tool, not a shell command. If work remains, continue the Red-Green-Refactor cycle and call the tool when ready.",
+      { deliverAs: "steer", dedupeKey: `implement-gate:${idx}` },
+    );
     return;
   }
 
