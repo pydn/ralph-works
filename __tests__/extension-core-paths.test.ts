@@ -567,7 +567,7 @@ describe("review decision and completion paths", () => {
           },
         ],
       },
-      makeFakeContext(branch, workDir),
+      makeFakeContext(branch, workDir, { idle: true }),
     );
 
     const state = latestState<{
@@ -581,7 +581,7 @@ describe("review decision and completion paths", () => {
     expect(state.yoloMode).toBe(true);
     expect(state.waitingReason).toBeUndefined();
     expect(sendUserMessages).toHaveLength(1);
-    expect(sendUserMessages[0]?.options?.deliverAs).toBe("followUp");
+    expect(sendUserMessages[0]?.options).toBeUndefined();
     expect(String(sendUserMessages[0]?.content)).toContain("Phase: TDD Implement");
   });
 
@@ -613,7 +613,7 @@ describe("review decision and completion paths", () => {
           },
         ],
       },
-      makeFakeContext(branch, workDir),
+      makeFakeContext(branch, workDir, { idle: true }),
     );
 
     const state = latestState<{ currentPhase?: string; pipelineStatus?: string; phaseStatus?: string }>(branch);
@@ -621,7 +621,7 @@ describe("review decision and completion paths", () => {
     expect(state.pipelineStatus).toBe("running");
     expect(state.phaseStatus).toBe("executing");
     expect(sendUserMessages).toHaveLength(1);
-    expect(sendUserMessages[0]?.options?.deliverAs).toBe("followUp");
+    expect(sendUserMessages[0]?.options).toBeUndefined();
     expect(String(sendUserMessages[0]?.content)).toContain("# pr-reviewer");
   });
 
@@ -644,7 +644,7 @@ describe("review decision and completion paths", () => {
     const { pi, handlers, tools, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    const ctx = makeFakeContext(branch, workDir);
+    const ctx = makeFakeContext(branch, workDir, { idle: true });
     const gateResult = await tools.get("ralph_gate_check")?.execute(
       "gate-1",
       {},
@@ -671,7 +671,7 @@ describe("review decision and completion paths", () => {
     expect(state.phaseStatus).toBe("executing");
     expect(state.readyToAdvancePhase).toBeUndefined();
     expect(sendUserMessages).toHaveLength(1);
-    expect(sendUserMessages[0]?.options?.deliverAs).toBe("followUp");
+    expect(sendUserMessages[0]?.options).toBeUndefined();
     expect(String(sendUserMessages[0]?.content)).toContain("Phase: Ralph Review Loop");
   });
 
