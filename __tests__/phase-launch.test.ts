@@ -141,7 +141,7 @@ describe("next-phase launch", () => {
     expect(latestState.phaseStatus).toBe("executing");
   });
 
-  it("shows a clear status before automatic compaction starts", async () => {
+  it("shows a clear visible message before automatic compaction starts after spec completion", async () => {
     const workDir = makeTempDir("ralph-auto-compact-work-");
     const skillBase = makeTempDir("ralph-auto-compact-skills-");
     process.env.PI_SKILL_BASE = skillBase;
@@ -203,6 +203,16 @@ describe("next-phase launch", () => {
     );
     expect(compactingStatus?.[1]).toEqual(expect.stringContaining("not frozen"));
     expect(ctx.ui.setWorkingMessage).toHaveBeenCalledWith(expect.stringContaining("Compacting context"));
+    const compactingNotify = ctx.ui.notify.mock.calls.find((call) =>
+      String(call[0]).includes("Compacting context"),
+    );
+    expect(compactingNotify?.[0]).toEqual(expect.stringContaining("not frozen"));
+    expect(ctx.ui.notify.mock.invocationCallOrder.at(-1)).toBeLessThan(ctx.compact.mock.invocationCallOrder[0]);
+    const compactingWidget = ctx.ui.setWidget.mock.calls
+      .map((call) => (call[1] as string[]).join("\n"))
+      .find((text) => text.includes("COMPACTING CONTEXT"));
+    expect(compactingWidget).toEqual(expect.stringContaining("not frozen"));
+    expect(ctx.ui.setWidget.mock.invocationCallOrder.at(-1)).toBeLessThan(ctx.compact.mock.invocationCallOrder[0]);
     expect(ctx.ui.setStatus.mock.invocationCallOrder.at(-1)).toBeLessThan(ctx.compact.mock.invocationCallOrder[0]);
 
     const compactOptions = ctx.compact.mock.calls[0]?.[0] as { onComplete?: () => void };
