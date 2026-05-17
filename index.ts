@@ -542,24 +542,14 @@ function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; a
   if (st.phaseStatus === "post_hook") {
     return { label: "VALIDATING", tone: "accent", actions: ["Validating phase output before transition"] };
   }
-  if (st.phaseStatus === "compacting") {
-    return {
-      label: "COMPACTING CONTEXT",
-      tone: "warning",
-      actions: ["Compacting context now; UI is not frozen"],
-    };
-  }
   if (st.phaseStatus === "corrupted") {
     return { label: "STATE ERROR", tone: "warning", actions: ["/ralph cancel resets the pipeline state"] };
   }
 
-  const gateAction = GATE_PHASES.has(st.currentPhase ?? "")
-    ? "Run ralph_gate_check after implementation changes"
-    : "/ralph status shows details";
   return {
     label: "RUNNING",
     tone: "accent",
-    actions: [gateAction, "/ralph pause pauses safely"],
+    actions: GATE_PHASES.has(st.currentPhase ?? "") ? ["Run ralph_gate_check after implementation changes"] : [],
   };
 }
 
@@ -590,14 +580,13 @@ function appendWidgetSection(lines: string[], heading: string, entries: string[]
 function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
   const { phases, idx } = getPhaseDisplay(st);
   const widgetState = resolveWidgetState(st);
-  const startedAt = Number.isFinite(st.startedAt) ? new Date(st.startedAt).toISOString() : "unknown";
   const detailLines = [
-    `Status: ${st.pipelineStatus ?? "running"} / ${st.phaseStatus ?? "executing"}`,
-    `Started: ${startedAt}`,
+    st.pipelineStatus && st.pipelineStatus !== "running" ? `Status: ${st.pipelineStatus}` : "",
+    st.phaseStatus && !["executing", "pre_hook"].includes(st.phaseStatus) ? `Phase status: ${st.phaseStatus}` : "",
     st.reviewIterations && st.reviewIterations > 0 ? `Review iterations: ${st.reviewIterations}` : "",
     st.phaseAttempts && st.phaseAttempts > 0 ? `Phase attempts: ${st.phaseAttempts}` : "",
     st.contextClearCount && st.contextClearCount > 0 ? `Context clears: ${st.contextClearCount}` : "",
-    st.promptText ? "Prompt: provided" : "Prompt: none",
+    st.promptText ? "Prompt: provided" : "",
   ].filter(Boolean);
 
   const lines = [
@@ -650,11 +639,9 @@ function setPipelineWorkingUi(ctx: ExtensionContext, st: PipelineState, label?: 
 
 function setPipelineCompactingUi(ctx: ExtensionContext, st: PipelineState): void {
   ctx.ui.setWorkingVisible?.(true);
-  ctx.ui.setWorkingMessage?.("Compacting context; UI is working and not frozen");
+  ctx.ui.setWorkingMessage?.();
   ctx.ui.setWorkingIndicator?.();
-  ctx.ui.setStatus(UI_WIDGET_ID, styleUiText(ctx, "warning", `Ralph | ${st.feature} | COMPACTING CONTEXT | UI is working, not frozen`));
-  refreshWidget(ctx, { ...st, phaseStatus: "compacting" }, { force: true });
-  ctx.ui.notify("Compacting context; UI is working and not frozen.", "info");
+  ctx.ui.setStatus(UI_WIDGET_ID, "COMPACTING; this may take a minute");
 }
 
 function setPipelineWaitingUi(ctx: ExtensionContext, st: PipelineState): void {
@@ -717,7 +704,6 @@ function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineSt
   const meta = PHASE_META[nextPhase];
   const u: PipelineState = { ...state, currentPhaseIndex: nextIdx, currentPhase: nextPhase, phaseStatus: "pre_hook", phaseAttempts: 0, turnWriteCount: 0 };
   saveState(pi, u); refreshWidget(ctx, u);
-  ctx.ui.notify(`→ Phase ${nextIdx+1}/${phases.length} (${meta?.name ?? nextPhase})`, "info");
 
   // Auto-clear at phase boundary (except implement→review transition)
   // Check BEFORE pre_hook blocks it: pass "executing" so cooldown/status gates still apply
