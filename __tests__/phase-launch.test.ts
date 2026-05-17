@@ -294,6 +294,46 @@ describe("next-phase launch", () => {
     );
   });
 
+  it("dedupes identical widget renders across fresh event contexts", async () => {
+    const workDir = makeTempDir("ralph-stream-widget-context-work-");
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "fast-ui",
+          workDir,
+          phases: ["implement", "review"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "implement",
+          currentPhaseIndex: 0,
+          phaseStatus: "executing",
+          pipelineStatus: "running",
+          reviewIterations: 0,
+          phaseAttempts: 0,
+          turnWriteCount: 0,
+          autoClearContext: false,
+        },
+      },
+    ];
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const firstCtx = makeFakeContext(branch, workDir);
+    const secondCtx = makeFakeContext(branch, workDir);
+    secondCtx.ui = firstCtx.ui;
+    const messageUpdate = handlers.get("message_update");
+    expect(messageUpdate).toBeTypeOf("function");
+
+    await messageUpdate?.({ message: { role: "assistant" } }, firstCtx);
+    await messageUpdate?.({ message: { role: "assistant" } }, secondCtx);
+
+    expect(firstCtx.ui.setWidget).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps full-pipeline transition widgets within Pi's visible line budget", async () => {
     const workDir = makeTempDir("ralph-transition-widget-work-");
     const skillBase = makeTempDir("ralph-transition-widget-skills-");
