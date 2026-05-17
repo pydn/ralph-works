@@ -119,6 +119,7 @@ describe("/ralph start command", () => {
     const skillBase = makeTempDir("ralph-start-skills-");
     process.env.PI_SKILL_BASE = skillBase;
     seedSkill(skillBase, "generate-spec");
+    seedSkill(skillBase, "red-team-audit");
     fs.writeFileSync(path.join(workDir, "requirements.md"), "Detailed build requirements", "utf-8");
 
     const branch: FakeEntry[] = [];
@@ -136,6 +137,33 @@ describe("/ralph start command", () => {
     expect(state.phaseStatus).toBe("executing");
     expect(sendUserMessages).toHaveLength(1);
     expect(String(sendUserMessages[0]?.content)).toContain("Detailed build requirements");
+  });
+
+  it("checks all selected phase skills before saving state or launching work", async () => {
+    const workDir = makeTempDir("ralph-start-missing-skill-");
+    const skillBase = makeTempDir("ralph-start-missing-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "generate-spec");
+
+    const branch: FakeEntry[] = [];
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await commands.get("ralph")?.("start feature-a spec,redteam", ctx);
+
+    expect(branch).toHaveLength(0);
+    expect(sendUserMessages).toHaveLength(0);
+    expect(fs.existsSync(path.join(workDir, ".ralph", "pipeline-lock-feature-a"))).toBe(false);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Missing Ralph phase skill prerequisites"),
+      "error",
+    );
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining(path.join(skillBase, "red-team-audit", "SKILL.md")),
+      "error",
+    );
   });
 
   it("rejects invalid phase combinations before saving state or launching work", async () => {
@@ -323,6 +351,46 @@ describe("gate tool and auto-gate paths", () => {
 });
 
 describe("review decision and completion paths", () => {
+  it("launches review when the reviewer skill is installed at the global skill root", async () => {
+    const workDir = makeTempDir("ralph-review-root-skill-");
+    const skillBase = makeTempDir("ralph-review-root-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "pr-reviewer");
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 0,
+      phaseStatus: "executing",
+      autoClearContext: false,
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: `Implementation complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+          },
+        ],
+      },
+      makeFakeContext(branch, workDir),
+    );
+
+    const state = latestState<{ currentPhase?: string; pipelineStatus?: string; phaseStatus?: string }>(branch);
+    expect(state.currentPhase).toBe("review");
+    expect(state.pipelineStatus).toBe("running");
+    expect(state.phaseStatus).toBe("executing");
+    expect(sendUserMessages).toHaveLength(1);
+    expect(sendUserMessages[0]?.options?.deliverAs).toBe("followUp");
+    expect(String(sendUserMessages[0]?.content)).toContain("# pr-reviewer");
+  });
+
   it("rejects review decisions made outside the review phase", async () => {
     const workDir = makeTempDir("ralph-review-reject-");
     const branch: FakeEntry[] = [];
