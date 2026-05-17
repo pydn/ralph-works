@@ -68,9 +68,13 @@ interface PipelineState {
 // ── Phase Metadata ──────────────────────────────────────────
 // Imported from ./src/stateMachine (PHASE_META)
 
+function resolveSkillPath(...candidates: string[]): string {
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0] ?? "";
+}
+
 // ── Phase Config Registry ──────────────────────────────────
 const PHASE_CONFIGS: Record<string, {
-  displayName: string; desc: string; skillPath: string;
+  displayName: string; desc: string; skillPath: string; skillPathCandidates?: string[];
   preHook: (pk: string, s: PipelineState) => boolean;
   postHook: (pk: string, s: PipelineState) => PostHookResult;
 }> = {
@@ -155,7 +159,14 @@ const PHASE_CONFIGS: Record<string, {
   },
   review: {
     displayName: "Ralph Review Loop", desc: "Multi-pass PR review → remediate until LGTM",
-    skillPath: path.join(SKILL_BASE, "pi-skills", "pr-reviewer", "SKILL.md"),
+    skillPath: resolveSkillPath(
+      path.join(SKILL_BASE, "pi-skills", "pr-reviewer", "SKILL.md"),
+      path.join(SKILL_BASE, "pr-reviewer", "SKILL.md"),
+    ),
+    skillPathCandidates: [
+      path.join(SKILL_BASE, "pi-skills", "pr-reviewer", "SKILL.md"),
+      path.join(SKILL_BASE, "pr-reviewer", "SKILL.md"),
+    ],
     preHook: (pk) => fs.existsSync(PHASE_CONFIGS[pk].skillPath),
     postHook: () => ({ pass: true }), // controlled by ralph_review_decision tool
   },
@@ -172,6 +183,24 @@ function getState(ctx: ExtensionContext): PipelineState | null {
 }
 
 function saveState(pi: ExtensionAPI, state: PipelineState) { pi.appendEntry(CUSTOM_TYPE, state); }
+
+function getMissingPhaseSkillPrerequisites(phases: string[]): Array<{ phaseKey: string; displayName: string; paths: string[] }> {
+  const missing: Array<{ phaseKey: string; displayName: string; paths: string[] }> = [];
+  for (const phaseKey of phases) {
+    const cfg = PHASE_CONFIGS[phaseKey];
+    if (!cfg) continue;
+    const paths = cfg.skillPathCandidates?.length ? cfg.skillPathCandidates : [cfg.skillPath];
+    if (!paths.some((candidate) => fs.existsSync(candidate))) {
+      missing.push({ phaseKey, displayName: cfg.displayName, paths });
+    }
+  }
+  return missing;
+}
+
+function formatMissingPhaseSkillPrerequisites(missing: Array<{ phaseKey: string; displayName: string; paths: string[] }>): string {
+  const rows = missing.map((item) => `- ${item.displayName} (${item.phaseKey}): ${item.paths.join(" or ")}`);
+  return `Missing Ralph phase skill prerequisites:\n${rows.join("\n")}`;
+}
 
 function findLatestSpec(wd: string): string | null {
   const dir = path.join(wd, "docs", "specs");
@@ -1016,20 +1045,26 @@ ${phasePrompt}`,
           if (getState(ctx)) { ctx.ui.notify("Pipeline already running. /ralph cancel first.", "error"); return; }
           const feature = parts[1];
           if (!feature) { ctx.ui.notify('Usage: /ralph start <feature> [prompt] [phases]', "error"); return; }
-          // Check pipeline lock
-          const lockCheck = checkPipelineLock(feature, ctx.cwd);
-          if (lockCheck.locked && !lockCheck.stale) { ctx.ui.notify("Pipeline already running — /ralph cancel first.", "error"); return; }
           const validPhases = new Set(DEFAULT_PHASES);
           let phases: string[] = [...DEFAULT_PHASES];
-          let promptText: string | undefined;
+          let promptArg: string | undefined;
           if (parts[2]) {
             const mp = parts[2].split(",").map(p => p.trim());
             if (mp.every(p => validPhases.has(p))) { phases = mp; }
-            else { promptText = resolvePromptInput(parts[2], ctx.cwd); if (parts[3]) { const rp = parts[3].split(",").map(p => p.trim()).filter(p => validPhases.has(p)); if (rp.length) phases = rp; } }
+            else { promptArg = parts[2]; if (parts[3]) { const rp = parts[3].split(",").map(p => p.trim()).filter(p => validPhases.has(p)); if (rp.length) phases = rp; } }
           }
           // Validate phase order
           const validation = validatePhaseOrder(phases);
           if (!validation.valid) { ctx.ui.notify(`Invalid phase order: ${validation.error}`, "error"); return; }
+          const missingSkills = getMissingPhaseSkillPrerequisites(phases);
+          if (missingSkills.length) {
+            ctx.ui.notify(formatMissingPhaseSkillPrerequisites(missingSkills), "error");
+            return;
+          }
+          const promptText = promptArg ? resolvePromptInput(promptArg, ctx.cwd) : undefined;
+          // Check pipeline lock
+          const lockCheck = checkPipelineLock(feature, ctx.cwd);
+          if (lockCheck.locked && !lockCheck.stale) { ctx.ui.notify("Pipeline already running — /ralph cancel first.", "error"); return; }
           createPipelineLock(feature, ctx.cwd);
           const state: PipelineState = { feature, workDir: ctx.cwd, phases, maxIterations: 10, startedAt: Date.now(), currentPhaseIndex: 0, currentPhase: phases[0], phaseStatus: "pre_hook", pipelineStatus: "running", reviewIterations: 0, phaseAttempts: 0, turnWriteCount: 0, promptText, autoClearContext: true };
           saveState(pi, state); refreshWidget(ctx, state);
