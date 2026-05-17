@@ -25,6 +25,7 @@ const IMPLEMENT_CHECKPOINT_WAIT_REASON = "implement_checkpoint";
 const RENDER_HTML_FLAG = "--render-html";
 const YOLO_FLAG = "--yolo";
 const RENDER_PHASE = "render";
+const PROMPT_FILE_EXTENSIONS = new Set([".md", ".txt", ".html"]);
 const STEER_DEDUP_TTL_MS = 30_000;
 const UI_WIDGET_ID = "ralph-loop";
 const UI_WIDGET_MAX_LINES = 4;
@@ -275,9 +276,48 @@ function formatGateResults(results: GateResult[]): string {
   return `## Lint Gate Results\n\n| Gate | Status |\n|------|--------|\n${rows.join("\n")}\n\n${results.map(r => r.pass ? "" : `\`\`\`\n${r.name} output:\n${r.output}\n\`\`\``).join("\n\n")}`;
 }
 
+function parseCommandArgs(input: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let quote: string | undefined;
+  let tokenStarted = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    if (quote) {
+      if (ch === quote) {
+        quote = undefined;
+      } else if (ch === "\\" && input[i + 1] === quote) {
+        current += input[i + 1];
+        i += 1;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      tokenStarted = true;
+    } else if (/\s/.test(ch)) {
+      if (tokenStarted) {
+        args.push(current);
+        current = "";
+        tokenStarted = false;
+      }
+    } else {
+      current += ch;
+      tokenStarted = true;
+    }
+  }
+
+  if (tokenStarted) args.push(current);
+  return args;
+}
+
 function resolvePromptInput(arg: string, wd: string): string | undefined {
-  // Only treat as file path if it looks like one
-  if (arg.includes("/") || arg.includes(".")) {
+  const ext = path.extname(arg).toLowerCase();
+  if (PROMPT_FILE_EXTENSIONS.has(ext)) {
     const r = path.isAbsolute(arg) ? arg : path.join(wd, arg);
     const resolved = path.resolve(r);
     // Security: block reads outside workDir and sensitive files
@@ -1171,7 +1211,7 @@ ${phasePrompt}`,
     description: "Dev-cycle pipeline (start | status | cancel | gate | continue | resume | pause)",
     getArgumentCompletions: (prefix: string) => { const items = ["start","status","cancel","gate","continue","resume","pause","clear-context",RENDER_HTML_FLAG,YOLO_FLAG,"spec","redteam","harden","render","implement","review"].map(v => ({ value: v, label: v })); return items.filter(i => i.value.startsWith(prefix)); },
     handler: async (args, ctx) => {
-      const parts = args.trim().split(/\s+/);
+      const parts = parseCommandArgs(args.trim());
       const cmd = parts[0]?.toLowerCase();
       switch (cmd) {
         case "start": {

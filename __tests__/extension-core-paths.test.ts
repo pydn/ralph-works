@@ -77,6 +77,14 @@ function seedSkill(skillBase: string, skillName: string): void {
   fs.writeFileSync(path.join(dir, "SKILL.md"), `# ${skillName}`, "utf-8");
 }
 
+function seedDefaultPhaseSkills(skillBase: string): void {
+  seedSkill(skillBase, "generate-spec");
+  seedSkill(skillBase, "red-team-audit");
+  seedSkill(skillBase, "harden-spec");
+  seedSkill(skillBase, "tdd-implement");
+  seedSkill(skillBase, "pi-skills/pr-reviewer");
+}
+
 function pushState(branch: FakeEntry[], workDir: string, overrides: Record<string, unknown> = {}): void {
   branch.push({
     type: "custom",
@@ -230,6 +238,122 @@ describe("/ralph start command", () => {
     expect(state.phaseStatus).toBe("executing");
     expect(sendUserMessages).toHaveLength(1);
     expect(String(sendUserMessages[0]?.content)).toContain("Detailed build requirements");
+  });
+
+  it("preserves quoted inline prompt text with spaces", async () => {
+    const workDir = makeTempDir("ralph-start-quoted-prompt-");
+    const skillBase = makeTempDir("ralph-start-quoted-prompt-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedDefaultPhaseSkills(skillBase);
+
+    const branch: FakeEntry[] = [];
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await commands.get("ralph")?.(
+      'start hello-world "Write a hello world script in python"',
+      makeFakeContext(branch, workDir),
+    );
+
+    const state = latestState<{ promptText?: string; phases?: string[] }>(branch);
+    expect(state.promptText).toBe("Write a hello world script in python");
+    expect(state.phases).toEqual(["spec", "redteam", "harden", "implement", "review"]);
+    expect(sendUserMessages).toHaveLength(1);
+    expect(String(sendUserMessages[0]?.content)).toContain("Write a hello world script in python");
+  });
+
+  it("preserves quoted prompt text when phases and flags follow it", async () => {
+    const workDir = makeTempDir("ralph-start-quoted-prompt-phases-");
+    const skillBase = makeTempDir("ralph-start-quoted-prompt-phases-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "generate-spec");
+    seedSkill(skillBase, "red-team-audit");
+
+    const branch: FakeEntry[] = [];
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await commands.get("ralph")?.(
+      'start feature-a "Detailed prompt with spaces" spec,redteam --yolo',
+      makeFakeContext(branch, workDir),
+    );
+
+    const state = latestState<{ promptText?: string; phases?: string[]; yoloMode?: boolean }>(branch);
+    expect(state.promptText).toBe("Detailed prompt with spaces");
+    expect(state.phases).toEqual(["spec", "redteam"]);
+    expect(state.yoloMode).toBe(true);
+    expect(sendUserMessages).toHaveLength(1);
+    expect(String(sendUserMessages[0]?.content)).toContain("Detailed prompt with spaces");
+  });
+
+  it("reads prompt text from .txt and .html workspace files", async () => {
+    const cases = [
+      { fileName: "requirements.txt", content: "Plain text requirements" },
+      { fileName: "requirements.html", content: "<main>HTML requirements</main>" },
+    ];
+
+    for (const promptFile of cases) {
+      const workDir = makeTempDir("ralph-start-prompt-file-");
+      const skillBase = makeTempDir("ralph-start-prompt-file-skills-");
+      process.env.PI_SKILL_BASE = skillBase;
+      seedSkill(skillBase, "generate-spec");
+      fs.writeFileSync(path.join(workDir, promptFile.fileName), promptFile.content, "utf-8");
+
+      const branch: FakeEntry[] = [];
+      const { default: registerExtension } = await import("../index");
+      const { pi, commands, sendUserMessages } = makeFakePi(branch);
+      registerExtension(pi as any);
+
+      await commands.get("ralph")?.(`start feature-a ${promptFile.fileName} spec`, makeFakeContext(branch, workDir));
+
+      const state = latestState<{ promptText?: string; phases?: string[] }>(branch);
+      expect(state.promptText).toBe(promptFile.content);
+      expect(state.phases).toEqual(["spec"]);
+      expect(sendUserMessages).toHaveLength(1);
+      expect(String(sendUserMessages[0]?.content)).toContain(promptFile.content);
+
+      delete process.env.PI_SKILL_BASE;
+      vi.resetModules();
+    }
+  });
+
+  it("does not read prompt file contents outside the workspace or from sensitive files", async () => {
+    const workDir = makeTempDir("ralph-start-safe-prompt-file-");
+    const outsideDir = makeTempDir("ralph-start-outside-prompt-file-");
+    const skillBase = makeTempDir("ralph-start-safe-prompt-file-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "generate-spec");
+    fs.writeFileSync(path.join(outsideDir, "requirements.md"), "Outside workspace secret", "utf-8");
+    fs.writeFileSync(path.join(workDir, ".env"), "WORKSPACE_SECRET=1", "utf-8");
+
+    const outsideBranch: FakeEntry[] = [];
+    const { default: registerExtension } = await import("../index");
+    const outsidePi = makeFakePi(outsideBranch);
+    registerExtension(outsidePi.pi as any);
+
+    const outsidePath = path.join(outsideDir, "requirements.md");
+    await outsidePi.commands.get("ralph")?.(`start feature-a ${outsidePath} spec`, makeFakeContext(outsideBranch, workDir));
+
+    const outsideState = latestState<{ promptText?: string }>(outsideBranch);
+    expect(outsideState.promptText).toBe(outsidePath);
+    expect(String(outsidePi.sendUserMessages[0]?.content)).not.toContain("Outside workspace secret");
+
+    delete process.env.PI_SKILL_BASE;
+    vi.resetModules();
+    process.env.PI_SKILL_BASE = skillBase;
+
+    const sensitiveBranch: FakeEntry[] = [];
+    const { default: freshRegisterExtension } = await import("../index");
+    const sensitivePi = makeFakePi(sensitiveBranch);
+    freshRegisterExtension(sensitivePi.pi as any);
+
+    await sensitivePi.commands.get("ralph")?.("start feature-b .env spec", makeFakeContext(sensitiveBranch, workDir));
+
+    const sensitiveState = latestState<{ promptText?: string }>(sensitiveBranch);
+    expect(sensitiveState.promptText).toBe(".env");
+    expect(String(sensitivePi.sendUserMessages[0]?.content)).not.toContain("WORKSPACE_SECRET=1");
   });
 
   it("checks all selected phase skills before saving state or launching work", async () => {
