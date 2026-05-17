@@ -41,6 +41,7 @@ function makeFakeContext(branch: FakeEntry[], cwd: string) {
       setStatus: vi.fn(),
       setWidget: vi.fn(),
     },
+    compact: vi.fn(),
   };
 }
 
@@ -172,5 +173,48 @@ describe("/ralph continue", () => {
     expect(latestState.pipelineStatus).toBe("running");
     expect(latestState.phaseAttempts).toBe(0);
     expect(latestState.turnWriteCount).toBe(0);
+  });
+});
+
+describe("/ralph clear-context", () => {
+  it("keeps auto context clearing enabled after clear-context --auto completes", async () => {
+    const workDir = makeTempDir("ralph-clear-context-auto-");
+    const branch: FakeEntry[] = [{
+      type: "custom",
+      customType: "ralph-loop-state",
+      data: {
+        feature: "feature-a",
+        workDir,
+        phases: ["spec", "redteam"],
+        maxIterations: 10,
+        startedAt: Date.now(),
+        currentPhase: "spec",
+        currentPhaseIndex: 0,
+        phaseStatus: "executing",
+        pipelineStatus: "running",
+        reviewIterations: 0,
+        phaseAttempts: 0,
+        turnWriteCount: 0,
+        autoClearContext: false,
+      },
+    }];
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await commands.get("ralph")?.("clear-context --auto", ctx);
+
+    expect(ctx.compact).toHaveBeenCalledTimes(1);
+    const compactOptions = ctx.compact.mock.calls[0]?.[0] as { onComplete?: () => void };
+    compactOptions.onComplete?.();
+
+    const latestState = branch[branch.length - 1]?.data as {
+      autoClearContext?: boolean;
+      contextClearCount?: number;
+    };
+    expect(latestState.autoClearContext).toBe(true);
+    expect(latestState.contextClearCount).toBe(1);
   });
 });

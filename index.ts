@@ -542,6 +542,13 @@ function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; a
   if (st.phaseStatus === "post_hook") {
     return { label: "VALIDATING", tone: "accent", actions: ["Validating phase output before transition"] };
   }
+  if (st.phaseStatus === "compacting") {
+    return {
+      label: "COMPACTING CONTEXT",
+      tone: "warning",
+      actions: ["Compacting context now; UI is not frozen"],
+    };
+  }
   if (st.phaseStatus === "corrupted") {
     return { label: "STATE ERROR", tone: "warning", actions: ["/ralph cancel resets the pipeline state"] };
   }
@@ -646,6 +653,8 @@ function setPipelineCompactingUi(ctx: ExtensionContext, st: PipelineState): void
   ctx.ui.setWorkingMessage?.("Compacting context; UI is working and not frozen");
   ctx.ui.setWorkingIndicator?.();
   ctx.ui.setStatus(UI_WIDGET_ID, styleUiText(ctx, "warning", `Ralph | ${st.feature} | COMPACTING CONTEXT | UI is working, not frozen`));
+  refreshWidget(ctx, { ...st, phaseStatus: "compacting" }, { force: true });
+  ctx.ui.notify("Compacting context; UI is working and not frozen.", "info");
 }
 
 function setPipelineWaitingUi(ctx: ExtensionContext, st: PipelineState): void {
@@ -725,6 +734,7 @@ function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineSt
             // Re-validate cooldown before committing (race guard)
             if (!canClearContext(autoCheckState).ok) {
               setPipelineWorkingUi(ctx, u);
+              refreshWidget(ctx, u);
               return; // skip — manual clear raced ahead
             }
             const updated = { ...u, contextClearCount: (u.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
@@ -1228,54 +1238,58 @@ ${phasePrompt}`,
             ctx.ui.notify("Unknown flag. Usage: /ralph clear-context [--auto]", "error");
             return;
           }
+          const clearState = flag === "--auto" ? { ...cs, autoClearContext: true } : cs;
           if (flag === "--auto") {
-            const updatedAuto = { ...cs, autoClearContext: true };
-            saveState(pi, updatedAuto);
+            saveState(pi, clearState);
           }
           // Validate clear
-          const check = canClearContext(cs);
+          const check = canClearContext(clearState);
           if (!check.ok) { ctx.ui.notify("Cannot clear context: " + (check.reason ?? "unknown"), "error"); return; }
           // Build artifact list for prompt augmentation
-          const artifacts = resolveArtifactPaths(cs);
+          const artifacts = resolveArtifactPaths(clearState);
           let artList = "";
           if (artifacts.length > 0) artList = "\nArtifacts on disk:\n" + artifacts.map(a => "- " + a).join("\n");
           // Trigger compaction via ctx, then send steer message in onComplete
-          setPipelineCompactingUi(ctx, cs);
+          setPipelineCompactingUi(ctx, clearState);
           ctx.compact({
             customInstructions: "Preserve pipeline phase context and file operations. Focus on current task instructions.",
             onComplete: (_result) => {
               try {
                 // Re-validate cooldown before committing (race guard)
-                if (!canClearContext(cs).ok) {
-                  setPipelineWorkingUi(ctx, cs);
+                if (!canClearContext(clearState).ok) {
+                  setPipelineWorkingUi(ctx, clearState);
+                  refreshWidget(ctx, clearState);
                   ctx.ui.notify("Context clear skipped — cooldown active", "info");
                   return;
                 }
-                const prompt = buildReorientationPrompt(cs);
+                const prompt = buildReorientationPrompt(clearState);
                 const fullMsg = wrapSteerMessage(prompt + artList, MAX_STEER_SIZE);
                 sendPipelineUserMessage(pi, ctx, fullMsg, { deliverAs: "steer", wrapSteer: false });
                 // Increment counter only after successful send (not before)
-                const updated = { ...cs, contextClearCount: (cs.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
+                const updated = { ...clearState, contextClearCount: (clearState.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
                 saveState(pi, updated);
                 setPipelineWorkingUi(ctx, updated);
                 refreshWidget(ctx, updated);
-                ctx.ui.notify("Context cleared — Phase " + ((cs.currentPhaseIndex ?? 0) + 1) + "/" + (cs.phases?.length ?? "?") + " resumed", "info");
+                ctx.ui.notify("Context cleared — Phase " + ((clearState.currentPhaseIndex ?? 0) + 1) + "/" + (clearState.phases?.length ?? "?") + " resumed", "info");
               } catch (e) {
-                setPipelineWorkingUi(ctx, cs);
+                setPipelineWorkingUi(ctx, clearState);
+                refreshWidget(ctx, clearState);
                 ctx.ui.notify("Steer failed: " + String(e), "error");
               }
             },
             onError: (_err) => {
               // Fallback: send steer-only without compaction
               try {
-                const prompt = buildReorientationPrompt(cs);
+                const prompt = buildReorientationPrompt(clearState);
                 sendPipelineUserMessage(pi, ctx, prompt, { deliverAs: "steer" });
-                const updated = { ...cs, contextClearCount: (cs.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
+                const updated = { ...clearState, contextClearCount: (clearState.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
                 saveState(pi, updated);
                 setPipelineWorkingUi(ctx, updated);
+                refreshWidget(ctx, updated);
                 ctx.ui.notify("Context cleared (compaction fallback)", "warning");
               } catch (e) {
-                setPipelineWorkingUi(ctx, cs);
+                setPipelineWorkingUi(ctx, clearState);
+                refreshWidget(ctx, clearState);
                 ctx.ui.notify("Clear failed entirely: " + String(e), "error");
               }
             },
