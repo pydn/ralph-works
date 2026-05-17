@@ -27,7 +27,7 @@ const UI_WIDGET_MAX_LINES = 10;
 // Concurrency lock — module-level is safe: Pi runs single-threaded per process,
 // and extension supports only one pipeline per session (AGENTS.md §Open Risks #4).
 let isGating = false;
-const widgetRenderCache = new WeakMap<ExtensionContext, string>();
+const widgetRenderCache = new Map<string, string>();
 
 // ── Interfaces ──────────────────────────────────────────────
 interface GateResult { name: string; pass: boolean; output: string; }
@@ -554,15 +554,21 @@ function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
   return lines;
 }
 
-function setPipelineWidget(ctx: ExtensionContext, lines: string[], options?: { force?: boolean }): void {
+function getWidgetRenderCacheKey(st: PipelineState): string {
+  const startedAt = Number.isFinite(st.startedAt) ? String(st.startedAt) : "unknown";
+  return [UI_WIDGET_ID, st.workDir, st.feature, startedAt].join("\0");
+}
+
+function setPipelineWidget(ctx: ExtensionContext, lines: string[], options?: { force?: boolean; cacheKey?: string }): void {
   const signature = lines.join("\n");
-  if (!options?.force && widgetRenderCache.get(ctx) === signature) return;
-  widgetRenderCache.set(ctx, signature);
+  const cacheKey = options?.cacheKey ?? UI_WIDGET_ID;
+  if (!options?.force && widgetRenderCache.get(cacheKey) === signature) return;
+  widgetRenderCache.set(cacheKey, signature);
   ctx.ui.setWidget(UI_WIDGET_ID, lines);
 }
 
-function clearPipelineWidgetCache(ctx: ExtensionContext): void {
-  widgetRenderCache.delete(ctx);
+function clearPipelineWidgetCache(): void {
+  widgetRenderCache.clear();
 }
 
 function setPipelineWorkingUi(ctx: ExtensionContext, st: PipelineState, label?: string): void {
@@ -839,7 +845,7 @@ function removePipelineLock(feature: string, wd: string): void {
 // ── Widget ──────────────────────────────────────────────────
 
 function refreshWidget(ctx: ExtensionContext, st: PipelineState, options?: { force?: boolean }) {
-  setPipelineWidget(ctx, buildWidgetLines(ctx, st), options);
+  setPipelineWidget(ctx, buildWidgetLines(ctx, st), { ...options, cacheKey: getWidgetRenderCacheKey(st) });
 }
 
 // ── Extension Entry Point ──────────────────────────────────
@@ -1114,7 +1120,7 @@ ${phasePrompt}`,
         case "cancel": {
           const state = getState(ctx);
           if (state) removePipelineLock(state.feature, state.workDir);
-          clearPipelineWidgetCache(ctx);
+          clearPipelineWidgetCache();
           ctx.ui.setStatus("ralph-loop", ""); ctx.ui.setWidget("ralph-loop", []);
           ctx.ui.notify("Pipeline cancelled", "warning");
           break;
