@@ -136,13 +136,14 @@ describe("sanitizeErrorOutput", () => {
 });
 
 describe("DEFAULT_PHASES", () => {
-  it("equals PHASE_ORDER (single source of truth)", () => {
-    expect(DEFAULT_PHASES).toEqual(Array.from(PHASE_ORDER));
+  it("opts users out of HTML rendering by default", () => {
+    expect(DEFAULT_PHASES).toEqual(["spec", "redteam", "harden", "implement", "review"]);
+    expect(DEFAULT_PHASES).not.toContain("render");
   });
 
-  it("has all 6 phases including render", () => {
-    expect(DEFAULT_PHASES.length).toBe(6);
-    expect(DEFAULT_PHASES).toContain("render");
+  it("keeps render available as an explicit opt-in phase", () => {
+    expect(PHASE_ORDER).toContain("render");
+    expect(PHASE_ORDER.indexOf("render")).toBeLessThan(PHASE_ORDER.indexOf("implement"));
   });
 });
 

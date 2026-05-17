@@ -32,8 +32,9 @@ Reload Pi (`/reload`) to activate.
 
 | Command | Description |
 |---------|-------------|
-| `/ralph start <feature>` | Start the full six-phase pipeline |
-| `/ralph <feature>` | Shorthand for starting the full pipeline |
+| `/ralph start <feature>` | Start the default five-phase pipeline without HTML rendering |
+| `/ralph start <feature> --render-html` | Start with Markdown-to-HTML rendering enabled |
+| `/ralph <feature>` | Shorthand for starting the default pipeline without HTML rendering |
 | `/ralph start <feature> spec,implement` | Run selected phases only |
 | `/ralph start <feature> "reduce nesting depth"` | With inline prompt |
 | `/ralph start <feature> .ralph/task.md` | Prompt from file |
@@ -41,6 +42,7 @@ Reload Pi (`/reload`) to activate.
 | `/ralph status` | Show current pipeline state |
 | `/ralph pause` | Pause the active pipeline |
 | `/ralph continue` | Re-launch the current or queued phase without advancing it |
+| `/ralph continue --render-html` | Enable HTML rendering before the render point, then continue |
 | `/ralph resume` | Resume the active pipeline at its current phase |
 | `/ralph resume <phase>` | Resume at a specific phase |
 | `/ralph gate [paths...]` | Run standalone quality gates |
@@ -48,7 +50,7 @@ Reload Pi (`/reload`) to activate.
 | `/ralph clear-context --auto` | Enable auto-clear at every phase boundary |
 | `/ralph cancel` | Abort pipeline |
 
-Valid phase names are `spec`, `redteam`, `harden`, `render`, `implement`, and `review`.
+Valid phase names are `spec`, `redteam`, `harden`, `render`, `implement`, and `review`. The `render` phase is opt-in; default runs skip it unless `--render-html` or an explicit phase list includes `render`.
 
 ## Phase Completion
 
