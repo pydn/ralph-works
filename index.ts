@@ -641,6 +641,13 @@ function setPipelineWorkingUi(ctx: ExtensionContext, st: PipelineState, label?: 
   ctx.ui.setStatus(UI_WIDGET_ID, label ?? styleUiText(ctx, "accent", `Ralph | ${st.feature} | RUNNING | Phase ${idx + 1}/${phases.length}: ${phaseName}`));
 }
 
+function setPipelineCompactingUi(ctx: ExtensionContext, st: PipelineState): void {
+  ctx.ui.setWorkingVisible?.(true);
+  ctx.ui.setWorkingMessage?.("Compacting context; UI is working and not frozen");
+  ctx.ui.setWorkingIndicator?.();
+  ctx.ui.setStatus(UI_WIDGET_ID, styleUiText(ctx, "warning", `Ralph | ${st.feature} | COMPACTING CONTEXT | UI is working, not frozen`));
+}
+
 function setPipelineWaitingUi(ctx: ExtensionContext, st: PipelineState): void {
   const { phases, idx, phaseName } = getPhaseDisplay(st);
   const status = `⏸ Waiting for user input | ${st.feature} | Phase ${idx + 1}/${phases.length}: ${phaseName}`;
@@ -710,12 +717,16 @@ function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineSt
     const autoCheckState = { ...u, phaseStatus: "executing" } as PipelineState;
     const autoCheck = canClearContext(autoCheckState);
     if (autoCheck.ok) {
+      setPipelineCompactingUi(ctx, u);
       ctx.compact({
         customInstructions: "Preserve pipeline phase context. Focus on transitioning to the new phase.",
         onComplete: () => {
           try {
             // Re-validate cooldown before committing (race guard)
-            if (!canClearContext(autoCheckState).ok) return; // skip — manual clear raced ahead
+            if (!canClearContext(autoCheckState).ok) {
+              setPipelineWorkingUi(ctx, u);
+              return; // skip — manual clear raced ahead
+            }
             const updated = { ...u, contextClearCount: (u.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
             launchPhase(pi, ctx, updated, {
               asFollowUp: true,
@@ -1229,21 +1240,28 @@ ${phasePrompt}`,
           let artList = "";
           if (artifacts.length > 0) artList = "\nArtifacts on disk:\n" + artifacts.map(a => "- " + a).join("\n");
           // Trigger compaction via ctx, then send steer message in onComplete
+          setPipelineCompactingUi(ctx, cs);
           ctx.compact({
             customInstructions: "Preserve pipeline phase context and file operations. Focus on current task instructions.",
             onComplete: (_result) => {
               try {
                 // Re-validate cooldown before committing (race guard)
-                if (!canClearContext(cs).ok) { ctx.ui.notify("Context clear skipped — cooldown active", "info"); return; }
+                if (!canClearContext(cs).ok) {
+                  setPipelineWorkingUi(ctx, cs);
+                  ctx.ui.notify("Context clear skipped — cooldown active", "info");
+                  return;
+                }
                 const prompt = buildReorientationPrompt(cs);
                 const fullMsg = wrapSteerMessage(prompt + artList, MAX_STEER_SIZE);
                 sendPipelineUserMessage(pi, ctx, fullMsg, { deliverAs: "steer", wrapSteer: false });
                 // Increment counter only after successful send (not before)
                 const updated = { ...cs, contextClearCount: (cs.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
                 saveState(pi, updated);
+                setPipelineWorkingUi(ctx, updated);
                 refreshWidget(ctx, updated);
                 ctx.ui.notify("Context cleared — Phase " + ((cs.currentPhaseIndex ?? 0) + 1) + "/" + (cs.phases?.length ?? "?") + " resumed", "info");
               } catch (e) {
+                setPipelineWorkingUi(ctx, cs);
                 ctx.ui.notify("Steer failed: " + String(e), "error");
               }
             },
@@ -1254,8 +1272,10 @@ ${phasePrompt}`,
                 sendPipelineUserMessage(pi, ctx, prompt, { deliverAs: "steer" });
                 const updated = { ...cs, contextClearCount: (cs.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
                 saveState(pi, updated);
+                setPipelineWorkingUi(ctx, updated);
                 ctx.ui.notify("Context cleared (compaction fallback)", "warning");
               } catch (e) {
+                setPipelineWorkingUi(ctx, cs);
                 ctx.ui.notify("Clear failed entirely: " + String(e), "error");
               }
             },
