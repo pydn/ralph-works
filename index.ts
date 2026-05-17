@@ -601,12 +601,11 @@ function clearPipelineWidgetCache(): void {
   widgetRenderCache.clear();
 }
 
-function setPipelineWorkingUi(ctx: ExtensionContext, st: PipelineState, label?: string): void {
+function setPipelineWorkingUi(ctx: ExtensionContext, _st: PipelineState): void {
   ctx.ui.setWorkingVisible?.(true);
   ctx.ui.setWorkingMessage?.();
   ctx.ui.setWorkingIndicator?.();
-  const { phases, idx, phaseName } = getPhaseDisplay(st);
-  ctx.ui.setStatus(UI_WIDGET_ID, label ?? styleUiText(ctx, "accent", `Ralph | ${st.feature} | RUNNING | Phase ${idx + 1}/${phases.length}: ${phaseName}`));
+  ctx.ui.setStatus(UI_WIDGET_ID, undefined);
 }
 
 function setPipelineCompactingUi(ctx: ExtensionContext, st: PipelineState): void {
@@ -616,13 +615,11 @@ function setPipelineCompactingUi(ctx: ExtensionContext, st: PipelineState): void
   ctx.ui.setStatus(UI_WIDGET_ID, "COMPACTING; this may take a minute");
 }
 
-function setPipelineWaitingUi(ctx: ExtensionContext, st: PipelineState): void {
-  const { phases, idx, phaseName } = getPhaseDisplay(st);
-  const status = `⏸ Waiting for user input | ${st.feature} | Phase ${idx + 1}/${phases.length}: ${phaseName}`;
+function setPipelineWaitingUi(ctx: ExtensionContext, _st: PipelineState): void {
   ctx.ui.setWorkingVisible?.(false);
   ctx.ui.setWorkingMessage?.("Waiting for user input");
   ctx.ui.setWorkingIndicator?.({ frames: [] });
-  ctx.ui.setStatus(UI_WIDGET_ID, styleUiText(ctx, "warning", status));
+  ctx.ui.setStatus(UI_WIDGET_ID, undefined);
 }
 
 function enterWaitingForUser(pi: ExtensionAPI, ctx: ExtensionContext, st: PipelineState): void {

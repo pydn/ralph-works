@@ -218,10 +218,7 @@ describe("next-phase launch", () => {
     const compactOptions = ctx.compact.mock.calls[0]?.[0] as { onComplete?: () => void };
     compactOptions.onComplete?.();
 
-    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith(
-      "ralph-loop",
-      expect.stringContaining("RUNNING | Phase 2/2: Red Team Audit"),
-    );
+    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("ralph-loop", undefined);
   });
 
   it("marks the pipeline as waiting for user input when a phase ends without completion", async () => {
@@ -270,10 +267,7 @@ describe("next-phase launch", () => {
     expect(latestState.phaseStatus).toBe("waiting_for_user");
     expect(ctx.ui.setWorkingVisible).toHaveBeenLastCalledWith(false);
     expect(ctx.ui.setWorkingIndicator).toHaveBeenLastCalledWith({ frames: [] });
-    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith(
-      "ralph-loop",
-      expect.stringContaining("Waiting for user input"),
-    );
+    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("ralph-loop", undefined);
     const widgetLines = ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[];
     expect(ctx.ui.setWidget).toHaveBeenLastCalledWith(
       "ralph-loop",
@@ -327,10 +321,7 @@ describe("next-phase launch", () => {
     expect(ctx.ui.setWorkingVisible).toHaveBeenLastCalledWith(true);
     expect(ctx.ui.setWorkingMessage).toHaveBeenLastCalledWith();
     expect(ctx.ui.setWorkingIndicator).toHaveBeenLastCalledWith();
-    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith(
-      "ralph-loop",
-      expect.stringContaining("Ralph | needs-operator"),
-    );
+    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("ralph-loop", undefined);
   });
 
   it("renders the active widget once for duplicate streaming updates", async () => {
