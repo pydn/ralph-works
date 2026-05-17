@@ -141,6 +141,79 @@ describe("next-phase launch", () => {
     expect(latestState.phaseStatus).toBe("executing");
   });
 
+  it("shows a clear status before automatic compaction starts", async () => {
+    const workDir = makeTempDir("ralph-auto-compact-work-");
+    const skillBase = makeTempDir("ralph-auto-compact-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "feature-a.md"),
+      `# Feature A\n\n${"Spec body.\n".repeat(256)}`,
+      "utf-8",
+    );
+
+    fs.mkdirSync(path.join(skillBase, "red-team-audit"), { recursive: true });
+    fs.writeFileSync(path.join(skillBase, "red-team-audit", "SKILL.md"), "# Red Team Audit", "utf-8");
+
+    const branch: FakeEntry[] = [];
+    branch.push({
+      type: "custom",
+      customType: "ralph-loop-state",
+      data: {
+        feature: "feature-a",
+        workDir,
+        phases: ["spec", "redteam"],
+        maxIterations: 10,
+        startedAt: Date.now(),
+        currentPhase: "spec",
+        currentPhaseIndex: 0,
+        phaseStatus: "executing",
+        pipelineStatus: "running",
+        reviewIterations: 0,
+        phaseAttempts: 0,
+        turnWriteCount: 0,
+        autoClearContext: true,
+      },
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    const agentEnd = handlers.get("agent_end");
+    expect(agentEnd).toBeTypeOf("function");
+
+    await agentEnd?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: `Spec is complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+          },
+        ],
+      },
+      ctx,
+    );
+
+    expect(ctx.compact).toHaveBeenCalledTimes(1);
+    const compactingStatus = ctx.ui.setStatus.mock.calls.find((call) =>
+      String(call[1]).includes("COMPACTING CONTEXT"),
+    );
+    expect(compactingStatus?.[1]).toEqual(expect.stringContaining("not frozen"));
+    expect(ctx.ui.setWorkingMessage).toHaveBeenCalledWith(expect.stringContaining("Compacting context"));
+    expect(ctx.ui.setStatus.mock.invocationCallOrder.at(-1)).toBeLessThan(ctx.compact.mock.invocationCallOrder[0]);
+
+    const compactOptions = ctx.compact.mock.calls[0]?.[0] as { onComplete?: () => void };
+    compactOptions.onComplete?.();
+
+    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith(
+      "ralph-loop",
+      expect.stringContaining("RUNNING | Phase 2/2: Red Team Audit"),
+    );
+  });
+
   it("marks the pipeline as waiting for user input when a phase ends without completion", async () => {
     const workDir = makeTempDir("ralph-wait-work-");
     const branch: FakeEntry[] = [
