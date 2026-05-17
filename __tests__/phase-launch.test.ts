@@ -278,12 +278,14 @@ describe("next-phase launch", () => {
     expect(ctx.ui.setWidget).toHaveBeenLastCalledWith(
       "ralph-loop",
       expect.arrayContaining([
-        expect.stringContaining("Ralph Pipeline"),
+        expect.stringContaining("Ralph · WAITING FOR USER INPUT"),
         expect.stringContaining("WAITING FOR USER INPUT"),
-        expect.stringContaining("▶ 1. Generate Spec"),
+        expect.stringContaining("▶ 1/2 Generate Spec"),
         expect.stringContaining("Reply to the prompt"),
       ]),
+      { placement: "belowEditor" },
     );
+    expect(widgetLines.length).toBeLessThanOrEqual(4);
     expect(widgetLines.join("\n")).not.toContain("Phase 1/2");
     expect(widgetLines.join("\n")).not.toMatch(/\[[#-]+\] \d+%/);
   });
@@ -370,12 +372,14 @@ describe("next-phase launch", () => {
     expect(ctx.ui.setWidget).toHaveBeenLastCalledWith(
       "ralph-loop",
       expect.arrayContaining([
-        expect.stringContaining("Ralph Pipeline"),
+        expect.stringContaining("Ralph · RUNNING"),
         expect.stringContaining("RUNNING"),
         expect.stringContaining("Run ralph_gate_check"),
       ]),
+      { placement: "belowEditor" },
     );
     const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
+    expect((ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).length).toBeLessThanOrEqual(4);
     expect(widgetText).not.toContain("/ralph pause pauses safely");
     expect(widgetText).not.toContain("/ralph status shows details");
     expect(widgetText).not.toContain("Status: running");
@@ -488,16 +492,17 @@ ${"Hardened spec body.\n".repeat(128)}`,
     const widgetCalls = ctx.ui.setWidget.mock.calls.map((call) => call[1] as string[]);
     expect(widgetCalls.length).toBeGreaterThanOrEqual(2);
 
-    for (const lines of widgetCalls) {
-      expect(lines.length).toBeLessThanOrEqual(10);
-      expect(lines.at(-1)).toContain("╰─");
+    for (const call of ctx.ui.setWidget.mock.calls) {
+      const lines = call[1] as string[];
+      expect(lines.length).toBeLessThanOrEqual(4);
+      expect(call[2]).toEqual({ placement: "belowEditor" });
       expect(lines.join("\n")).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
     }
 
     const renderedTransition = widgetCalls.map((lines) => lines.join("\n")).join("\n\n");
     expect(renderedTransition).toContain("PREPARING");
     expect(renderedTransition).toContain("RUNNING");
-    expect(renderedTransition).toContain("▶ 4. Render Markdown → HTML");
+    expect(renderedTransition).toContain("▶ 4/6 Render Markdown → HTML");
   });
 
   it("uses queue-safe user messaging when session reload resumes an executing phase", async () => {

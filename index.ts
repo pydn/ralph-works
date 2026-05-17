@@ -25,7 +25,7 @@ const RENDER_HTML_FLAG = "--render-html";
 const RENDER_PHASE = "render";
 const STEER_DEDUP_TTL_MS = 30_000;
 const UI_WIDGET_ID = "ralph-loop";
-const UI_WIDGET_MAX_LINES = 10;
+const UI_WIDGET_MAX_LINES = 4;
 // Concurrency lock — module-level is safe: Pi runs single-threaded per process,
 // and extension supports only one pipeline per session (AGENTS.md §Open Risks #4).
 let isGating = false;
@@ -553,36 +553,20 @@ function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; a
   };
 }
 
-function buildPhaseLines(ctx: ExtensionContext, phases: string[], idx: number): string[] {
-  return phases.map((phase, phaseIdx) => {
-    const marker = phaseIdx < idx ? "✓" : phaseIdx === idx ? "▶" : "·";
-    const label = `${marker} ${phaseIdx + 1}. ${truncateUiText(PHASE_META[phase]?.name ?? phase, 34)}`;
-    if (phaseIdx === idx) return styleUiText(ctx, "accent", `│ ${label}`);
-    if (phaseIdx < idx) return styleUiText(ctx, "dim", `│ ${label}`);
-    return `│ ${label}`;
-  });
-}
-
-function appendWidgetSection(lines: string[], heading: string, entries: string[]): void {
-  const available = UI_WIDGET_MAX_LINES - lines.length - 1;
-  if (available <= 0 || entries.length === 0) return;
-  if (available === 1) {
-    lines.push(entries[0] ?? "");
-    return;
-  }
-
-  lines.push(heading);
-  for (const entry of entries.slice(0, available - 1)) {
-    lines.push(entry);
-  }
+function buildPhaseTrack(phases: string[], idx: number): string {
+  return phases.map((_phase, phaseIdx) => {
+    if (phaseIdx < idx) return "✓";
+    if (phaseIdx === idx) return "▶";
+    return "·";
+  }).join(" ");
 }
 
 function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
-  const { phases, idx } = getPhaseDisplay(st);
+  const { phases, idx, phaseName } = getPhaseDisplay(st);
   const widgetState = resolveWidgetState(st);
   const detailLines = [
     st.pipelineStatus && st.pipelineStatus !== "running" ? `Status: ${st.pipelineStatus}` : "",
-    st.phaseStatus && !["executing", "pre_hook"].includes(st.phaseStatus) ? `Phase status: ${st.phaseStatus}` : "",
+    st.phaseStatus && !["executing", "pre_hook", WAITING_FOR_USER_PHASE_STATUS].includes(st.phaseStatus) ? `Phase status: ${st.phaseStatus}` : "",
     st.reviewIterations && st.reviewIterations > 0 ? `Review iterations: ${st.reviewIterations}` : "",
     st.phaseAttempts && st.phaseAttempts > 0 ? `Phase attempts: ${st.phaseAttempts}` : "",
     st.contextClearCount && st.contextClearCount > 0 ? `Context clears: ${st.contextClearCount}` : "",
@@ -590,26 +574,14 @@ function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
   ].filter(Boolean);
 
   const lines = [
-    styleUiText(ctx, widgetState.tone, "╭─ Ralph Pipeline"),
-    styleUiText(ctx, widgetState.tone, `│ ${widgetState.label} · ${truncateUiText(st.feature, 46)}`),
-    styleUiText(ctx, "dim", "├─ Phases"),
-    ...buildPhaseLines(ctx, phases, idx),
+    styleUiText(ctx, widgetState.tone, `Ralph · ${widgetState.label} · ${truncateUiText(st.feature, 42)}`),
+    styleUiText(ctx, "accent", `▶ ${idx + 1}/${phases.length} ${truncateUiText(phaseName, 34)} · [${buildPhaseTrack(phases, idx)}]`),
   ];
 
-  appendWidgetSection(
-    lines,
-    styleUiText(ctx, "dim", "├─ Action"),
-    widgetState.actions.map(action => styleUiText(ctx, widgetState.tone, `│ ${truncateUiText(action, 54)}`)),
-  );
-  appendWidgetSection(
-    lines,
-    styleUiText(ctx, "dim", "├─ Details"),
-    detailLines.map(line => `│ ${truncateUiText(line, 54)}`),
-  );
-  const bottomLine = styleUiText(ctx, "dim", "╰─");
-  if (lines.length >= UI_WIDGET_MAX_LINES) return [...lines.slice(0, UI_WIDGET_MAX_LINES - 1), bottomLine];
-  lines.push(bottomLine);
-  return lines;
+  const action = widgetState.actions[0];
+  if (action) lines.push(styleUiText(ctx, widgetState.tone, `Action · ${truncateUiText(action, 52)}`));
+  if (detailLines.length > 0) lines.push(styleUiText(ctx, "dim", truncateUiText(detailLines.join(" · "), 60)));
+  return lines.slice(0, UI_WIDGET_MAX_LINES);
 }
 
 function getWidgetRenderCacheKey(st: PipelineState): string {
@@ -622,7 +594,7 @@ function setPipelineWidget(ctx: ExtensionContext, lines: string[], options?: { f
   const cacheKey = options?.cacheKey ?? UI_WIDGET_ID;
   if (!options?.force && widgetRenderCache.get(cacheKey) === signature) return;
   widgetRenderCache.set(cacheKey, signature);
-  ctx.ui.setWidget(UI_WIDGET_ID, lines);
+  ctx.ui.setWidget(UI_WIDGET_ID, lines, { placement: "belowEditor" });
 }
 
 function clearPipelineWidgetCache(): void {
