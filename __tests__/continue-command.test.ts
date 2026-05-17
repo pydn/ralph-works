@@ -62,6 +62,59 @@ afterEach(() => {
 });
 
 describe("/ralph continue", () => {
+  it("allows users to opt in to HTML rendering while continuing before render would run", async () => {
+    const workDir = makeTempDir("ralph-continue-render-opt-in-");
+    const skillBase = makeTempDir("ralph-continue-render-opt-in-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+
+    fs.mkdirSync(path.join(skillBase, "harden-spec"), { recursive: true });
+    fs.writeFileSync(path.join(skillBase, "harden-spec", "SKILL.md"), "# Harden Spec", "utf-8");
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.mkdirSync(path.join(workDir, "docs", "security"), { recursive: true });
+    fs.writeFileSync(path.join(workDir, "docs", "specs", "feature-a.md"), "# Feature A", "utf-8");
+    fs.writeFileSync(path.join(workDir, "docs", "security", "redteam-findings-feature-a.md"), "[WARNING] test", "utf-8");
+
+    const branch: FakeEntry[] = [{
+      type: "custom",
+      customType: "ralph-loop-state",
+      data: {
+        feature: "feature-a",
+        workDir,
+        phases: ["spec", "redteam", "harden", "implement", "review"],
+        maxIterations: 10,
+        startedAt: Date.now(),
+        currentPhase: "harden",
+        currentPhaseIndex: 2,
+        phaseStatus: "executing",
+        pipelineStatus: "running",
+        reviewIterations: 0,
+        phaseAttempts: 1,
+        turnWriteCount: 1,
+        autoClearContext: false,
+      },
+    }];
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await commands.get("ralph")?.("continue --render-html", makeFakeContext(branch, workDir));
+
+    expect(sendUserMessages).toHaveLength(1);
+    expect(String(sendUserMessages[0]?.content)).toContain("Phase: Harden Spec");
+
+    const latestState = branch[branch.length - 1]?.data as {
+      currentPhase?: string;
+      currentPhaseIndex?: number;
+      phases?: string[];
+      promptText?: string;
+    };
+    expect(latestState.phases).toEqual(["spec", "redteam", "harden", "render", "implement", "review"]);
+    expect(latestState.currentPhase).toBe("harden");
+    expect(latestState.currentPhaseIndex).toBe(2);
+    expect(latestState.promptText).toBeUndefined();
+  });
+
   it("relaunches the saved current phase without advancing past completion markers", async () => {
     const workDir = makeTempDir("ralph-continue-work-");
     const skillBase = makeTempDir("ralph-continue-skills-");

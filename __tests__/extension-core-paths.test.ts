@@ -114,6 +114,57 @@ afterEach(() => {
 });
 
 describe("/ralph start command", () => {
+  it("opts users out of HTML rendering for default starts", async () => {
+    const workDir = makeTempDir("ralph-default-no-render-");
+    const skillBase = makeTempDir("ralph-default-no-render-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "generate-spec");
+    seedSkill(skillBase, "red-team-audit");
+    seedSkill(skillBase, "harden-spec");
+    seedSkill(skillBase, "tdd-implement");
+    seedSkill(skillBase, "pi-skills/pr-reviewer");
+
+    const branch: FakeEntry[] = [];
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await commands.get("ralph")?.("start feature-a", makeFakeContext(branch, workDir));
+
+    const state = latestState<{ promptText?: string; phases?: string[]; currentPhase?: string }>(branch);
+    expect(state.phases).toEqual(["spec", "redteam", "harden", "implement", "review"]);
+    expect(state.phases).not.toContain("render");
+    expect(state.currentPhase).toBe("spec");
+    expect(state.promptText).toBeUndefined();
+    expect(sendUserMessages).toHaveLength(1);
+    expect(String(sendUserMessages[0]?.content)).not.toContain("Render Markdown");
+  });
+
+  it("allows users to opt in to HTML rendering on start", async () => {
+    const workDir = makeTempDir("ralph-start-render-opt-in-");
+    const skillBase = makeTempDir("ralph-start-render-opt-in-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "generate-spec");
+    seedSkill(skillBase, "red-team-audit");
+    seedSkill(skillBase, "harden-spec");
+    seedSkill(skillBase, "markdown-to-html");
+    seedSkill(skillBase, "tdd-implement");
+    seedSkill(skillBase, "pi-skills/pr-reviewer");
+
+    const branch: FakeEntry[] = [];
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await commands.get("ralph")?.("start feature-a --render-html", makeFakeContext(branch, workDir));
+
+    const state = latestState<{ promptText?: string; phases?: string[]; currentPhase?: string }>(branch);
+    expect(state.phases).toEqual(["spec", "redteam", "harden", "render", "implement", "review"]);
+    expect(state.currentPhase).toBe("spec");
+    expect(state.promptText).toBeUndefined();
+    expect(sendUserMessages).toHaveLength(1);
+  });
+
   it("reads prompt text from a workspace file and applies an explicit phase list", async () => {
     const workDir = makeTempDir("ralph-start-work-");
     const skillBase = makeTempDir("ralph-start-skills-");

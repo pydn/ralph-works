@@ -51,10 +51,10 @@ export function validatePhaseOrder(phases: string[]): PhaseValidationResult {
 }
 
 /**
- * Default phase list — single source of truth for all hardcoded default arrays.
- * Exported from stateMachine so index.ts can import instead of hardcoding.
+ * Default phase list. HTML rendering stays available in PHASE_ORDER, but users
+ * are opted out unless they explicitly request the render phase.
  */
-export const DEFAULT_PHASES: string[] = [...PHASE_ORDER];
+export const DEFAULT_PHASES: string[] = PHASE_ORDER.filter(phase => phase !== "render");
 
 export const PHASE_COMPLETE_MARKER = "RALPH_PHASE_COMPLETE";
 

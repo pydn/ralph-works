@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as child from "node:child_process";
-import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, DEFAULT_PHASES, sanitizeFeatureName, resolveGates, isValidTargetPath, resolvePhaseCompletion, resolveSessionStartAction, hasPhaseCompletionMarker, PHASE_COMPLETE_MARKER, validateHardenedSpecStatus } from "./src/stateMachine";
+import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, PHASE_ORDER, DEFAULT_PHASES, sanitizeFeatureName, resolveGates, isValidTargetPath, resolvePhaseCompletion, resolveSessionStartAction, hasPhaseCompletionMarker, PHASE_COMPLETE_MARKER, validateHardenedSpecStatus } from "./src/stateMachine";
 import { wrapSteerMessage, MAX_STEER_SIZE, validatePhaseIndex, canClearContext, buildReorientationPrompt, resolveArtifactPaths } from "./src/steer";
 
 // ── Constants ───────────────────────────────────────────────
@@ -21,6 +21,8 @@ const MAX_PHASE_ATTEMPTS = 3;
 const GATE_THRESHOLD = 3;
 const GATE_PHASES = new Set(["implement", "review"]);
 const WAITING_FOR_USER_PHASE_STATUS = "waiting_for_user";
+const RENDER_HTML_FLAG = "--render-html";
+const RENDER_PHASE = "render";
 const STEER_DEDUP_TTL_MS = 30_000;
 const UI_WIDGET_ID = "ralph-loop";
 const UI_WIDGET_MAX_LINES = 10;
@@ -279,6 +281,37 @@ function resolvePromptInput(arg: string, wd: string): string | undefined {
     if (fs.existsSync(r)) return fs.readFileSync(r, "utf-8").trim();
   }
   return arg;
+}
+
+function parseRenderHtmlFlag(args: string[]): { args: string[]; renderHtml: boolean } {
+  const filtered = args.filter(arg => arg !== RENDER_HTML_FLAG);
+  return { args: filtered, renderHtml: filtered.length !== args.length };
+}
+
+function addRenderPhase(phases: string[]): string[] {
+  if (phases.includes(RENDER_PHASE)) return [...phases];
+  const renderOrder = PHASE_ORDER.findIndex(phase => phase === RENDER_PHASE);
+  const insertAt = phases.findIndex(phase => {
+    const phaseOrder = PHASE_ORDER.findIndex(knownPhase => knownPhase === phase);
+    return phaseOrder > renderOrder;
+  });
+  const idx = insertAt >= 0 ? insertAt : phases.length;
+  return [...phases.slice(0, idx), RENDER_PHASE, ...phases.slice(idx)];
+}
+
+function canAddRenderBeforeCurrentPhase(phases: string[], currentPhaseIndex: number): boolean {
+  const currentPhase = phases[currentPhaseIndex];
+  const currentOrder = PHASE_ORDER.findIndex(phase => phase === currentPhase);
+  const renderOrder = PHASE_ORDER.findIndex(phase => phase === RENDER_PHASE);
+  return currentOrder >= 0 && currentOrder < renderOrder;
+}
+
+function resolveCurrentPhaseIndex(state: PipelineState, phases: string[], fallbackIndex: number): number {
+  if (state.currentPhase) {
+    const currentPhaseIndex = phases.indexOf(state.currentPhase);
+    if (currentPhaseIndex >= 0) return currentPhaseIndex;
+  }
+  return fallbackIndex;
 }
 
 // ── State Machine Core ─────────────────────────────────────
@@ -1036,7 +1069,7 @@ ${phasePrompt}`,
   // ── Command: /ralph ────────────────────────────────────
   pi.registerCommand("ralph", {
     description: "Dev-cycle pipeline (start | status | cancel | gate | continue | resume | pause)",
-    getArgumentCompletions: (prefix: string) => { const items = ["start","status","cancel","gate","continue","resume","pause","clear-context","spec","redteam","harden","render","implement","review"].map(v => ({ value: v, label: v })); return items.filter(i => i.value.startsWith(prefix)); },
+    getArgumentCompletions: (prefix: string) => { const items = ["start","status","cancel","gate","continue","resume","pause","clear-context",RENDER_HTML_FLAG,"spec","redteam","harden","render","implement","review"].map(v => ({ value: v, label: v })); return items.filter(i => i.value.startsWith(prefix)); },
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       const cmd = parts[0]?.toLowerCase();
@@ -1044,15 +1077,17 @@ ${phasePrompt}`,
         case "start": {
           if (getState(ctx)) { ctx.ui.notify("Pipeline already running. /ralph cancel first.", "error"); return; }
           const feature = parts[1];
-          if (!feature) { ctx.ui.notify('Usage: /ralph start <feature> [prompt] [phases]', "error"); return; }
-          const validPhases = new Set(DEFAULT_PHASES);
+          if (!feature) { ctx.ui.notify('Usage: /ralph start <feature> [prompt] [phases] [--render-html]', "error"); return; }
+          const validPhases = new Set<string>(PHASE_ORDER);
           let phases: string[] = [...DEFAULT_PHASES];
           let promptArg: string | undefined;
-          if (parts[2]) {
-            const mp = parts[2].split(",").map(p => p.trim());
+          const parsedStartArgs = parseRenderHtmlFlag(parts.slice(2));
+          if (parsedStartArgs.args[0]) {
+            const mp = parsedStartArgs.args[0].split(",").map(p => p.trim());
             if (mp.every(p => validPhases.has(p))) { phases = mp; }
-            else { promptArg = parts[2]; if (parts[3]) { const rp = parts[3].split(",").map(p => p.trim()).filter(p => validPhases.has(p)); if (rp.length) phases = rp; } }
+            else { promptArg = parsedStartArgs.args[0]; if (parsedStartArgs.args[1]) { const rp = parsedStartArgs.args[1].split(",").map(p => p.trim()).filter(p => validPhases.has(p)); if (rp.length) phases = rp; } }
           }
+          if (parsedStartArgs.renderHtml) phases = addRenderPhase(phases);
           // Validate phase order
           const validation = validatePhaseOrder(phases);
           if (!validation.valid) { ctx.ui.notify(`Invalid phase order: ${validation.error}`, "error"); return; }
@@ -1080,19 +1115,32 @@ ${phasePrompt}`,
           if (state.pipelineStatus === "completed") { ctx.ui.notify("Pipeline already completed.", "info"); return; }
           if (state.pipelineStatus === "cancelled") { ctx.ui.notify("Pipeline was cancelled. Start a new pipeline with /ralph start.", "error"); return; }
 
-          const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
-          const targetIdx = state.currentPhaseIndex ?? 0;
+          const continueArgs = parseRenderHtmlFlag(parts.slice(1));
+          const basePhases = state.phases?.length ? state.phases : DEFAULT_PHASES;
+          let phases = [...basePhases];
+          let targetIdx = state.currentPhaseIndex ?? 0;
           if (!validatePhaseIndex(targetIdx, phases)) {
             ctx.ui.notify(`⛔ Pipeline state corrupted: currentPhaseIndex=${targetIdx} out of bounds. Run /ralph cancel to reset.`, "error");
             saveState(pi, { ...state, pipelineStatus: "failed", phaseStatus: "corrupted" });
             return;
           }
+          if (continueArgs.renderHtml && !phases.includes(RENDER_PHASE)) {
+            if (!canAddRenderBeforeCurrentPhase(phases, targetIdx)) {
+              ctx.ui.notify(`Cannot enable HTML rendering after the render point has passed. Current phase: ${phases[targetIdx] ?? "unknown"}.`, "error");
+              return;
+            }
+            phases = addRenderPhase(phases);
+            targetIdx = resolveCurrentPhaseIndex(state, phases, targetIdx);
+          }
+          const validation = validatePhaseOrder(phases);
+          if (!validation.valid) { ctx.ui.notify(`Invalid phase order: ${validation.error}`, "error"); return; }
 
           const pk = phases[targetIdx];
           removePipelineLock(state.feature, state.workDir);
           createPipelineLock(state.feature, state.workDir);
           const updated: PipelineState = {
             ...state,
+            phases,
             currentPhaseIndex: targetIdx,
             currentPhase: pk,
             phaseStatus: "pre_hook",
@@ -1223,7 +1271,7 @@ ${phasePrompt}`,
               createPipelineLock(feature, ctx.cwd);
               sendPipelineUserMessage(pi, ctx, buildPhasePrompt("spec", state));
             }
-          } else { ctx.ui.notify("Usage: /ralph start <feature> | status | cancel | gate | continue | resume | pause | clear-context [--auto]", "info"); }
+          } else { ctx.ui.notify("Usage: /ralph start <feature> [--render-html] | status | cancel | gate | continue [--render-html] | resume | pause | clear-context [--auto]", "info"); }
         }
       }
     },
