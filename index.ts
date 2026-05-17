@@ -432,6 +432,8 @@ function extractMessageText(content: unknown): string {
 }
 
 type PipelineDeliveryMode = "steer" | "followUp";
+const DEFERRED_FOLLOW_UP_RETRY_MS = 25;
+const DEFERRED_FOLLOW_UP_MAX_ATTEMPTS = 40;
 
 function transitionSteerKey(state: PipelineState): string {
   return `phase-transition:${state.currentPhaseIndex ?? 0}:${state.currentPhase ?? "unknown"}`;
@@ -463,6 +465,29 @@ function isBusyPromptError(error: unknown): boolean {
   return /already processing a prompt|while streaming/i.test(message);
 }
 
+function isContextIdle(ctx: ExtensionContext): boolean {
+  const maybeCtx = ctx as ExtensionContext & { isIdle?: () => boolean };
+  return typeof maybeCtx.isIdle === "function" ? maybeCtx.isIdle() : false;
+}
+
+function sendUserMessageWhenIdle(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  payload: string,
+  attempt = 0,
+): void {
+  if (!isContextIdle(ctx)) {
+    if (attempt < DEFERRED_FOLLOW_UP_MAX_ATTEMPTS) {
+      setTimeout(() => sendUserMessageWhenIdle(pi, ctx, payload, attempt + 1), DEFERRED_FOLLOW_UP_RETRY_MS);
+      return;
+    }
+    pi.sendUserMessage(payload, { deliverAs: "followUp" });
+    return;
+  }
+
+  pi.sendUserMessage(payload);
+}
+
 function sendPipelineUserMessage(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
@@ -482,9 +507,12 @@ function sendPipelineUserMessage(
     return;
   }
 
-  const maybeCtx = ctx as ExtensionContext & { isIdle?: () => boolean };
-  const isIdle = typeof maybeCtx.isIdle === "function" ? maybeCtx.isIdle() : false;
-  if (!isIdle) {
+  if (deliverAs === "followUp" && !isContextIdle(ctx)) {
+    sendUserMessageWhenIdle(pi, ctx, payload);
+    return;
+  }
+
+  if (!isContextIdle(ctx)) {
     pi.sendUserMessage(payload, { deliverAs });
     return;
   }

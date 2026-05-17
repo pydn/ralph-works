@@ -67,6 +67,7 @@ function makeTempDir(prefix: string): string {
 
 afterEach(() => {
   delete process.env.PI_SKILL_BASE;
+  vi.useRealTimers();
   vi.resetModules();
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
@@ -75,7 +76,8 @@ afterEach(() => {
 });
 
 describe("next-phase launch", () => {
-  it("queues the next phase as a follow-up user message after explicit completion", async () => {
+  it("starts the next phase after agent_end once Pi is idle", async () => {
+    vi.useFakeTimers();
     const workDir = makeTempDir("ralph-phase-work-");
     const skillBase = makeTempDir("ralph-phase-skills-");
     process.env.PI_SKILL_BASE = skillBase;
@@ -115,7 +117,8 @@ describe("next-phase launch", () => {
     const { pi, handlers, sendUserMessages, sendMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    const ctx = makeFakeContext(branch, workDir);
+    const idleState = { idle: false };
+    const ctx = makeFakeContext(branch, workDir, idleState);
     const agentEnd = handlers.get("agent_end");
     expect(agentEnd).toBeTypeOf("function");
 
@@ -131,8 +134,12 @@ describe("next-phase launch", () => {
       ctx,
     );
 
+    expect(sendUserMessages).toHaveLength(0);
+    idleState.idle = true;
+    await vi.advanceTimersByTimeAsync(25);
+
     expect(sendUserMessages).toHaveLength(1);
-    expect(sendUserMessages[0]?.options?.deliverAs).toBe("followUp");
+    expect(sendUserMessages[0]?.options).toBeUndefined();
     expect(String(sendUserMessages[0]?.content)).toContain("Phase: Red Team Audit");
     expect(sendMessages).toHaveLength(0);
     expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("→ Phase"), "info");
