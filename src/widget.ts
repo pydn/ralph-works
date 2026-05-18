@@ -30,6 +30,16 @@ function styleUiText(ctx: ExtensionContext, tone: UiTone, text: string): string 
   return ctx.ui.theme?.fg ? ctx.ui.theme.fg(tone, text) : text;
 }
 
+function formatYoloBadge(ctx: ExtensionContext): string {
+  const letters: Array<{ tone: UiTone; text: string }> = [
+    { tone: "accent", text: "Y" },
+    { tone: "warning", text: "O" },
+    { tone: "dim", text: "L" },
+    { tone: "accent", text: "O" },
+  ];
+  return letters.map(({ tone, text }) => styleUiText(ctx, tone, text)).join("");
+}
+
 /** Strip control characters so partial terminal escape sequences never leak into widgets. */
 function sanitizeUiText(value: string | undefined): string {
   return (value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, " ");
@@ -113,6 +123,8 @@ function buildPhaseTrack(phases: string[], idx: number): string {
 function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
   const { phases, idx, phaseName } = getPhaseDisplay(st);
   const widgetState = resolveWidgetState(st);
+  const featureLabel = truncateUiText(st.feature, st.yoloMode ? 34 : 42);
+  const yoloLabel = st.yoloMode ? ` · ${formatYoloBadge(ctx)}` : "";
   const detailLines = [
     st.pipelineStatus && st.pipelineStatus !== "running" ? `Status: ${st.pipelineStatus}` : "",
     st.phaseStatus && !["executing", "pre_hook", WAITING_FOR_USER_PHASE_STATUS].includes(st.phaseStatus)
@@ -125,7 +137,7 @@ function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
   ].filter(Boolean);
 
   const lines = [
-    styleUiText(ctx, widgetState.tone, `Ralph · ${widgetState.label} · ${truncateUiText(st.feature, 42)}`),
+    styleUiText(ctx, widgetState.tone, `Ralph · ${widgetState.label} · ${featureLabel}${yoloLabel}`),
     styleUiText(
       ctx,
       "accent",

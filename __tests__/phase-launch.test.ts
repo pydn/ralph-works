@@ -385,6 +385,50 @@ describe("next-phase launch", () => {
     expect(widgetText).not.toContain("Prompt: none");
   });
 
+  it("renders a rainbow YOLO badge beside the feature label when yolo mode is active", async () => {
+    const workDir = makeTempDir("ralph-yolo-widget-work-");
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "fast-ui",
+          workDir,
+          phases: ["implement", "review"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "implement",
+          currentPhaseIndex: 0,
+          phaseStatus: "executing",
+          pipelineStatus: "running",
+          reviewIterations: 0,
+          phaseAttempts: 0,
+          turnWriteCount: 0,
+          autoClearContext: false,
+          yoloMode: true,
+        },
+      },
+    ];
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    ctx.ui.theme.fg = vi.fn((tone: string, text: string) => `<${tone}>${text}</${tone}>`);
+    const messageUpdate = handlers.get("message_update");
+    expect(messageUpdate).toBeTypeOf("function");
+
+    await messageUpdate?.({ message: { role: "assistant" } }, ctx);
+
+    const widgetLines = ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[];
+    const header = widgetLines[0];
+    expect(header).toContain("fast-ui");
+    expect(header.indexOf("fast-ui")).toBeLessThan(header.indexOf("<accent>Y</accent>"));
+    expect(header).toContain("<accent>Y</accent><warning>O</warning><dim>L</dim><accent>O</accent>");
+    expect(widgetLines.length).toBeLessThanOrEqual(4);
+  });
+
   it("dedupes identical widget renders across fresh event contexts", async () => {
     const workDir = makeTempDir("ralph-stream-widget-context-work-");
     const branch: FakeEntry[] = [
