@@ -23,6 +23,51 @@ export interface ReviewDecision {
   issues?: string[];
 }
 
+export type ModelThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export type RalphModelSelectorSource = "cli" | "workspace-config" | "user-config" | "current";
+
+export interface RalphModelSelector {
+  provider: string;
+  model: string;
+  displayName?: string;
+  thinkingLevel?: ModelThinkingLevel;
+  source: RalphModelSelectorSource;
+  explicit?: boolean;
+}
+
+export interface RalphModelPlan {
+  default?: RalphModelSelector;
+  phases?: Partial<Record<string, RalphModelSelector>>;
+  restoreOriginalOnComplete?: boolean;
+  strict?: boolean;
+  trustApproved?: boolean;
+  trustSource?: "cli-flag" | "provider-allowlist" | "user-config";
+  allowWeakModel?: boolean;
+}
+
+export interface ModelSwitchEvent {
+  event: "apply" | "reapply" | "mismatch" | "restore" | "skipped-restore" | "failure" | "plan-update";
+  phaseKey?: string;
+  provider?: string;
+  model?: string;
+  thinkingLevel?: ModelThinkingLevel;
+  source?: RalphModelSelectorSource;
+  result: "success" | "failure" | "skipped" | "blocked";
+  reason?: string;
+  nonce?: string;
+  occurredAt: number;
+}
+
+export interface LastAppliedModel {
+  phaseKey: string;
+  provider: string;
+  model: string;
+  thinkingLevel?: ModelThinkingLevel;
+  appliedAt: number;
+  nonce: string;
+}
+
 /**
  * Persisted pipeline state.
  *
@@ -63,6 +108,11 @@ export interface PipelineState {
   readyToAdvancePhase?: string;
   /** Latest full validation failure details for /ralph status and persisted history. */
   lastValidationFailure?: string;
+  modelPlan?: RalphModelPlan;
+  originalModel?: RalphModelSelector;
+  lastAppliedModel?: LastAppliedModel;
+  modelSwitchHistory?: ModelSwitchEvent[];
+  phaseModelNonce?: string;
 }
 
 export type PipelineDeliveryMode = "steer" | "followUp";

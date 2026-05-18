@@ -29,10 +29,13 @@ describe("parseRalphFlags", () => {
   });
 
   it("removes HTML rendering aliases from positional arguments", () => {
-    expect(parseRalphFlags(["feature details", "html", "--yolo"])).toEqual({
+    expect(parseRalphFlags(["feature details", "html", "--yolo"])).toMatchObject({
       args: ["feature details"],
       renderHtml: true,
       yolo: true,
+      trustModelPlan: false,
+      allowWeakModel: false,
+      errors: [],
     });
   });
 });

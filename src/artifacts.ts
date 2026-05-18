@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { PipelineState } from "./domain";
+import type { ModelSwitchEvent, PipelineState } from "./domain";
 import { DEFAULT_PHASES, PHASE_META } from "./stateMachine";
 
 /**
@@ -137,4 +137,17 @@ export function removePipelineLocks(wd: string): void {
 /** Check whether a phase marker exists for resume-time crash recovery. */
 export function phaseCompletionMarkerExists(state: PipelineState, phaseKey: string): boolean {
   return fs.existsSync(path.join(state.workDir, ".ralph", `.phase-${phaseKey}-done`));
+}
+
+/** Append a sanitized model-switch audit event for forensic review outside the live session. */
+export function appendModelSwitchHistoryEvent(state: PipelineState, event: ModelSwitchEvent): void {
+  const ralphDir = path.join(state.workDir, ".ralph");
+  try {
+    if (!fs.existsSync(ralphDir)) fs.mkdirSync(ralphDir, { recursive: true });
+    fs.appendFileSync(
+      path.join(ralphDir, `model-switch-history-${state.feature}.jsonl`),
+      `${JSON.stringify(event)}\n`,
+      "utf-8",
+    );
+  } catch {}
 }

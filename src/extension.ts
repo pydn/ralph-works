@@ -9,6 +9,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import * as fs from "node:fs";
 import {
+  appendModelSwitchHistoryEvent,
   checkPipelineLock,
   createPipelineLock,
   phaseCompletionMarkerExists,
@@ -30,7 +31,7 @@ import {
   WAITING_FOR_USER_PHASE_STATUS,
   YOLO_FLAG,
 } from "./config";
-import type { PipelineState } from "./domain";
+import type { ModelThinkingLevel, PipelineState, RalphModelPlan, RalphModelSelector } from "./domain";
 import { formatGateResults, runLintGates } from "./gates";
 import {
   sendDedupedPipelineUserMessage,
@@ -38,6 +39,16 @@ import {
   sendPipelineUserMessage,
   withoutPendingSteer,
 } from "./messaging";
+import {
+  activeModelMatchesSelector,
+  appendModelSwitchHistory,
+  buildModelPlanFromOptions,
+  createModelSwitchEvent,
+  formatModelSelector,
+  resolvePhaseModelSelector,
+  selectedModelIds,
+  selectorFromCurrentModel,
+} from "./modelPlan";
 import {
   PHASE_CONFIGS,
   formatMissingPhaseSkillPrerequisites,
@@ -168,12 +179,301 @@ function enterImplementCheckpoint(pi: ExtensionAPI, ctx: ExtensionContext, st: P
   );
 }
 
+function getCurrentThinkingLevel(pi: ExtensionAPI): ModelThinkingLevel | undefined {
+  const value = (pi as unknown as { getThinkingLevel?: () => string }).getThinkingLevel?.();
+  return ["off", "minimal", "low", "medium", "high", "xhigh"].includes(value ?? "")
+    ? (value as ModelThinkingLevel)
+    : undefined;
+}
+
+function validateModelPlanSelectors(
+  ctx: ExtensionContext,
+  plan: RalphModelPlan | undefined,
+  phases: string[] = [],
+): string[] {
+  if (!plan) return [];
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  for (const selector of selectedModelIds(plan)) {
+    const id = formatModelSelector(selector);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const found = ctx.modelRegistry?.find(selector.provider, selector.model);
+    if (!found) errors.push(`Model not found: ${id}`);
+  }
+
+  if (plan.allowWeakModel) return errors;
+  for (const phase of phases) {
+    if (phase !== "implement" && phase !== "review") continue;
+    const selector = resolvePhaseModelSelector(plan, phase);
+    if (!selector) continue;
+    const model = ctx.modelRegistry?.find(selector.provider, selector.model) as
+      | { contextWindow?: number; maxTokens?: number }
+      | undefined;
+    if (!model) continue;
+    if (typeof model.contextWindow === "number" && model.contextWindow < 64000) {
+      errors.push(
+        `${phase}: ${formatModelSelector(selector)} contextWindow ${model.contextWindow} is below 64000; pass --allow-weak-model to override.`,
+      );
+    }
+    if (typeof model.maxTokens === "number" && model.maxTokens < 8000) {
+      errors.push(
+        `${phase}: ${formatModelSelector(selector)} maxTokens ${model.maxTokens} is below 8000; pass --allow-weak-model to override.`,
+      );
+    }
+  }
+  return errors;
+}
+
+function formatModelPlanSummary(plan: RalphModelPlan | undefined): string | undefined {
+  if (!plan) return undefined;
+  const parts: string[] = [];
+  if (plan.default) parts.push(`default ${formatModelSelector(plan.default)} (${plan.default.source})`);
+  for (const [phase, selector] of Object.entries(plan.phases ?? {})) {
+    if (selector) parts.push(`${phase} ${formatModelSelector(selector)} (${selector.source})`);
+  }
+  return parts.length ? parts.join("; ") : undefined;
+}
+
+function appendModelEventState(state: PipelineState, event: ReturnType<typeof createModelSwitchEvent>): PipelineState {
+  appendModelSwitchHistoryEvent(state, event);
+  return appendModelSwitchHistory(state, event);
+}
+
+const PROVIDER_DRIFT_BLOCK_MODEL = "__ralph_model_drift_blocked__";
+const PROVIDER_DRIFT_BLOCK_MESSAGE = "Ralph blocked this provider request because the active model drifted.";
+
+function buildBlockedProviderPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { model: PROVIDER_DRIFT_BLOCK_MODEL, messages: [{ role: "user", content: PROVIDER_DRIFT_BLOCK_MESSAGE }] };
+  }
+  const blocked: Record<string, unknown> = {
+    ...(payload as Record<string, unknown>),
+    model: PROVIDER_DRIFT_BLOCK_MODEL,
+  };
+  if ("messages" in blocked) blocked.messages = [{ role: "user", content: PROVIDER_DRIFT_BLOCK_MESSAGE }];
+  if ("input" in blocked) blocked.input = PROVIDER_DRIFT_BLOCK_MESSAGE;
+  if ("contents" in blocked) blocked.contents = [{ role: "user", parts: [{ text: PROVIDER_DRIFT_BLOCK_MESSAGE }] }];
+  if ("system" in blocked) blocked.system = PROVIDER_DRIFT_BLOCK_MESSAGE;
+  if ("prompt" in blocked) blocked.prompt = PROVIDER_DRIFT_BLOCK_MESSAGE;
+  return blocked;
+}
+
+async function applyPhaseModel(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+  eventName: "apply" | "reapply" = "apply",
+): Promise<{ ok: true; state: PipelineState } | { ok: false; state: PipelineState; message: string }> {
+  const phaseKey = state.currentPhase;
+  if (!phaseKey) return { ok: true, state };
+  const selector = resolvePhaseModelSelector(state.modelPlan, phaseKey);
+  if (!selector) return { ok: true, state };
+
+  const model = ctx.modelRegistry?.find(selector.provider, selector.model);
+  if (!model) {
+    const failed = appendModelEventState(
+      state,
+      createModelSwitchEvent("failure", selector, "failure", {
+        phaseKey,
+        reason: "model not found",
+      }),
+    );
+    return { ok: false, state: failed, message: `Model not found: ${formatModelSelector(selector)}` };
+  }
+
+  try {
+    const ok = await pi.setModel(model);
+    if (!ok) {
+      const failed = appendModelEventState(
+        state,
+        createModelSwitchEvent("failure", selector, "failure", {
+          phaseKey,
+          reason: "model unavailable or missing auth",
+        }),
+      );
+      return { ok: false, state: failed, message: `No API key or auth for ${formatModelSelector(selector)}` };
+    }
+    if (selector.thinkingLevel) pi.setThinkingLevel(selector.thinkingLevel);
+    const nonce = `${phaseKey}-${Date.now()}`;
+    const applied: PipelineState = appendModelEventState(
+      {
+        ...state,
+        phaseModelNonce: nonce,
+        lastAppliedModel: {
+          phaseKey,
+          provider: selector.provider,
+          model: selector.model,
+          thinkingLevel: selector.thinkingLevel,
+          appliedAt: Date.now(),
+          nonce,
+        },
+      },
+      createModelSwitchEvent(eventName, selector, "success", { phaseKey, nonce }),
+    );
+    return { ok: true, state: applied };
+  } catch (error) {
+    const failed = appendModelEventState(
+      state,
+      createModelSwitchEvent("failure", selector, "failure", {
+        phaseKey,
+        reason: String(error),
+      }),
+    );
+    return {
+      ok: false,
+      state: failed,
+      message: `Failed to switch to ${formatModelSelector(selector)}: ${String(error)}`,
+    };
+  }
+}
+
+async function enforcePhaseModelBeforeDispatch(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+): Promise<PipelineState> {
+  if (state.pipelineStatus !== "running" || state.phaseStatus !== "executing" || !state.currentPhase) return state;
+  const selector = resolvePhaseModelSelector(state.modelPlan, state.currentPhase);
+  if (!selector) return state;
+  if (activeModelMatchesSelector(ctx.model, selector)) return state;
+
+  const mismatch = appendModelEventState(
+    state,
+    createModelSwitchEvent("mismatch", selector, "blocked", {
+      phaseKey: state.currentPhase,
+      reason: `active model differs from expected ${formatModelSelector(selector)}`,
+      nonce: state.phaseModelNonce,
+    }),
+  );
+  const applied = await applyPhaseModel(pi, ctx, mismatch, "reapply");
+  if (applied.ok) {
+    saveState(pi, applied.state);
+    return applied.state;
+  }
+  const failedState: PipelineState = { ...applied.state, pipelineStatus: "failed", phaseStatus: "pre_hook" };
+  saveState(pi, failedState);
+  refreshWidget(ctx, failedState);
+  ctx.ui.notify(`Model drift guard failed: ${applied.message}`, "error");
+  throw new Error(applied.message);
+}
+
+async function failClosedProviderRequestOnDrift(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+  payload: unknown,
+): Promise<unknown | undefined> {
+  if (state.pipelineStatus !== "running" || state.phaseStatus !== "executing" || !state.currentPhase) return undefined;
+  const selector = resolvePhaseModelSelector(state.modelPlan, state.currentPhase);
+  if (!selector) return undefined;
+  if (activeModelMatchesSelector(ctx.model, selector)) return undefined;
+
+  const mismatch = appendModelEventState(
+    state,
+    createModelSwitchEvent("mismatch", selector, "blocked", {
+      phaseKey: state.currentPhase,
+      reason: `active model differs from expected ${formatModelSelector(selector)} at provider dispatch`,
+      nonce: state.phaseModelNonce,
+    }),
+  );
+  const blocked = appendModelEventState(
+    mismatch,
+    createModelSwitchEvent("failure", selector, "blocked", {
+      phaseKey: state.currentPhase,
+      reason: "provider dispatch blocked after model drift",
+      nonce: state.phaseModelNonce,
+    }),
+  );
+  const failedState: PipelineState = { ...blocked, pipelineStatus: "failed", phaseStatus: "pre_hook" };
+  saveState(pi, failedState);
+  refreshWidget(ctx, failedState);
+  ctx.ui.notify(`Model drift guard blocked provider dispatch for ${formatModelSelector(selector)}.`, "error");
+  return buildBlockedProviderPayload(payload);
+}
+
+async function restoreOriginalModelForTerminal(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+): Promise<PipelineState> {
+  if (!state.modelPlan || state.modelPlan.restoreOriginalOnComplete === false || !state.originalModel) return state;
+  if (state.lastAppliedModel) {
+    const lastSelector: RalphModelSelector = { ...state.lastAppliedModel, source: "cli" };
+    if (!activeModelMatchesSelector(ctx.model, lastSelector)) {
+      return appendModelEventState(
+        state,
+        createModelSwitchEvent("skipped-restore", state.originalModel, "skipped", {
+          phaseKey: state.currentPhase,
+          reason: "active model no longer matches last Ralph-applied model",
+          nonce: state.lastAppliedModel.nonce,
+        }),
+      );
+    }
+  }
+
+  const model = ctx.modelRegistry?.find(state.originalModel.provider, state.originalModel.model);
+  if (!model) {
+    return appendModelEventState(
+      state,
+      createModelSwitchEvent("restore", state.originalModel, "failure", {
+        phaseKey: state.currentPhase,
+        reason: "original model not found",
+      }),
+    );
+  }
+  const ok = await pi.setModel(model);
+  if (!ok) {
+    return appendModelEventState(
+      state,
+      createModelSwitchEvent("restore", state.originalModel, "failure", {
+        phaseKey: state.currentPhase,
+        reason: "original model unavailable or missing auth",
+      }),
+    );
+  }
+  if (state.originalModel.thinkingLevel) pi.setThinkingLevel(state.originalModel.thinkingLevel);
+  return appendModelEventState(
+    state,
+    createModelSwitchEvent("restore", state.originalModel, "success", { phaseKey: state.currentPhase }),
+  );
+}
+
+async function saveTerminalFailure(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+  status: "failed" | "halted",
+  phaseStatus: string,
+  message: string,
+): Promise<void> {
+  const restoredState = await restoreOriginalModelForTerminal(pi, ctx, state);
+  const terminalState: PipelineState = {
+    ...restoredState,
+    pipelineStatus: status,
+    phaseStatus,
+    turnWriteCount: 0,
+    waitingReason: undefined,
+    readyToAdvancePhase: undefined,
+    lastValidationFailure: state.lastValidationFailure ?? message,
+  };
+  saveState(pi, terminalState);
+  refreshWidget(ctx, terminalState);
+  ctx.ui.notify(message, "error");
+}
+
 /** Persist terminal success and switch the visible UI out of any waiting state. */
-function completePipeline(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState, message?: string): void {
-  const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
+async function completePipeline(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+  message?: string,
+): Promise<void> {
+  const restoredState = await restoreOriginalModelForTerminal(pi, ctx, state);
+  const phases = restoredState.phases?.length ? restoredState.phases : DEFAULT_PHASES;
   const finalPhaseIndex = Math.max(0, phases.length - 1);
   const completedState: PipelineState = {
-    ...state,
+    ...restoredState,
     phases,
     currentPhase: phases[finalPhaseIndex],
     currentPhaseIndex: finalPhaseIndex,
@@ -195,12 +495,12 @@ function completePipeline(pi: ExtensionAPI, ctx: ExtensionContext, state: Pipeli
  * Validate prerequisites, persist executing state, refresh UI, then prompt the
  * agent for the current phase. This is the only normal phase-entry path.
  */
-function launchPhase(
+async function launchPhase(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   state: PipelineState,
   options?: { asSteer?: boolean; asFollowUp?: boolean; prefixText?: string },
-): void {
+): Promise<void> {
   const pk = state.currentPhase;
   if (!pk) return;
   const workDirWarning = buildWorkDirPolicyWarning(state);
@@ -229,13 +529,21 @@ function launchPhase(
     waitingReason: undefined,
     readyToAdvancePhase: undefined,
   };
-  saveState(pi, executingState);
-  setPipelineWorkingUi(ctx, executingState);
-  refreshWidget(ctx, executingState);
+  const selector = resolvePhaseModelSelector(executingState.modelPlan, pk);
+  const applied = selector
+    ? await applyPhaseModel(pi, ctx, executingState, "apply")
+    : { ok: true as const, state: executingState };
+  if (!applied.ok) {
+    await saveTerminalFailure(pi, ctx, applied.state, "failed", "pre_hook", applied.message);
+    return;
+  }
+  saveState(pi, applied.state);
+  setPipelineWorkingUi(ctx, applied.state);
+  refreshWidget(ctx, applied.state);
   const promptOptions = workDirWarning
     ? { ...options, prefixText: [workDirWarning, options?.prefixText].filter(Boolean).join("\n\n") }
     : options;
-  sendPhasePrompt(pi, ctx, executingState, promptOptions);
+  sendPhasePrompt(pi, ctx, applied.state, promptOptions);
 }
 
 /**
@@ -243,12 +551,12 @@ function launchPhase(
  * This owns boundary side effects: summaries, checkpoint pauses, auto-compaction,
  * and deterministic next-phase launch.
  */
-function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState) {
+async function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState): Promise<void> {
   const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
   const idx = state.currentPhaseIndex ?? 0;
   const completion = resolvePhaseCompletion(phases, idx, "explicit_signal");
   if (completion.action === "complete_pipeline") {
-    completePipeline(pi, ctx, state);
+    await completePipeline(pi, ctx, state);
     return;
   }
 
@@ -293,7 +601,7 @@ function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineSt
               return; // skip — manual clear raced ahead
             }
             const updated = { ...u, contextClearCount: (u.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
-            launchPhase(pi, ctx, updated, {
+            void launchPhase(pi, ctx, updated, {
               asFollowUp: true,
               prefixText: `⛔ CONTEXT RESET — Continue with Phase ${nextIdx + 1}: ${meta?.name ?? nextPhase}.`,
             });
@@ -302,18 +610,22 @@ function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineSt
           }
         },
         onError: () => {
-          launchPhase(pi, ctx, u, { asFollowUp: true });
+          void launchPhase(pi, ctx, u, { asFollowUp: true });
         },
       });
       return;
     }
   }
 
-  launchPhase(pi, ctx, u, { asFollowUp: true });
+  await launchPhase(pi, ctx, u, { asFollowUp: true });
 }
 
 /** Handle the structured review verdict tool and backtrack on critical findings. */
-function handleReviewDecision(pi: ExtensionAPI, ctx: ExtensionContext, params: { status: string; issues?: string[] }) {
+async function handleReviewDecision(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  params: { status: string; issues?: string[] },
+): Promise<void> {
   const state = getState(ctx);
   if (!state) return;
   // Phase gate — reject decisions from non-review phases
@@ -327,12 +639,18 @@ function handleReviewDecision(pi: ExtensionAPI, ctx: ExtensionContext, params: {
   const status = params.status as "LGTM" | "CRITICAL";
   const iter = state.reviewIterations ?? 0;
   if (status === "LGTM") {
-    completePipeline(pi, ctx, state, `✅ Ralph review LGTM. Loop complete for "${state.feature}"`);
+    await completePipeline(pi, ctx, state, `✅ Ralph review LGTM. Loop complete for "${state.feature}"`);
   } else if (status === "CRITICAL") {
     const maxIters = state.maxIterations ?? 10;
     if (iter >= maxIters) {
-      ctx.ui.notify(`Max review iterations (${maxIters}) reached — halted.`, "error");
-      saveState(pi, { ...state, pipelineStatus: "halted" });
+      await saveTerminalFailure(
+        pi,
+        ctx,
+        state,
+        "halted",
+        state.phaseStatus ?? "post_hook",
+        `Max review iterations (${maxIters}) reached — halted.`,
+      );
       return;
     }
     const phases = state.phases ?? DEFAULT_PHASES;
@@ -355,7 +673,7 @@ function handleReviewDecision(pi: ExtensionAPI, ctx: ExtensionContext, params: {
     const steerText = params.issues?.length
       ? `\n\nCRITICAL issues:\n${params.issues.map((i) => `- ${i}`).join("\n")}`
       : "";
-    launchPhase(pi, ctx, u, {
+    await launchPhase(pi, ctx, u, {
       asSteer: true,
       prefixText: `⛔ REVIEW CRITICAL — Backtrack to implement.${steerText}`,
     });
@@ -366,7 +684,10 @@ function handleReviewDecision(pi: ExtensionAPI, ctx: ExtensionContext, params: {
  * Run post-hook validation after an explicit phase-complete signal.
  * Failed validation keeps the same phase active and sends remediation guidance.
  */
-function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: boolean; message: string } {
+async function handlePhaseCompletion(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+): Promise<{ ok: boolean; message: string }> {
   const state = getState(ctx);
   if (!state) return { ok: false, message: "No active pipeline." };
   if (state.pipelineStatus !== "running")
@@ -386,15 +707,14 @@ function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: b
     const attempts = state.phaseAttempts ?? 0;
     const failureDetails = formatPostHookFailure(pk, state, result);
     if (attempts >= MAX_PHASE_ATTEMPTS) {
-      const failedState: PipelineState = {
-        ...state,
-        pipelineStatus: "failed",
-        phaseStatus: "post_hook",
-        lastValidationFailure: failureDetails,
-      };
-      saveState(pi, failedState);
-      refreshWidget(ctx, failedState);
-      ctx.ui.notify(`Phase "${pk}" failed ${MAX_PHASE_ATTEMPTS} times — halted.\n${failureDetails}`, "error");
+      await saveTerminalFailure(
+        pi,
+        ctx,
+        { ...state, lastValidationFailure: failureDetails },
+        "failed",
+        "post_hook",
+        `Phase "${pk}" failed ${MAX_PHASE_ATTEMPTS} times — halted.\n${failureDetails}`,
+      );
       return { ok: false, message: failureDetails };
     }
 
@@ -421,7 +741,7 @@ function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: b
   }
 
   writePhaseCompletionMarker(pk, state.workDir);
-  advancePhase(pi, ctx, {
+  await advancePhase(pi, ctx, {
     ...state,
     pipelineStatus: "running",
     phaseStatus: "post_hook",
@@ -454,7 +774,7 @@ async function handleAgentEnd(
   const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
   const idx = state.currentPhaseIndex ?? 0;
   if (state.currentPhase === "review" && state.phaseStatus === "executing" && isLgtmReviewText(assistantText)) {
-    completePipeline(
+    await completePipeline(
       pi,
       ctx,
       state,
@@ -466,7 +786,7 @@ async function handleAgentEnd(
   if (state.currentPhase !== "review" && hasPhaseCompletionMarker(assistantText)) {
     const completion = resolvePhaseCompletion(phases, idx, "explicit_signal");
     if (completion.action !== "wait_for_explicit_completion") {
-      handlePhaseCompletion(pi, ctx);
+      await handlePhaseCompletion(pi, ctx);
       return;
     }
   }
@@ -476,7 +796,7 @@ async function handleAgentEnd(
     state.phaseStatus === "executing" &&
     state.readyToAdvancePhase === "implement"
   ) {
-    handlePhaseCompletion(pi, ctx);
+    await handlePhaseCompletion(pi, ctx);
     return;
   }
 
@@ -593,7 +913,7 @@ ${phasePrompt}`,
     if (action === "launch_pending_phase") {
       const pk = phases[currentIdx];
       ctx.ui.notify(`Launching queued Phase ${currentIdx + 1} (${PHASE_META[pk]?.name ?? pk})`, "warning");
-      launchPhase(pi, ctx, state, {
+      await launchPhase(pi, ctx, state, {
         asSteer: true,
         prefixText: `⛔ SESSION RELOAD — Launch queued Phase ${currentIdx + 1}: ${PHASE_META[pk]?.name ?? pk}.`,
       });
@@ -736,7 +1056,7 @@ ${phasePrompt}`,
           ],
           details: {},
         };
-      handleReviewDecision(pi, ctx, params as { status: string; issues?: string[] });
+      await handleReviewDecision(pi, ctx, params as { status: string; issues?: string[] });
       return { content: [{ type: "text", text: `Decision recorded: ${params.status}` }], details: {} };
     },
   });
@@ -777,13 +1097,20 @@ ${phasePrompt}`,
           }
           const feature = parts[1];
           if (!feature) {
-            ctx.ui.notify("Usage: /ralph start <feature> [prompt] [phases] [--render-html|html] [--yolo]", "error");
+            ctx.ui.notify(
+              "Usage: /ralph start <feature> [prompt] [phases] [--model provider/model[:thinking]] [--models phase=provider/model[:thinking],...] [--trust-model-plan] [--render-html|html] [--yolo]",
+              "error",
+            );
             return;
           }
           const validPhases = new Set<string>(PHASE_ORDER);
           let phases: string[] = [...DEFAULT_PHASES];
           let promptArg: string | undefined;
           const parsedStartArgs = parseRalphFlags(parts.slice(2));
+          if (parsedStartArgs.errors.length) {
+            ctx.ui.notify(parsedStartArgs.errors.join("\n"), "error");
+            return;
+          }
           if (parsedStartArgs.args[0]) {
             // Ambiguous second arg: an all-phase token is a phase list; otherwise it is prompt text.
             const mp = parsedStartArgs.args[0].split(",").map((p) => p.trim());
@@ -812,6 +1139,16 @@ ${phasePrompt}`,
             ctx.ui.notify(formatMissingPhaseSkillPrerequisites(missingSkills), "error");
             return;
           }
+          const modelPlanResult = buildModelPlanFromOptions(parsedStartArgs, phases, ctx.cwd);
+          for (const warning of modelPlanResult.warnings) ctx.ui.notify(warning, "warning");
+          const modelPlanErrors = [
+            ...modelPlanResult.errors,
+            ...validateModelPlanSelectors(ctx, modelPlanResult.plan, phases),
+          ];
+          if (modelPlanErrors.length) {
+            ctx.ui.notify(modelPlanErrors.join("\n"), "error");
+            return;
+          }
           const promptText = promptArg ? resolvePromptInput(promptArg, ctx.cwd) : undefined;
           const lockCheck = checkPipelineLock(feature, ctx.cwd);
           if (lockCheck.locked && !lockCheck.stale) {
@@ -835,11 +1172,13 @@ ${phasePrompt}`,
             promptText,
             autoClearContext: true,
             yoloMode: parsedStartArgs.yolo,
+            modelPlan: modelPlanResult.plan,
+            originalModel: selectorFromCurrentModel(ctx.model, getCurrentThinkingLevel(pi)),
           };
           saveState(pi, state);
           refreshWidget(ctx, state);
           ctx.ui.notify(`Starting pipeline for "${feature}" (${phases.join(", ")})`, "info");
-          launchPhase(pi, ctx, state);
+          await launchPhase(pi, ctx, state);
           if (getState(ctx)?.pipelineStatus === "failed") removePipelineLock(feature, ctx.cwd);
           break;
         }
@@ -859,6 +1198,10 @@ ${phasePrompt}`,
           }
 
           const continueArgs = parseRalphFlags(parts.slice(1));
+          if (continueArgs.errors.length) {
+            ctx.ui.notify(continueArgs.errors.join("\n"), "error");
+            return;
+          }
           const basePhases = state.phases?.length ? state.phases : DEFAULT_PHASES;
           let phases = [...basePhases];
           let targetIdx = state.currentPhaseIndex ?? 0;
@@ -891,6 +1234,21 @@ ${phasePrompt}`,
             ctx.ui.notify(`Invalid phase order: ${validation.error}`, "error");
             return;
           }
+          const hasModelUpdate = Boolean(
+            continueArgs.model || continueArgs.models || continueArgs.trustModelPlan || continueArgs.allowWeakModel,
+          );
+          const modelPlanResult = hasModelUpdate
+            ? buildModelPlanFromOptions(continueArgs, phases, state.workDir, state.modelPlan)
+            : { plan: state.modelPlan, errors: [], warnings: [] };
+          for (const warning of modelPlanResult.warnings) ctx.ui.notify(warning, "warning");
+          const modelPlanErrors = [
+            ...modelPlanResult.errors,
+            ...validateModelPlanSelectors(ctx, modelPlanResult.plan, phases),
+          ];
+          if (modelPlanErrors.length) {
+            ctx.ui.notify(modelPlanErrors.join("\n"), "error");
+            return;
+          }
 
           const pk = phases[targetIdx];
           const yoloMode = state.yoloMode || continueArgs.yolo;
@@ -899,7 +1257,7 @@ ${phasePrompt}`,
             (pk === "implement" || renderFromImplementCheckpoint);
           removePipelineLock(state.feature, state.workDir);
           createPipelineLock(state.feature, state.workDir);
-          const updated: PipelineState = {
+          let updated: PipelineState = {
             ...state,
             phases,
             currentPhaseIndex: targetIdx,
@@ -912,11 +1270,22 @@ ${phasePrompt}`,
             yoloMode,
             implementCheckpointApproved: state.implementCheckpointApproved || approvingImplementCheckpoint || yoloMode,
             readyToAdvancePhase: undefined,
+            modelPlan: modelPlanResult.plan,
+            originalModel: state.originalModel ?? selectorFromCurrentModel(ctx.model, getCurrentThinkingLevel(pi)),
           };
+          if (hasModelUpdate) {
+            updated = appendModelEventState(
+              updated,
+              createModelSwitchEvent("plan-update", resolvePhaseModelSelector(modelPlanResult.plan, pk), "success", {
+                phaseKey: pk,
+                reason: "/ralph continue model plan update",
+              }),
+            );
+          }
           saveState(pi, updated);
           refreshWidget(ctx, updated);
           ctx.ui.notify(`Continuing Phase ${targetIdx + 1} (${PHASE_META[pk]?.name ?? pk})`, "info");
-          launchPhase(pi, ctx, updated);
+          await launchPhase(pi, ctx, updated);
           break;
         }
         case "resume": {
@@ -958,7 +1327,7 @@ ${phasePrompt}`,
           };
           saveState(pi, updated);
           refreshWidget(ctx, updated);
-          launchPhase(pi, ctx, updated);
+          await launchPhase(pi, ctx, updated);
           break;
         }
         case "pause": {
@@ -1025,6 +1394,11 @@ ${phasePrompt}`,
           const idx = state.currentPhaseIndex ?? 0;
           const pk = phases[idx];
           const expectedArtifacts = formatExpectedArtifactPaths(getExpectedArtifactPaths(pk, state));
+          const modelPlanSummary = formatModelPlanSummary(state.modelPlan);
+          const currentSelector = pk ? resolvePhaseModelSelector(state.modelPlan, pk) : undefined;
+          const lastApplied = state.lastAppliedModel
+            ? `${state.lastAppliedModel.phaseKey} ${formatModelSelector({ ...state.lastAppliedModel, source: "cli" })}`
+            : undefined;
           ctx.ui.notify(
             [
               `Feature: ${state.feature}`,
@@ -1034,6 +1408,12 @@ ${phasePrompt}`,
               `WorkDir: ${state.workDir}`,
               expectedArtifacts,
               `Phases: ${phases.join(" → ")}`,
+              modelPlanSummary ? `Model plan: ${modelPlanSummary}` : undefined,
+              currentSelector ? `Current phase model: ${formatModelSelector(currentSelector)}` : undefined,
+              lastApplied ? `Last applied model: ${lastApplied}` : undefined,
+              state.modelPlan
+                ? `Model config trust: ${state.modelPlan.trustApproved ? (state.modelPlan.trustSource ?? "approved") : "not using workspace config"}`
+                : undefined,
               `reviewIterations: ${state.reviewIterations ?? 0}`,
               `phaseAttempts: ${state.phaseAttempts ?? 0}`,
               `Context clears: ${state.contextClearCount ?? 0}`,
@@ -1054,8 +1434,9 @@ ${phasePrompt}`,
           if (state) {
             removePipelineLock(state.feature, state.workDir);
             if (state.workDir !== ctx.cwd) removePipelineLocks(state.workDir);
+            const restoredState = await restoreOriginalModelForTerminal(pi, ctx, withoutPendingSteer(state));
             saveState(pi, {
-              ...withoutPendingSteer(state),
+              ...restoredState,
               pipelineStatus: "cancelled",
               phaseStatus: "post_hook",
               turnWriteCount: 0,
@@ -1194,6 +1575,12 @@ ${phasePrompt}`,
     },
   });
 
+  pi.on("before_provider_request", async (event, ctx) => {
+    const state = getState(ctx);
+    if (!state || state.pipelineStatus !== "running") return;
+    return failClosedProviderRequestOnDrift(pi, ctx, state, event.payload);
+  });
+
   // ── Resources discovery ─────────────────────────────────
   pi.on("resources_discover", async () => ({ skillPaths: [SKILL_BASE] }));
 
@@ -1201,7 +1588,8 @@ ${phasePrompt}`,
   pi.on("before_agent_start", async (event, ctx) => {
     const state = getState(ctx);
     if (!state || state.pipelineStatus !== "running") return;
-    const pk = state.currentPhase;
+    const guardedState = await enforcePhaseModelBeforeDispatch(pi, ctx, state);
+    const pk = guardedState.currentPhase;
     if (!pk || !PHASE_CONFIGS[pk]) return;
     const skillPath = PHASE_CONFIGS[pk].skillPath;
     if (!fs.existsSync(skillPath)) return;
