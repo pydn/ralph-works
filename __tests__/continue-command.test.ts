@@ -73,27 +73,33 @@ describe("/ralph continue", () => {
     fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
     fs.mkdirSync(path.join(workDir, "docs", "security"), { recursive: true });
     fs.writeFileSync(path.join(workDir, "docs", "specs", "feature-a.md"), "# Feature A", "utf-8");
-    fs.writeFileSync(path.join(workDir, "docs", "security", "redteam-findings-feature-a.md"), "[WARNING] test", "utf-8");
+    fs.writeFileSync(
+      path.join(workDir, "docs", "security", "redteam-findings-feature-a.md"),
+      "[WARNING] test",
+      "utf-8",
+    );
 
-    const branch: FakeEntry[] = [{
-      type: "custom",
-      customType: "ralph-loop-state",
-      data: {
-        feature: "feature-a",
-        workDir,
-        phases: ["spec", "redteam", "harden", "implement", "review"],
-        maxIterations: 10,
-        startedAt: Date.now(),
-        currentPhase: "harden",
-        currentPhaseIndex: 2,
-        phaseStatus: "executing",
-        pipelineStatus: "running",
-        reviewIterations: 0,
-        phaseAttempts: 1,
-        turnWriteCount: 1,
-        autoClearContext: false,
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "feature-a",
+          workDir,
+          phases: ["spec", "redteam", "harden", "implement", "review"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "harden",
+          currentPhaseIndex: 2,
+          phaseStatus: "executing",
+          pipelineStatus: "running",
+          reviewIterations: 0,
+          phaseAttempts: 1,
+          turnWriteCount: 1,
+          autoClearContext: false,
+        },
       },
-    }];
+    ];
 
     const { default: registerExtension } = await import("../index");
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
@@ -126,25 +132,27 @@ describe("/ralph continue", () => {
     fs.mkdirSync(path.join(workDir, ".ralph"), { recursive: true });
     fs.writeFileSync(path.join(workDir, ".ralph", ".phase-spec-done"), "{}", "utf-8");
 
-    const branch: FakeEntry[] = [{
-      type: "custom",
-      customType: "ralph-loop-state",
-      data: {
-        feature: "feature-a",
-        workDir,
-        phases: ["spec", "redteam"],
-        maxIterations: 10,
-        startedAt: Date.now(),
-        currentPhase: "spec",
-        currentPhaseIndex: 0,
-        phaseStatus: "executing",
-        pipelineStatus: "running",
-        reviewIterations: 0,
-        phaseAttempts: 2,
-        turnWriteCount: 1,
-        autoClearContext: false,
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "feature-a",
+          workDir,
+          phases: ["spec", "redteam"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "spec",
+          currentPhaseIndex: 0,
+          phaseStatus: "executing",
+          pipelineStatus: "running",
+          reviewIterations: 0,
+          phaseAttempts: 2,
+          turnWriteCount: 1,
+          autoClearContext: false,
+        },
       },
-    }];
+    ];
 
     const { default: registerExtension } = await import("../index");
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
@@ -183,26 +191,28 @@ describe("/ralph continue", () => {
     fs.mkdirSync(path.join(skillBase, "tdd-implement"), { recursive: true });
     fs.writeFileSync(path.join(skillBase, "tdd-implement", "SKILL.md"), "# TDD Implement", "utf-8");
 
-    const branch: FakeEntry[] = [{
-      type: "custom",
-      customType: "ralph-loop-state",
-      data: {
-        feature: "feature-a",
-        workDir,
-        phases: ["spec", "implement", "review"],
-        maxIterations: 10,
-        startedAt: Date.now(),
-        currentPhase: "implement",
-        currentPhaseIndex: 1,
-        phaseStatus: "waiting_for_user",
-        waitingReason: "implement_checkpoint",
-        pipelineStatus: "running",
-        reviewIterations: 0,
-        phaseAttempts: 0,
-        turnWriteCount: 0,
-        autoClearContext: false,
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "feature-a",
+          workDir,
+          phases: ["spec", "implement", "review"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "implement",
+          currentPhaseIndex: 1,
+          phaseStatus: "waiting_for_user",
+          waitingReason: "implement_checkpoint",
+          pipelineStatus: "running",
+          reviewIterations: 0,
+          phaseAttempts: 0,
+          turnWriteCount: 0,
+          autoClearContext: false,
+        },
       },
-    }];
+    ];
 
     const { default: registerExtension } = await import("../index");
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
@@ -227,25 +237,27 @@ describe("/ralph continue", () => {
 describe("/ralph clear-context", () => {
   it("keeps auto context clearing enabled after clear-context --auto completes", async () => {
     const workDir = makeTempDir("ralph-clear-context-auto-");
-    const branch: FakeEntry[] = [{
-      type: "custom",
-      customType: "ralph-loop-state",
-      data: {
-        feature: "feature-a",
-        workDir,
-        phases: ["spec", "redteam"],
-        maxIterations: 10,
-        startedAt: Date.now(),
-        currentPhase: "spec",
-        currentPhaseIndex: 0,
-        phaseStatus: "executing",
-        pipelineStatus: "running",
-        reviewIterations: 0,
-        phaseAttempts: 0,
-        turnWriteCount: 0,
-        autoClearContext: false,
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "feature-a",
+          workDir,
+          phases: ["spec", "redteam"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "spec",
+          currentPhaseIndex: 0,
+          phaseStatus: "executing",
+          pipelineStatus: "running",
+          reviewIterations: 0,
+          phaseAttempts: 0,
+          turnWriteCount: 0,
+          autoClearContext: false,
+        },
       },
-    }];
+    ];
 
     const { default: registerExtension } = await import("../index");
     const { pi, commands } = makeFakePi(branch);

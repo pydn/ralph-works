@@ -210,8 +210,8 @@ describe("next-phase launch", () => {
 
     expect(ctx.compact).toHaveBeenCalledTimes(1);
     expect(ctx.ui.setStatus).toHaveBeenCalledWith("ralph-loop", "COMPACTING; this may take a minute");
-    const compactingStatusCall = ctx.ui.setStatus.mock.calls.find((call) =>
-      call[1] === "COMPACTING; this may take a minute",
+    const compactingStatusCall = ctx.ui.setStatus.mock.calls.find(
+      (call) => call[1] === "COMPACTING; this may take a minute",
     );
     expect(compactingStatusCall).toBeDefined();
     expect(ctx.ui.setStatus.mock.invocationCallOrder.at(-1)).toBeLessThan(ctx.compact.mock.invocationCallOrder[0]);

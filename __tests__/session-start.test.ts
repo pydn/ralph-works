@@ -186,7 +186,11 @@ describe("session_start reload behavior", () => {
     expect(String(sendUserMessages[0]?.content)).toContain("Launch queued Phase 2");
     expect(String(sendUserMessages[0]?.content)).toContain("Phase: Red Team Audit");
 
-    const latestState = branch[branch.length - 1]?.data as { currentPhase?: string; currentPhaseIndex?: number; phaseStatus?: string };
+    const latestState = branch[branch.length - 1]?.data as {
+      currentPhase?: string;
+      currentPhaseIndex?: number;
+      phaseStatus?: string;
+    };
     expect(latestState.currentPhase).toBe("redteam");
     expect(latestState.currentPhaseIndex).toBe(1);
     expect(latestState.phaseStatus).toBe("executing");

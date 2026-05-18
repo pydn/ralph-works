@@ -334,7 +334,10 @@ describe("/ralph start command", () => {
     registerExtension(outsidePi.pi as any);
 
     const outsidePath = path.join(outsideDir, "requirements.md");
-    await outsidePi.commands.get("ralph")?.(`start feature-a ${outsidePath} spec`, makeFakeContext(outsideBranch, workDir));
+    await outsidePi.commands.get("ralph")?.(
+      `start feature-a ${outsidePath} spec`,
+      makeFakeContext(outsideBranch, workDir),
+    );
 
     const outsideState = latestState<{ promptText?: string }>(outsideBranch);
     expect(outsideState.promptText).toBe(outsidePath);
@@ -435,7 +438,10 @@ describe("extension event guards", () => {
     const injected = await beforeAgentStart?.({ systemPrompt: "base" }, makeFakeContext(branch, workDir));
     expect((injected as { systemPrompt?: string })?.systemPrompt).toContain("<ralph-spec-skill>");
 
-    const duplicate = await beforeAgentStart?.({ systemPrompt: "base\nralph-spec-skill" }, makeFakeContext(branch, workDir));
+    const duplicate = await beforeAgentStart?.(
+      { systemPrompt: "base\nralph-spec-skill" },
+      makeFakeContext(branch, workDir),
+    );
     expect(duplicate).toBeUndefined();
   });
 
@@ -552,13 +558,11 @@ describe("gate tool and auto-gate paths", () => {
 
     const ctx = makeFakeContext(branch, workDir);
     const onUpdate = vi.fn();
-    const result = await tools.get("ralph_gate_check")?.execute(
-      "gate-1",
-      { paths: ["src/file.ts", "src/file.ts;rm"] },
-      undefined,
-      onUpdate,
-      ctx,
-    ) as { details?: { allPass?: boolean } };
+    const result = (await tools
+      .get("ralph_gate_check")
+      ?.execute("gate-1", { paths: ["src/file.ts", "src/file.ts;rm"] }, undefined, onUpdate, ctx)) as {
+      details?: { allPass?: boolean };
+    };
 
     expect(result.details?.allPass).toBe(true);
     expect(onUpdate).toHaveBeenCalled();
@@ -593,13 +597,10 @@ describe("gate tool and auto-gate paths", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir);
-    const result = await tools.get("ralph_gate_check")?.execute(
-      "gate-1",
-      {},
-      undefined,
-      vi.fn(),
-      ctx,
-    ) as { content?: Array<{ text?: string }>; details?: { allPass?: boolean } };
+    const result = (await tools.get("ralph_gate_check")?.execute("gate-1", {}, undefined, vi.fn(), ctx)) as {
+      content?: Array<{ text?: string }>;
+      details?: { allPass?: boolean };
+    };
 
     expect(result.details?.allPass).toBe(false);
     expect(result.content?.[0]?.text).toContain("Gate Failures");
@@ -654,7 +655,10 @@ describe("review decision and completion paths", () => {
     expect(state.phaseStatus).toBe("waiting_for_user");
     expect(state.waitingReason).toBe("implement_checkpoint");
     expect(sendUserMessages).toHaveLength(0);
-    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Review the completed planning phases"), "warning");
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Review the completed planning phases"),
+      "warning",
+    );
   });
 
   it("lets yolo mode proceed directly from planning into implementation", async () => {
@@ -769,13 +773,9 @@ describe("review decision and completion paths", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir, { idle: true });
-    const gateResult = await tools.get("ralph_gate_check")?.execute(
-      "gate-1",
-      {},
-      undefined,
-      vi.fn(),
-      ctx,
-    ) as { details?: { allPass?: boolean } };
+    const gateResult = (await tools.get("ralph_gate_check")?.execute("gate-1", {}, undefined, vi.fn(), ctx)) as {
+      details?: { allPass?: boolean };
+    };
     expect(gateResult.details?.allPass).toBe(true);
 
     await handlers.get("agent_end")?.(
@@ -849,13 +849,11 @@ describe("review decision and completion paths", () => {
     const { pi, tools } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    const result = await tools.get("ralph_review_decision")?.execute(
-      "review-1",
-      { status: "LGTM" },
-      undefined,
-      vi.fn(),
-      makeFakeContext(branch, workDir),
-    ) as { content?: Array<{ text?: string }> };
+    const result = (await tools
+      .get("ralph_review_decision")
+      ?.execute("review-1", { status: "LGTM" }, undefined, vi.fn(), makeFakeContext(branch, workDir))) as {
+      content?: Array<{ text?: string }>;
+    };
 
     expect(result.content?.[0]?.text).toContain("can only be called during review phase");
     expect(latestState<{ currentPhase?: string }>(branch).currentPhase).toBe("implement");
@@ -879,13 +877,15 @@ describe("review decision and completion paths", () => {
     const { pi, tools, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    await tools.get("ralph_review_decision")?.execute(
-      "review-1",
-      { status: "CRITICAL", issues: ["Missing auth boundary test"] },
-      undefined,
-      vi.fn(),
-      makeFakeContext(branch, workDir),
-    );
+    await tools
+      .get("ralph_review_decision")
+      ?.execute(
+        "review-1",
+        { status: "CRITICAL", issues: ["Missing auth boundary test"] },
+        undefined,
+        vi.fn(),
+        makeFakeContext(branch, workDir),
+      );
 
     const state = latestState<{
       currentPhase?: string;
@@ -916,13 +916,7 @@ describe("review decision and completion paths", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir);
-    await tools.get("ralph_review_decision")?.execute(
-      "review-1",
-      { status: "LGTM" },
-      undefined,
-      vi.fn(),
-      ctx,
-    );
+    await tools.get("ralph_review_decision")?.execute("review-1", { status: "LGTM" }, undefined, vi.fn(), ctx);
 
     const state = latestState<{ pipelineStatus?: string; phaseStatus?: string }>(branch);
     expect(state.pipelineStatus).toBe("completed");

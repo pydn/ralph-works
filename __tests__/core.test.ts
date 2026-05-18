@@ -1,5 +1,23 @@
 import { describe, it, expect } from "vitest";
-import { validatePhaseOrder, sanitizeErrorOutput, PHASE_META, PHASE_ORDER, DEFAULT_PHASES, sanitizeFeatureName, detectProjectStack, loadGateConfig, resolveGates, GATE_COMMAND_WHITELIST, isValidGateCommand, isValidTargetPath, resolvePhaseCompletion, resolveSessionStartAction, hasPhaseCompletionMarker, PHASE_COMPLETE_MARKER, validateHardenedSpecStatus } from "../src/stateMachine";
+import {
+  validatePhaseOrder,
+  sanitizeErrorOutput,
+  PHASE_META,
+  PHASE_ORDER,
+  DEFAULT_PHASES,
+  sanitizeFeatureName,
+  detectProjectStack,
+  loadGateConfig,
+  resolveGates,
+  GATE_COMMAND_WHITELIST,
+  isValidGateCommand,
+  isValidTargetPath,
+  resolvePhaseCompletion,
+  resolveSessionStartAction,
+  hasPhaseCompletionMarker,
+  PHASE_COMPLETE_MARKER,
+  validateHardenedSpecStatus,
+} from "../src/stateMachine";
 
 describe("PHASE_ORDER", () => {
   it("contains all 6 phases in correct order (including render)", () => {
@@ -247,7 +265,9 @@ describe("resolveSessionStartAction", () => {
   });
 
   it("launches the queued phase when the pipeline was left in pre_hook", () => {
-    expect(resolveSessionStartAction({ pipelineStatus: "running", phaseStatus: "pre_hook" })).toBe("launch_pending_phase");
+    expect(resolveSessionStartAction({ pipelineStatus: "running", phaseStatus: "pre_hook" })).toBe(
+      "launch_pending_phase",
+    );
   });
 
   it("does not auto-resume when the pipeline is paused", () => {
@@ -268,8 +288,12 @@ describe("resolveSessionStartAction", () => {
 
 function makeFsMock(files: Set<string>) {
   return {
-    existsSync(path: string): boolean { return files.has(path); },
-    readFileSync(_path: string, _enc: string): string { throw new Error("not mocked"); },
+    existsSync(path: string): boolean {
+      return files.has(path);
+    },
+    readFileSync(_path: string, _enc: string): string {
+      throw new Error("not mocked");
+    },
   };
 }
 
@@ -305,11 +329,13 @@ describe("detectProjectStack", () => {
   });
 
   it("returns unknown for polyglot (tsconfig.json + pyproject.toml)", () => {
-    const fs = makeFsMock(new Set([
-      "/tmp/test-project/tsconfig.json",
-      "/tmp/test-project/package.json",
-      "/tmp/test-project/pyproject.toml",
-    ]));
+    const fs = makeFsMock(
+      new Set([
+        "/tmp/test-project/tsconfig.json",
+        "/tmp/test-project/package.json",
+        "/tmp/test-project/pyproject.toml",
+      ]),
+    );
     const result = detectProjectStack("/tmp/test-project", fs);
     expect(result.language).toBe("unknown");
   });
@@ -435,19 +461,14 @@ describe("resolveGates", () => {
   });
 
   it("returns tsc+eslint+vitest defaults for TypeScript stack (no config)", () => {
-    const fs = makeFsMock(new Set([
-      "/tmp/test-project/tsconfig.json",
-      "/tmp/test-project/package.json",
-    ]));
+    const fs = makeFsMock(new Set(["/tmp/test-project/tsconfig.json", "/tmp/test-project/package.json"]));
     const gates = resolveGates("/tmp/test-project", undefined, fs);
     expect(gates.length).toBeGreaterThanOrEqual(2);
     expect(gates.some((g) => g.name.toLowerCase().includes("tsc") || g.command.includes("tsc"))).toBe(true);
   });
 
   it("returns ruff+ruff+pytest defaults for Python stack (no config)", () => {
-    const fs = makeFsMock(new Set([
-      "/tmp/test-project/pyproject.toml",
-    ]));
+    const fs = makeFsMock(new Set(["/tmp/test-project/pyproject.toml"]));
     const gates = resolveGates("/tmp/test-project", undefined, fs);
     expect(gates.length).toBeGreaterThanOrEqual(2);
     expect(gates.some((g) => g.command.includes("ruff") || g.command.includes("pytest"))).toBe(true);
@@ -509,7 +530,7 @@ describe("resolveGates", () => {
       readFileSync: () => noTimeoutConfig,
     };
     const gates = resolveGates("/tmp/test-project", undefined, fs);
-    expect(gates.map(g => g.timeoutMs)).toEqual([60000, 300000, 30000]);
+    expect(gates.map((g) => g.timeoutMs)).toEqual([60000, 300000, 30000]);
   });
 });
 
@@ -517,14 +538,11 @@ describe("resolveGates", () => {
 
 describe("gate resolution idempotency", () => {
   it("returns consistent results for repeated calls (lock safety)", () => {
-    const fs = makeFsMock(new Set([
-      "/tmp/test-project/tsconfig.json",
-      "/tmp/test-project/package.json",
-    ]));
+    const fs = makeFsMock(new Set(["/tmp/test-project/tsconfig.json", "/tmp/test-project/package.json"]));
     const gates1 = resolveGates("/tmp/test-project", undefined, fs);
     const gates2 = resolveGates("/tmp/test-project", undefined, fs);
     expect(gates1.length).toBe(gates2.length);
-    expect(gates1.map(g => g.command)).toEqual(gates2.map(g => g.command));
+    expect(gates1.map((g) => g.command)).toEqual(gates2.map((g) => g.command));
   });
 
   it("returns same defaults for unknown stack (fallback consistency)", () => {

@@ -62,7 +62,10 @@ export function validatePhaseIndex(idx: number, phases: string[]): boolean {
 // ── Clear Context Guards ───────────────────────────────────
 
 /** Result of a clear-context validation check. */
-export interface CanClearResult { ok: boolean; reason?: string; }
+export interface CanClearResult {
+  ok: boolean;
+  reason?: string;
+}
 
 /**
  * Validate whether context can be safely cleared for the given pipeline state.
@@ -71,16 +74,27 @@ export interface CanClearResult { ok: boolean; reason?: string; }
  * @param state PipelineState from getState(), or null if no active pipeline
  * @returns { ok: boolean; reason?: string } with rejection reason when ok is false
  */
-export function canClearContext(state: { feature?: string; currentPhaseIndex?: number | undefined; pipelineStatus?: string; phaseStatus?: string; lastContextClearAt?: number | undefined } | null): CanClearResult {
+export function canClearContext(
+  state: {
+    feature?: string;
+    currentPhaseIndex?: number | undefined;
+    pipelineStatus?: string;
+    phaseStatus?: string;
+    lastContextClearAt?: number | undefined;
+  } | null,
+): CanClearResult {
   if (!state) return { ok: false, reason: "No active pipeline" };
   if (!state.feature) return { ok: false, reason: "State missing required field: feature" };
-  if (state.currentPhaseIndex === undefined || state.currentPhaseIndex === null) return { ok: false, reason: "State missing required field: currentPhaseIndex" };
+  if (state.currentPhaseIndex === undefined || state.currentPhaseIndex === null)
+    return { ok: false, reason: "State missing required field: currentPhaseIndex" };
   const blocked = ["completed", "cancelled", "failed", "halted"] as const;
-  if (blocked.includes(state.pipelineStatus as typeof blocked[number])) return { ok: false, reason: `Pipeline is ${state.pipelineStatus}` };
+  if (blocked.includes(state.pipelineStatus as (typeof blocked)[number]))
+    return { ok: false, reason: `Pipeline is ${state.pipelineStatus}` };
   if (state.phaseStatus === "pre_hook") return { ok: false, reason: "Cannot clear during pre_hook" };
   if (state.lastContextClearAt !== undefined) {
     const elapsed = Date.now() - state.lastContextClearAt;
-    if (elapsed < 30_000) return { ok: false, reason: `Rate-limit cooldown active (${Math.ceil((30_000 - elapsed) / 1000)}s remaining)` };
+    if (elapsed < 30_000)
+      return { ok: false, reason: `Rate-limit cooldown active (${Math.ceil((30_000 - elapsed) / 1000)}s remaining)` };
   }
   return { ok: true };
 }
@@ -93,7 +107,10 @@ export function canClearContext(state: { feature?: string; currentPhaseIndex?: n
  */
 export function resolveArtifactPaths(state: { feature: string; workDir: string }): string[] {
   const safeFeature = sanitizeFeatureName(state.feature);
-  const sanitized = safeFeature.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  const sanitized = safeFeature
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
   const candidates = [
     `docs/specs/${safeFeature}.md`,
     `docs/specs/${sanitized}-final.html`,
@@ -101,8 +118,12 @@ export function resolveArtifactPaths(state: { feature: string; workDir: string }
     `docs/specs/harden-changelog-${safeFeature}.md`,
   ];
 
-  return candidates.filter(p => {
-    try { return fs.existsSync(path.join(state.workDir, p)); } catch { return false; }
+  return candidates.filter((p) => {
+    try {
+      return fs.existsSync(path.join(state.workDir, p));
+    } catch {
+      return false;
+    }
   });
 }
 
@@ -122,13 +143,25 @@ export function buildReorientationPrompt(state: {
 }): string {
   const idx = state.currentPhaseIndex ?? 0;
   const phaseName = state.currentPhase ?? "unknown";
-  const total = (state.phases?.length ?? 1);
+  const total = state.phases?.length ?? 1;
 
   // Tier 1 — Always included (~500 chars)
-  const header = "⛔ CONTEXT RESET — Phase " + (idx + 1) + ": " + phaseName +
-    "\nYou are in a Ralph pipeline for feature \"" + state.feature + "\"."
-    + "\nConversation context was refreshed. State is preserved in JSONL."
-    + "\nCurrent phase: " + phaseName + " (Phase " + (idx + 1) + "/" + total + ")";
+  const header =
+    "⛔ CONTEXT RESET — Phase " +
+    (idx + 1) +
+    ": " +
+    phaseName +
+    '\nYou are in a Ralph pipeline for feature "' +
+    state.feature +
+    '".' +
+    "\nConversation context was refreshed. State is preserved in JSONL." +
+    "\nCurrent phase: " +
+    phaseName +
+    " (Phase " +
+    (idx + 1) +
+    "/" +
+    total +
+    ")";
 
   // Tier 2 — Metadata if budget permits
   const phases = state.phases ?? [];
