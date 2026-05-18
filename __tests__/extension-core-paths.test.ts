@@ -417,6 +417,48 @@ describe("/ralph start command", () => {
     expect(sendUserMessages).toHaveLength(0);
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("already running"), "error");
   });
+
+  it("allows a new start after canceling the persisted active pipeline", async () => {
+    const workDir = makeTempDir("ralph-cancel-new-start-");
+    const skillBase = makeTempDir("ralph-cancel-new-start-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "generate-spec");
+    fs.mkdirSync(path.join(workDir, ".ralph"), { recursive: true });
+    fs.writeFileSync(path.join(workDir, ".ralph", "pipeline-lock-feature-a"), "{}", "utf-8");
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      feature: "feature-a",
+      phases: ["spec"],
+      currentPhase: "spec",
+      currentPhaseIndex: 0,
+      pendingSteerKey: "phase-transition:0:spec",
+      pendingSteerSentAt: Date.now(),
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await commands.get("ralph")?.("cancel", ctx);
+    await commands.get("ralph")?.("start feature-b spec", ctx);
+
+    expect(fs.existsSync(path.join(workDir, ".ralph", "pipeline-lock-feature-a"))).toBe(false);
+    expect(sendUserMessages).toHaveLength(1);
+    const state = latestState<{
+      feature?: string;
+      pipelineStatus?: string;
+      phaseStatus?: string;
+      pendingSteerKey?: string;
+      pendingSteerSentAt?: number;
+    }>(branch);
+    expect(state.feature).toBe("feature-b");
+    expect(state.pipelineStatus).toBe("running");
+    expect(state.phaseStatus).toBe("executing");
+    expect(state.pendingSteerKey).toBeUndefined();
+    expect(state.pendingSteerSentAt).toBeUndefined();
+  });
 });
 
 describe("extension event guards", () => {
@@ -432,6 +474,9 @@ describe("extension event guards", () => {
     registerExtension(pi as any);
 
     const beforeAgentStart = handlers.get("before_agent_start");
+    expect(await beforeAgentStart?.({ systemPrompt: "base" }, makeFakeContext(branch, workDir))).toBeUndefined();
+
+    pushState(branch, workDir, { currentPhase: "spec", currentPhaseIndex: 0, pipelineStatus: "cancelled" });
     expect(await beforeAgentStart?.({ systemPrompt: "base" }, makeFakeContext(branch, workDir))).toBeUndefined();
 
     pushState(branch, workDir, { currentPhase: "spec", currentPhaseIndex: 0 });
