@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as childProcess from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -706,6 +707,77 @@ ${"Hardened spec body.\n".repeat(128)}`,
 
     const latestState = branch[branch.length - 1]?.data as { phaseAttempts?: number };
     expect(latestState.phaseAttempts).toBe(1);
+  });
+
+  it("explains likely worktree mismatches when a spec artifact is outside state.workDir", async () => {
+    const primaryDir = makeTempDir("ralph-primary-artifact-root-");
+    childProcess.execFileSync("git", ["init"], { cwd: primaryDir });
+    fs.writeFileSync(path.join(primaryDir, "README.md"), "# test repo\n", "utf-8");
+    childProcess.execFileSync("git", ["add", "."], { cwd: primaryDir });
+    childProcess.execFileSync(
+      "git",
+      ["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "init"],
+      {
+        cwd: primaryDir,
+      },
+    );
+
+    const worktreeDir = makeTempDir("ralph-linked-artifact-root-");
+    fs.rmSync(worktreeDir, { recursive: true, force: true });
+    childProcess.execFileSync("git", ["worktree", "add", worktreeDir, "-b", "artifact-root"], { cwd: primaryDir });
+    tempDirs.push(worktreeDir);
+
+    fs.mkdirSync(path.join(worktreeDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(worktreeDir, "docs", "specs", "feature-a.md"),
+      `# Feature A\n\n${"Spec body.\n".repeat(256)}`,
+      "utf-8",
+    );
+
+    const branch: FakeEntry[] = [];
+    branch.push({
+      type: "custom",
+      customType: "ralph-loop-state",
+      data: {
+        feature: "feature-a",
+        workDir: primaryDir,
+        phases: ["spec"],
+        maxIterations: 10,
+        startedAt: Date.now(),
+        currentPhase: "spec",
+        currentPhaseIndex: 0,
+        phaseStatus: "executing",
+        pipelineStatus: "running",
+        reviewIterations: 0,
+        phaseAttempts: 0,
+        turnWriteCount: 0,
+        autoClearContext: false,
+      },
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: `Spec complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+          },
+        ],
+      },
+      makeFakeContext(branch, primaryDir),
+    );
+
+    const failureMessage = String(sendUserMessages[0]?.content);
+    expect(failureMessage).toContain("Expected workDir:");
+    expect(failureMessage).toContain(primaryDir);
+    expect(failureMessage).toContain(path.join(primaryDir, "docs", "specs", "feature-a.md"));
+    expect(failureMessage).toContain(worktreeDir);
+    expect(failureMessage).toContain("ralph_set_workdir");
+    expect(failureMessage).toContain("Spec not found");
   });
 
   it("coalesces duplicate pending phase-transition steers", async () => {

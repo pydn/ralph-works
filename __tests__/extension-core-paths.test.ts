@@ -418,6 +418,55 @@ describe("/ralph start command", () => {
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("already running"), "error");
   });
 
+  it("shows the persisted workDir and expected artifact path in status", async () => {
+    const workDir = makeTempDir("ralph-status-workdir-");
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["spec"],
+      currentPhase: "spec",
+      currentPhaseIndex: 0,
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await commands.get("ralph")?.("status", ctx);
+
+    const notification = String(ctx.ui.notify.mock.calls[0]?.[0]);
+    expect(notification).toContain(`WorkDir: ${workDir}`);
+    expect(notification).toContain(path.join(workDir, "docs", "specs", "feature-a.md"));
+  });
+
+  it("lets the agent explicitly update the run workDir after creating a worktree", async () => {
+    const originalWorkDir = makeTempDir("ralph-original-workdir-");
+    const worktreeDir = makeTempDir("ralph-agent-worktree-");
+    const branch: FakeEntry[] = [];
+    pushState(branch, originalWorkDir);
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, tools } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const result = (await tools
+      .get("ralph_set_workdir")
+      ?.execute(
+        "set-workdir-1",
+        { workDir: worktreeDir },
+        undefined,
+        vi.fn(),
+        makeFakeContext(branch, originalWorkDir),
+      )) as {
+      content: Array<{ text: string }>;
+    };
+
+    const state = latestState<{ workDir?: string; lastValidationFailure?: string }>(branch);
+    expect(state.workDir).toBe(worktreeDir);
+    expect(state.lastValidationFailure).toBeUndefined();
+    expect(result.content[0]?.text).toContain(worktreeDir);
+  });
+
   it("allows a new start after canceling the persisted active pipeline", async () => {
     const workDir = makeTempDir("ralph-cancel-new-start-");
     const skillBase = makeTempDir("ralph-cancel-new-start-skills-");
