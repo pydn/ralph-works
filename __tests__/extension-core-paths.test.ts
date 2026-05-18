@@ -938,7 +938,11 @@ describe("review decision and completion paths", () => {
     const state = latestState<{ pipelineStatus?: string; phaseStatus?: string }>(branch);
     expect(state.pipelineStatus).toBe("completed");
     expect(state.phaseStatus).toBe("post_hook");
-    expect(ctx.ui.setStatus).toHaveBeenCalledWith("ralph-loop", expect.stringContaining("Done"));
+    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("ralph-loop", undefined);
+    const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
+    expect(widgetText).toContain("Ralph · COMPLETE");
+    expect(widgetText).toContain("✓ 2/2 Ralph Review Loop");
+    expect(widgetText).toContain("[✓ ✓]");
     expect(ctx.ui.setWorkingMessage).not.toHaveBeenCalledWith("Waiting for user input");
   });
 
@@ -1027,7 +1031,11 @@ describe("review decision and completion paths", () => {
     const state = latestState<{ pipelineStatus?: string; phaseStatus?: string }>(branch);
     expect(state.pipelineStatus).toBe("completed");
     expect(state.phaseStatus).toBe("post_hook");
-    expect(ctx.ui.setStatus).toHaveBeenCalledWith("ralph-loop", expect.stringContaining("Done"));
+    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("ralph-loop", undefined);
+    const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
+    expect(widgetText).toContain("Ralph · COMPLETE");
+    expect(widgetText).toContain("✓ 2/2 Ralph Review Loop");
+    expect(widgetText).toContain("[✓ ✓]");
   });
 
   it("fails a phase after repeated post-hook validation failures", async () => {

@@ -124,10 +124,10 @@ function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; a
 }
 
 /** Render a compact phase-progress rail using one symbol per phase. */
-function buildPhaseTrack(ctx: ExtensionContext, phases: string[], idx: number): string {
+function buildPhaseTrack(ctx: ExtensionContext, phases: string[], idx: number, isComplete: boolean): string {
   return phases
     .map((_phase, phaseIdx) => {
-      if (phaseIdx < idx) return styleUiText(ctx, "success", "✓");
+      if (isComplete || phaseIdx < idx) return styleUiText(ctx, "success", "✓");
       if (phaseIdx === idx) return styleUiText(ctx, "accent", "▶");
       return styleUiText(ctx, "muted", "·");
     })
@@ -138,6 +138,7 @@ function buildPhaseTrack(ctx: ExtensionContext, phases: string[], idx: number): 
 function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
   const { phases, idx, phaseName } = getPhaseDisplay(st);
   const widgetState = resolveWidgetState(st);
+  const isComplete = st.pipelineStatus === "completed";
   const featureLabel = truncateUiText(st.feature, st.yoloMode ? 34 : 42);
   const yoloLabel = st.yoloMode ? `${styleUiText(ctx, "muted", " · ")}${formatYoloBadge()}` : "";
   const detailLines = [
@@ -160,9 +161,10 @@ function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
     yoloLabel,
   ].join("");
   const phaseLine = [
-    styleUiText(ctx, "mdHeading", `▶ ${idx + 1}/${phases.length} ${truncateUiText(phaseName, 34)}`),
+    styleUiText(ctx, isComplete ? "success" : "mdHeading", isComplete ? "✓" : "▶"),
+    styleUiText(ctx, "mdHeading", ` ${idx + 1}/${phases.length} ${truncateUiText(phaseName, 34)}`),
     styleUiText(ctx, "muted", " · "),
-    `[${buildPhaseTrack(ctx, phases, idx)}]`,
+    `[${buildPhaseTrack(ctx, phases, idx, isComplete)}]`,
   ].join("");
 
   const lines = [headerLine, phaseLine];

@@ -160,8 +160,13 @@ function enterImplementCheckpoint(pi: ExtensionAPI, ctx: ExtensionContext, st: P
 
 /** Persist terminal success and switch the visible UI out of any waiting state. */
 function completePipeline(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState, message?: string): void {
+  const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
+  const finalPhaseIndex = Math.max(0, phases.length - 1);
   const completedState: PipelineState = {
     ...state,
+    phases,
+    currentPhase: phases[finalPhaseIndex],
+    currentPhaseIndex: finalPhaseIndex,
     pipelineStatus: "completed",
     phaseStatus: "post_hook",
     turnWriteCount: 0,
@@ -171,7 +176,7 @@ function completePipeline(pi: ExtensionAPI, ctx: ExtensionContext, state: Pipeli
   saveState(pi, completedState);
   refreshWidget(ctx, completedState);
   ctx.ui.notify(message ?? `✅ Ralph loop complete for "${state.feature}"`, "info");
-  ctx.ui.setStatus(UI_WIDGET_ID, `✅ Done | ${state.feature}`);
+  ctx.ui.setStatus(UI_WIDGET_ID, undefined);
   writeDevCycleSummary(completedState);
   writeMetrics(completedState);
 }
