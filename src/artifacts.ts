@@ -123,6 +123,17 @@ export function removePipelineLock(feature: string, wd: string): void {
   } catch {}
 }
 
+/** Remove every Ralph pipeline lock in a work directory. */
+export function removePipelineLocks(wd: string): void {
+  const ralphDir = path.join(wd, ".ralph");
+  try {
+    if (!fs.existsSync(ralphDir)) return;
+    for (const entry of fs.readdirSync(ralphDir)) {
+      if (entry.startsWith("pipeline-lock-")) fs.unlinkSync(path.join(ralphDir, entry));
+    }
+  } catch {}
+}
+
 /** Check whether a phase marker exists for resume-time crash recovery. */
 export function phaseCompletionMarkerExists(state: PipelineState, phaseKey: string): boolean {
   return fs.existsSync(path.join(state.workDir, ".ralph", `.phase-${phaseKey}-done`));

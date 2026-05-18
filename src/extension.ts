@@ -13,6 +13,7 @@ import {
   createPipelineLock,
   phaseCompletionMarkerExists,
   removePipelineLock,
+  removePipelineLocks,
   writeDevCycleSummary,
   writeMetrics,
   writePhaseCompletionMarker,
@@ -936,8 +937,10 @@ ${phasePrompt}`,
         }
         case "cancel": {
           const state = getState(ctx);
+          removePipelineLocks(ctx.cwd);
           if (state) {
             removePipelineLock(state.feature, state.workDir);
+            if (state.workDir !== ctx.cwd) removePipelineLocks(state.workDir);
             saveState(pi, {
               ...withoutPendingSteer(state),
               pipelineStatus: "cancelled",

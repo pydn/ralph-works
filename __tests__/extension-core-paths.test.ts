@@ -459,6 +459,33 @@ describe("/ralph start command", () => {
     expect(state.pendingSteerKey).toBeUndefined();
     expect(state.pendingSteerSentAt).toBeUndefined();
   });
+
+  it("clears orphaned pipeline locks on cancel so the same feature can restart", async () => {
+    const workDir = makeTempDir("ralph-cancel-orphan-lock-");
+    const skillBase = makeTempDir("ralph-cancel-orphan-lock-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "generate-spec");
+    fs.mkdirSync(path.join(workDir, ".ralph"), { recursive: true });
+    fs.writeFileSync(path.join(workDir, ".ralph", "pipeline-lock-feature-a"), "{}", "utf-8");
+
+    const branch: FakeEntry[] = [];
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await commands.get("ralph")?.("cancel", ctx);
+    await commands.get("ralph")?.("start feature-a spec", ctx);
+    await commands.get("ralph")?.("cancel", ctx);
+    await commands.get("ralph")?.("start feature-a spec", ctx);
+
+    expect(sendUserMessages).toHaveLength(2);
+    expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("already running"), "error");
+    expect(latestState<{ feature?: string; pipelineStatus?: string }>(branch)).toMatchObject({
+      feature: "feature-a",
+      pipelineStatus: "running",
+    });
+  });
 });
 
 describe("extension event guards", () => {
