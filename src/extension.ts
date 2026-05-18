@@ -93,6 +93,12 @@ function extractMessageText(content: unknown): string {
   return textParts.join("\n").trim();
 }
 
+/** Only non-terminal persisted states should prevent a fresh `/ralph start`. */
+function blocksNewPipelineStart(state: PipelineState | null): boolean {
+  if (!state) return false;
+  return !["completed", "cancelled", "failed", "halted"].includes(state.pipelineStatus ?? "running");
+}
+
 /** Persist a waiting state and switch the TUI out of "working" mode. */
 function enterWaitingForUser(pi: ExtensionAPI, ctx: ExtensionContext, st: PipelineState): void {
   if (st.pipelineStatus !== "running") return;
@@ -422,7 +428,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("message_start", async (event, ctx) => {
     const state = getState(ctx);
-    if (!state || event.message.role !== "assistant") return;
+    if (!state || state.pipelineStatus !== "running" || event.message.role !== "assistant") return;
     if (state.waitingReason === IMPLEMENT_CHECKPOINT_WAIT_REASON) {
       setPipelineWaitingUi(ctx, state);
       refreshWidget(ctx, state);
@@ -440,7 +446,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("message_update", async (_event, ctx) => {
     const state = getState(ctx);
-    if (!state || _event.message.role !== "assistant") return;
+    if (!state || state.pipelineStatus !== "running" || _event.message.role !== "assistant") return;
     refreshWidget(ctx, state);
   });
 
@@ -467,6 +473,10 @@ export default function (pi: ExtensionAPI) {
     if (!state) return;
     const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
     ctx.ui.notify(`Ralph loop: ${state.feature} (${phases.join(", ")})`, "info");
+    if (state.pipelineStatus !== "running") {
+      refreshWidget(ctx, state);
+      return;
+    }
     if (state.phaseStatus === WAITING_FOR_USER_PHASE_STATUS) setPipelineWaitingUi(ctx, state);
     else setPipelineWorkingUi(ctx, state);
     refreshWidget(ctx, state);
@@ -518,7 +528,7 @@ ${phasePrompt}`,
   // Auto-gate on write operations during gate phases
   pi.on("tool_result", async (event, ctx) => {
     const state = getState(ctx);
-    if (!state) return;
+    if (!state || state.pipelineStatus !== "running") return;
     if (!GATE_PHASES.has(state.currentPhase ?? "")) return;
     const currentCount = state.turnWriteCount ?? 0;
     if (event.toolName === "write" || event.toolName === "edit") {
@@ -556,7 +566,7 @@ ${phasePrompt}`,
   // Agent end → post-hook → state machine advance
   pi.on("agent_end", async (event, ctx) => {
     const state = getState(ctx);
-    if (!state) return;
+    if (!state || state.pipelineStatus !== "running") return;
     saveState(pi, { ...state, turnWriteCount: 0 });
     await handleAgentEnd(pi, event as { messages: Array<{ role?: string; content?: unknown }> }, ctx);
   });
@@ -654,7 +664,7 @@ ${phasePrompt}`,
       const cmd = parts[0]?.toLowerCase();
       switch (cmd) {
         case "start": {
-          if (getState(ctx)) {
+          if (blocksNewPipelineStart(getState(ctx))) {
             ctx.ui.notify("Pipeline already running. /ralph cancel first.", "error");
             return;
           }
@@ -895,7 +905,17 @@ ${phasePrompt}`,
         }
         case "cancel": {
           const state = getState(ctx);
-          if (state) removePipelineLock(state.feature, state.workDir);
+          if (state) {
+            removePipelineLock(state.feature, state.workDir);
+            saveState(pi, {
+              ...withoutPendingSteer(state),
+              pipelineStatus: "cancelled",
+              phaseStatus: "post_hook",
+              turnWriteCount: 0,
+              waitingReason: undefined,
+              readyToAdvancePhase: undefined,
+            });
+          }
           clearPipelineWidgetCache();
           ctx.ui.setStatus(UI_WIDGET_ID, "");
           ctx.ui.setWidget(UI_WIDGET_ID, []);
@@ -994,7 +1014,7 @@ ${phasePrompt}`,
         default: {
           if (cmd && !cmd.startsWith("-")) {
             // Shorthand: /ralph <feature>
-            if (!getState(ctx)) {
+            if (!blocksNewPipelineStart(getState(ctx))) {
               const feature = cmd;
               const state: PipelineState = {
                 feature,
@@ -1033,7 +1053,7 @@ ${phasePrompt}`,
   // ── Single-skill injection per phase ────────────────────
   pi.on("before_agent_start", async (event, ctx) => {
     const state = getState(ctx);
-    if (!state) return;
+    if (!state || state.pipelineStatus !== "running") return;
     const pk = state.currentPhase;
     if (!pk || !PHASE_CONFIGS[pk]) return;
     const skillPath = PHASE_CONFIGS[pk].skillPath;
