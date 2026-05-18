@@ -15,13 +15,19 @@ export interface PhaseValidationResult {
 export const PHASE_ORDER = ["spec", "redteam", "harden", "render", "implement", "review"] as const;
 export type PhaseKey = (typeof PHASE_ORDER)[number];
 
-export interface PhaseMeta { name: string; desc: string }
+export interface PhaseMeta {
+  name: string;
+  desc: string;
+}
 
 export const PHASE_META: Record<string, PhaseMeta> = {
   spec: { name: "Generate Spec", desc: "Create Markdown engineering specification" },
   redteam: { name: "Red Team Audit", desc: "Adversarial security review of the spec" },
   harden: { name: "Harden Spec", desc: "Address audit findings, update spec with mitigations" },
-  render: { name: "Render Markdown → HTML", desc: "Convert hardened markdown spec to polished HTML with Mermaid diagrams and typography" },
+  render: {
+    name: "Render Markdown → HTML",
+    desc: "Convert hardened markdown spec to polished HTML with Mermaid diagrams and typography",
+  },
   implement: { name: "TDD Implement", desc: "Implement via Red-Green-Refactor cycle" },
   review: { name: "Ralph Review Loop", desc: "Multi-pass PR review → remediate until LGTM" },
 };
@@ -38,14 +44,18 @@ export function validatePhaseOrder(phases: string[]): PhaseValidationResult {
     if (PHASE_ORDER.indexOf(p as PhaseKey) === -1) return { valid: false, error: `Unknown phase: "${p}"` };
   }
   // Second check: dependency constraints (before topological order)
-  if (phases.includes("review") && !phases.includes("implement")) return { valid: false, error: "Cannot run review without implement" };
-  if ((phases.includes("redteam") || phases.includes("harden")) && !phases.includes("spec")) return { valid: false, error: "Cannot run redteam or harden without spec" };
-  if (phases.includes("render") && !phases.includes("harden")) return { valid: false, error: "Cannot run render without harden" };
+  if (phases.includes("review") && !phases.includes("implement"))
+    return { valid: false, error: "Cannot run review without implement" };
+  if ((phases.includes("redteam") || phases.includes("harden")) && !phases.includes("spec"))
+    return { valid: false, error: "Cannot run redteam or harden without spec" };
+  if (phases.includes("render") && !phases.includes("harden"))
+    return { valid: false, error: "Cannot run render without harden" };
   // Third check: topological order
   for (let i = 0; i < phases.length - 1; i++) {
     const ci = PHASE_ORDER.indexOf(phases[i] as PhaseKey);
     const ni = PHASE_ORDER.indexOf(phases[i + 1] as PhaseKey);
-    if (ni <= ci) return { valid: false, error: `Invalid phase order: "${phases[i+1]}" cannot come after "${phases[i]}"` };
+    if (ni <= ci)
+      return { valid: false, error: `Invalid phase order: "${phases[i + 1]}" cannot come after "${phases[i]}"` };
   }
   return { valid: true };
 }
@@ -54,7 +64,7 @@ export function validatePhaseOrder(phases: string[]): PhaseValidationResult {
  * Default phase list. HTML rendering stays available in PHASE_ORDER, but users
  * are opted out unless they explicitly request the render phase.
  */
-export const DEFAULT_PHASES: string[] = PHASE_ORDER.filter(phase => phase !== "render");
+export const DEFAULT_PHASES: string[] = PHASE_ORDER.filter((phase) => phase !== "render");
 
 export const PHASE_COMPLETE_MARKER = "RALPH_PHASE_COMPLETE";
 
@@ -103,7 +113,10 @@ export function resolvePhaseCompletion(
  * mentions of the marker do not advance the pipeline accidentally.
  */
 export function hasPhaseCompletionMarker(text: string): boolean {
-  const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
   if (lines.length === 0) return false;
   return lines[lines.length - 1] === PHASE_COMPLETE_MARKER;
 }
@@ -115,7 +128,7 @@ export function validateHardenedSpecStatus(content: string): PhaseValidationResu
   const yamlMatch = content.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
   if (!yamlMatch) return { valid: false, error: "Spec missing YAML front matter" };
 
-  const statusLine = yamlMatch[1].split(/\r?\n/).find(line => /^status[ \t]*:/i.test(line));
+  const statusLine = yamlMatch[1].split(/\r?\n/).find((line) => /^status[ \t]*:/i.test(line));
   if (!statusLine) return { valid: false, error: "Spec YAML front matter missing status: hardened" };
 
   const statusValue = statusLine
@@ -156,9 +169,16 @@ export function sanitizeFeatureName(name: string): string {
 export function sanitizeErrorOutput(rawOutput: string): string {
   let out = rawOutput;
   out = out.replace(/(\/home\/[^\s]+|\/usr\/[^\s]*|\/opt\/[^\s]*)/g, "[PATH]"); // mask absolute paths
-  out = out.split("\n").filter(l => !/^\s*[A-Z][A-Z_0-9]*=\S+/.test(l)).join("\n"); // strip env vars
+  out = out
+    .split("\n")
+    .filter((l) => !/^\s*[A-Z][A-Z_0-9]*=\S+/.test(l))
+    .join("\n"); // strip env vars
   const stacks = out.match(/(Error:.*?\n(?:\s+at .*\n){0,20})/g);
-  if (stacks) for (const s of stacks) { const l = s.split("\n"); out = out.replace(s, [l[0], ...l.slice(1, 6)].join("\n")); }
+  if (stacks)
+    for (const s of stacks) {
+      const l = s.split("\n");
+      out = out.replace(s, [l[0], ...l.slice(1, 6)].join("\n"));
+    }
   return out.trim();
 }
 
@@ -169,9 +189,27 @@ export const SUPPORTED_GATE_VERSIONS: Set<string> = new Set(["1.0"]);
 
 /** Allowlist of command first-tokens permitted in gate definitions */
 export const GATE_COMMAND_WHITELIST = new Set([
-  "tsc", "eslint", "vitest", "jest", "mocha",
-  "ruff", "pytest", "flake8", "pylint", "black", "isort", "unittest",
-  "npx", "uv", "cargo", "go", "dotnet", "npm", "yarn", "pnpm", "node",
+  "tsc",
+  "eslint",
+  "vitest",
+  "jest",
+  "mocha",
+  "ruff",
+  "pytest",
+  "flake8",
+  "pylint",
+  "black",
+  "isort",
+  "unittest",
+  "npx",
+  "uv",
+  "cargo",
+  "go",
+  "dotnet",
+  "npm",
+  "yarn",
+  "pnpm",
+  "node",
 ]);
 
 export interface GateConfig {
@@ -189,9 +227,9 @@ export interface GateDefinition {
 
 export interface ProjectStack {
   language: "python" | "typescript" | "javascript" | "unknown";
-  testRunner: string;    // "vitest" | "jest" | "pytest" | "unittest" | "mocha" | "unknown"
-  lintTool: string;      // "ruff" | "eslint" | "flake8" | "pylint" | "unknown"
-  formatTool: string;    // "ruff" | "prettier" | "black" | "isort" | "unknown"
+  testRunner: string; // "vitest" | "jest" | "pytest" | "unittest" | "mocha" | "unknown"
+  lintTool: string; // "ruff" | "eslint" | "flake8" | "pylint" | "unknown"
+  formatTool: string; // "ruff" | "prettier" | "black" | "isort" | "unknown"
 }
 
 // ── Gate Detection Functions ─────────────────────────────────
@@ -206,7 +244,6 @@ export interface FsLike {
 let _defaultFs: FsLike | null = null;
 function getDefaultFs(): FsLike {
   if (!_defaultFs) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     _defaultFs = require("fs") as FsLike;
   }
   return _defaultFs;
@@ -302,9 +339,8 @@ export function loadGateConfig(workDir: string, _fs?: FsLike): GateConfig | null
  */
 export function resolveGates(workDir: string, stack?: ProjectStack | FsLike, _fs?: FsLike): GateDefinition[] {
   const fs = _fs ?? getDefaultFs();
-  const projectStack = typeof stack === "object" && stack !== null && "language" in stack
-    ? (stack as ProjectStack)
-    : undefined;
+  const projectStack =
+    typeof stack === "object" && stack !== null && "language" in stack ? (stack as ProjectStack) : undefined;
 
   const config = loadGateConfig(workDir, fs);
 

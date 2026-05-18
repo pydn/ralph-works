@@ -30,27 +30,27 @@ Reload Pi (`/reload`) to activate.
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `/ralph start <feature>` | Start the default five-phase pipeline without HTML rendering |
-| `/ralph start <feature> --render-html` | Start with Markdown-to-HTML rendering enabled |
-| `/ralph start <feature> --yolo` | Start without the pre-implementation human review checkpoint |
-| `/ralph <feature>` | Shorthand for starting the default pipeline without HTML rendering |
-| `/ralph start <feature> spec,implement` | Run selected phases only |
-| `/ralph start <feature> "reduce nesting depth"` | With inline prompt |
-| `/ralph start <feature> .ralph/task.md` | Prompt from file |
-| `/ralph start <feature> "..." spec,redteam,harden,render,implement` | Prompt + specific phases |
-| `/ralph status` | Show current pipeline state |
-| `/ralph pause` | Pause the active pipeline |
-| `/ralph continue` | Re-launch the current or queued phase without advancing it |
-| `/ralph continue --render-html` | Enable HTML rendering before the render point, then continue |
-| `/ralph continue --yolo` | Continue and keep straight-through mode enabled for later phases |
-| `/ralph resume` | Resume the active pipeline at its current phase |
-| `/ralph resume <phase>` | Resume at a specific phase |
-| `/ralph gate [paths...]` | Run standalone quality gates |
-| `/ralph clear-context` | Manually clear context and reorient the agent |
-| `/ralph clear-context --auto` | Enable auto-clear at every phase boundary |
-| `/ralph cancel` | Abort pipeline |
+| Command                                                             | Description                                                        |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `/ralph start <feature>`                                            | Start the default five-phase pipeline without HTML rendering       |
+| `/ralph start <feature> --render-html`                              | Start with Markdown-to-HTML rendering enabled                      |
+| `/ralph start <feature> --yolo`                                     | Start without the pre-implementation human review checkpoint       |
+| `/ralph <feature>`                                                  | Shorthand for starting the default pipeline without HTML rendering |
+| `/ralph start <feature> spec,implement`                             | Run selected phases only                                           |
+| `/ralph start <feature> "reduce nesting depth"`                     | With inline prompt                                                 |
+| `/ralph start <feature> .ralph/task.md`                             | Prompt from file                                                   |
+| `/ralph start <feature> "..." spec,redteam,harden,render,implement` | Prompt + specific phases                                           |
+| `/ralph status`                                                     | Show current pipeline state                                        |
+| `/ralph pause`                                                      | Pause the active pipeline                                          |
+| `/ralph continue`                                                   | Re-launch the current or queued phase without advancing it         |
+| `/ralph continue --render-html`                                     | Enable HTML rendering before the render point, then continue       |
+| `/ralph continue --yolo`                                            | Continue and keep straight-through mode enabled for later phases   |
+| `/ralph resume`                                                     | Resume the active pipeline at its current phase                    |
+| `/ralph resume <phase>`                                             | Resume at a specific phase                                         |
+| `/ralph gate [paths...]`                                            | Run standalone quality gates                                       |
+| `/ralph clear-context`                                              | Manually clear context and reorient the agent                      |
+| `/ralph clear-context --auto`                                       | Enable auto-clear at every phase boundary                          |
+| `/ralph cancel`                                                     | Abort pipeline                                                     |
 
 Valid phase names are `spec`, `redteam`, `harden`, `render`, `implement`, and `review`. The `render` phase is opt-in; default runs skip it unless `--render-html` or an explicit phase list includes `render`.
 
@@ -71,17 +71,20 @@ During TDD and review phases, the extension auto-runs language-aware quality gat
 When implementation gates pass, the controller can hand off from `implement` to `review` at turn end even if the assistant omitted the final completion marker. A `CRITICAL` review decision backtracks to `implement`; `LGTM` completes the pipeline.
 
 ### Auto-Detection
+
 Gates are selected based on project type (scanned via filesystem markers):
 
-| Detected Stack | Default Gates |
-|----------------|---------------|
-| TypeScript (`tsconfig.json` + `package.json`) | `npx tsc --noEmit`, `npx eslint . --ext .ts,.tsx`, `npx vitest run` |
-| JavaScript (`package.json` only) | `npx eslint . --ext .js,.jsx`, `npx jest` |
-| Python (`pyproject.toml` or `requirements.txt`) | `ruff check .`, `ruff format --check .`, `pytest tests/` |
-| Unknown or fresh directory | Non-failing setup gate that reports no supported project markers |
+| Detected Stack                                  | Default Gates                                                       |
+| ----------------------------------------------- | ------------------------------------------------------------------- |
+| TypeScript (`tsconfig.json` + `package.json`)   | `npx tsc --noEmit`, `npx eslint . --ext .ts,.tsx`, `npx vitest run` |
+| JavaScript (`package.json` only)                | `npx eslint . --ext .js,.jsx`, `npx jest`                           |
+| Python (`pyproject.toml` or `requirements.txt`) | `ruff check .`, `ruff format --check .`, `pytest tests/`            |
+| Unknown or fresh directory                      | Non-failing setup gate that reports no supported project markers    |
 
 ### Config Override
+
 Create `.ralph/gate-config.json` to override defaults:
+
 ```json
 {
   "version": "1.0",
@@ -93,15 +96,18 @@ Create `.ralph/gate-config.json` to override defaults:
   ]
 }
 ```
+
 Commands are validated against a whitelist of allowed tools and rejected if they contain shell metacharacters. Invalid configs fall back to auto-detected defaults.
 
 ### Standalone Gate Check
+
 ```bash
 /ralph gate                          # Run gates for current project
 /ralph gate src/foo.ts               # Run gates against specific target path(s)
 ```
 
 ### Auto-Gate Trigger
+
 During `implement` and `review` phases, gates auto-run after every 3 consecutive `write` or `edit` tool results. Any other tool result resets the counter. A concurrency lock prevents duplicate execution.
 
 ## Context Clearing
