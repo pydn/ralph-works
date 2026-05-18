@@ -1,6 +1,6 @@
 # Pi Ralph Extension
 
-Full dev-cycle pipeline for [Pi](https://github.com/earendil-works/pi-coding-agent). Runs all phases as a single continuous agent workflow with no subprocess spawning or TTY issues.
+Full dev-cycle pipeline for [Pi](https://github.com/earendil-works/pi-coding-agent). Phase orchestration runs as a single continuous agent workflow, so Pi does not spawn a subprocess or TTY per phase. Configured quality gates still run shell commands from the extension process.
 
 ## Phases
 
@@ -19,14 +19,27 @@ Copy or symlink this directory to `~/.pi/agent/extensions/ralph-loop/`:
 ln -s $(pwd) ~/.pi/agent/extensions/ralph-loop
 ```
 
-Or install directly:
+Or install the runtime files directly:
 
 ```bash
 mkdir -p ~/.pi/agent/extensions/ralph-loop
 cp -R index.ts src package.json package-lock.json README.md ~/.pi/agent/extensions/ralph-loop/
 ```
 
-Reload Pi (`/reload`) to activate.
+### Phase Skill Prerequisites
+
+`/ralph start` validates the required phase skill files before launching the selected pipeline. By default, the extension reads skills from `~/.pi/agent/skills/_global`; set `PI_SKILL_BASE` to override that location.
+
+Install these skills before running a full pipeline:
+
+- `generate-spec/SKILL.md`
+- `red-team-audit/SKILL.md`
+- `harden-spec/SKILL.md`
+- `tdd-implement/SKILL.md`
+- `pi-skills/pr-reviewer/SKILL.md` or `pr-reviewer/SKILL.md`
+- `markdown-to-html/SKILL.md` when the `render` phase is selected
+
+Reload Pi (`/reload`) after installing or updating the extension and skills.
 
 ## Commands
 
@@ -103,8 +116,10 @@ Commands are validated against a whitelist of allowed tools and rejected if they
 
 ```bash
 /ralph gate                          # Run gates for current project
-/ralph gate src/foo.ts               # Run gates against specific target path(s)
+/ralph gate src/foo.ts               # Run gates and pass supported target path(s)
 ```
+
+Target paths are appended only to direct gate commands that commonly accept file arguments: `tsc`, `eslint`, `ruff`, `flake8`, and `pylint`. The auto-detected TypeScript and JavaScript defaults currently start with `npx`, so they run project-wide unless you provide a `.ralph/gate-config.json` with direct commands or commands that already include the desired targets.
 
 ### Auto-Gate Trigger
 
@@ -160,6 +175,18 @@ Do implementation work in a dedicated `git worktree`, not the primary checkout:
 ```bash
 git worktree add /tmp/ralph-works-<task> -b <branch-name> HEAD
 ```
+
+Use the package scripts from the repository root for local verification:
+
+```bash
+npm run typecheck      # TypeScript compile check
+npm run lint           # ESLint
+npm run format:check   # Prettier check
+npm test               # Vitest
+npm run check          # Typecheck, lint, format check, and tests
+```
+
+Use `npm run lint:fix` and `npm run format` for automated cleanup before committing.
 
 ## Credits
 
