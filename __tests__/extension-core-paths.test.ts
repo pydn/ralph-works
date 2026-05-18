@@ -173,6 +173,29 @@ describe("/ralph start command", () => {
     expect(sendUserMessages).toHaveLength(1);
   });
 
+  it("allows users to opt in to HTML rendering on start with the html alias", async () => {
+    const workDir = makeTempDir("ralph-start-html-alias-");
+    const skillBase = makeTempDir("ralph-start-html-alias-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "generate-spec");
+    seedSkill(skillBase, "red-team-audit");
+    seedSkill(skillBase, "harden-spec");
+    seedSkill(skillBase, "markdown-to-html");
+    seedSkill(skillBase, "tdd-implement");
+    seedSkill(skillBase, "pi-skills/pr-reviewer");
+
+    const branch: FakeEntry[] = [];
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await commands.get("ralph")?.("start feature-a html", makeFakeContext(branch, workDir));
+
+    const state = latestState<{ phases?: string[]; currentPhase?: string }>(branch);
+    expect(state.phases).toEqual(["spec", "redteam", "harden", "render", "implement", "review"]);
+    expect(state.currentPhase).toBe("spec");
+  });
+
   it("tells implement agents to call the registered gate tool instead of running a shell command", async () => {
     const workDir = makeTempDir("ralph-implement-tool-prompt-");
     const skillBase = makeTempDir("ralph-implement-tool-prompt-skills-");
@@ -780,6 +803,44 @@ describe("review decision and completion paths", () => {
       expect.stringContaining("Review the completed planning phases"),
       "warning",
     );
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/ralph continue --render-html"), "warning");
+  });
+
+  it("does not advertise the HTML render opt-in after render already ran", async () => {
+    const workDir = makeTempDir("ralph-implement-checkpoint-after-render-");
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "feature-a-final.html"),
+      `<html><body>${"Rendered spec.".repeat(256)}</body></html>`,
+      "utf-8",
+    );
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["spec", "harden", "render", "implement", "review"],
+      currentPhase: "render",
+      currentPhaseIndex: 2,
+      phaseStatus: "executing",
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: `Render complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+          },
+        ],
+      },
+      ctx,
+    );
+
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.not.stringContaining("/ralph continue --render-html"), "warning");
   });
 
   it("lets yolo mode proceed directly from planning into implementation", async () => {

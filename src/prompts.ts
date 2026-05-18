@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { PROMPT_FILE_EXTENSIONS, RENDER_HTML_FLAG, RENDER_PHASE, YOLO_FLAG } from "./config";
+import { PROMPT_FILE_EXTENSIONS, RENDER_HTML_ALIASES, RENDER_PHASE, YOLO_FLAG } from "./config";
 import type { PipelineState } from "./domain";
 import { PHASE_CONFIGS } from "./phaseConfig";
 import { PHASE_COMPLETE_MARKER, PHASE_ORDER, sanitizeFeatureName } from "./stateMachine";
@@ -68,10 +68,10 @@ export function resolvePromptInput(arg: string, wd: string): string | undefined 
 
 /** Remove Ralph flags from positional args while returning their parsed values. */
 export function parseRalphFlags(args: string[]): { args: string[]; renderHtml: boolean; yolo: boolean } {
-  const filtered = args.filter((arg) => arg !== RENDER_HTML_FLAG && arg !== YOLO_FLAG);
+  const filtered = args.filter((arg) => !RENDER_HTML_ALIASES.has(arg) && arg !== YOLO_FLAG);
   return {
     args: filtered,
-    renderHtml: args.includes(RENDER_HTML_FLAG),
+    renderHtml: args.some((arg) => RENDER_HTML_ALIASES.has(arg)),
     yolo: args.includes(YOLO_FLAG),
   };
 }

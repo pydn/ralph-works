@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { parseRalphFlags } from "../src/prompts";
 import {
   validatePhaseOrder,
   sanitizeErrorOutput,
@@ -18,6 +19,23 @@ import {
   PHASE_COMPLETE_MARKER,
   validateHardenedSpecStatus,
 } from "../src/stateMachine";
+
+describe("parseRalphFlags", () => {
+  it("accepts intuitive HTML rendering aliases", () => {
+    expect(parseRalphFlags(["html"]).renderHtml).toBe(true);
+    expect(parseRalphFlags(["render-html"]).renderHtml).toBe(true);
+    expect(parseRalphFlags(["with-html"]).renderHtml).toBe(true);
+    expect(parseRalphFlags(["--render-html"]).renderHtml).toBe(true);
+  });
+
+  it("removes HTML rendering aliases from positional arguments", () => {
+    expect(parseRalphFlags(["feature details", "html", "--yolo"])).toEqual({
+      args: ["feature details"],
+      renderHtml: true,
+      yolo: true,
+    });
+  });
+});
 
 describe("PHASE_ORDER", () => {
   it("contains all 6 phases in correct order (including render)", () => {

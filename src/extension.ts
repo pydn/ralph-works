@@ -23,7 +23,7 @@ import {
   GATE_THRESHOLD,
   IMPLEMENT_CHECKPOINT_WAIT_REASON,
   MAX_PHASE_ATTEMPTS,
-  RENDER_HTML_FLAG,
+  RENDER_HTML_ALIASES,
   RENDER_PHASE,
   SKILL_BASE,
   UI_WIDGET_ID,
@@ -159,8 +159,11 @@ function enterImplementCheckpoint(pi: ExtensionAPI, ctx: ExtensionContext, st: P
   saveState(pi, checkpointState);
   setPipelineWaitingUi(ctx, checkpointState);
   refreshWidget(ctx, checkpointState);
+  const renderOption = st.phases?.includes(RENDER_PHASE)
+    ? ""
+    : " Or run /ralph continue --render-html (or /ralph continue html) to render the spec to HTML first.";
   ctx.ui.notify(
-    "Review the completed planning phases before TDD implementation. Run /ralph continue to approve, or start with --yolo to run straight through.",
+    `Review the completed planning phases before TDD implementation. Run /ralph continue to approve.${renderOption} Start with --yolo to run straight through next time.`,
     "warning",
   );
 }
@@ -752,7 +755,7 @@ ${phasePrompt}`,
         "pause",
         "set-workdir",
         "clear-context",
-        RENDER_HTML_FLAG,
+        ...RENDER_HTML_ALIASES,
         YOLO_FLAG,
         "spec",
         "redteam",
@@ -774,7 +777,7 @@ ${phasePrompt}`,
           }
           const feature = parts[1];
           if (!feature) {
-            ctx.ui.notify("Usage: /ralph start <feature> [prompt] [phases] [--render-html] [--yolo]", "error");
+            ctx.ui.notify("Usage: /ralph start <feature> [prompt] [phases] [--render-html|html] [--yolo]", "error");
             return;
           }
           const validPhases = new Set<string>(PHASE_ORDER);
@@ -868,8 +871,11 @@ ${phasePrompt}`,
             saveState(pi, { ...state, pipelineStatus: "failed", phaseStatus: "corrupted" });
             return;
           }
+          let renderFromImplementCheckpoint = false;
           if (continueArgs.renderHtml && !phases.includes(RENDER_PHASE)) {
-            if (!canAddRenderBeforeCurrentPhase(phases, targetIdx)) {
+            renderFromImplementCheckpoint =
+              state.waitingReason === IMPLEMENT_CHECKPOINT_WAIT_REASON && phases[targetIdx] === "implement";
+            if (!renderFromImplementCheckpoint && !canAddRenderBeforeCurrentPhase(phases, targetIdx)) {
               ctx.ui.notify(
                 `Cannot enable HTML rendering after the render point has passed. Current phase: ${phases[targetIdx] ?? "unknown"}.`,
                 "error",
@@ -877,7 +883,9 @@ ${phasePrompt}`,
               return;
             }
             phases = addRenderPhase(phases);
-            targetIdx = resolveCurrentPhaseIndex(state, phases, targetIdx);
+            targetIdx = renderFromImplementCheckpoint
+              ? phases.indexOf(RENDER_PHASE)
+              : resolveCurrentPhaseIndex(state, phases, targetIdx);
           }
           const validation = validatePhaseOrder(phases);
           if (!validation.valid) {
@@ -888,7 +896,8 @@ ${phasePrompt}`,
           const pk = phases[targetIdx];
           const yoloMode = state.yoloMode || continueArgs.yolo;
           const approvingImplementCheckpoint =
-            state.waitingReason === IMPLEMENT_CHECKPOINT_WAIT_REASON && pk === "implement";
+            state.waitingReason === IMPLEMENT_CHECKPOINT_WAIT_REASON &&
+            (pk === "implement" || renderFromImplementCheckpoint);
           removePipelineLock(state.feature, state.workDir);
           createPipelineLock(state.feature, state.workDir);
           const updated: PipelineState = {
@@ -1177,7 +1186,7 @@ ${phasePrompt}`,
             }
           } else {
             ctx.ui.notify(
-              "Usage: /ralph start <feature> [--render-html] [--yolo] | status | cancel | gate | set-workdir <path> | continue [--render-html] [--yolo] | resume | pause | clear-context [--auto]",
+              "Usage: /ralph start <feature> [--render-html|html] [--yolo] | status | cancel | gate | set-workdir <path> | continue [--render-html|html] [--yolo] | resume | pause | clear-context [--auto]",
               "info",
             );
           }

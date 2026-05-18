@@ -232,6 +232,70 @@ describe("/ralph continue", () => {
     expect(latestState.waitingReason).toBeUndefined();
     expect(latestState.implementCheckpointApproved).toBe(true);
   });
+
+  it("enables HTML rendering from the pre-implementation checkpoint before launching TDD", async () => {
+    const workDir = makeTempDir("ralph-continue-checkpoint-render-");
+    const skillBase = makeTempDir("ralph-continue-checkpoint-render-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+
+    fs.mkdirSync(path.join(skillBase, "markdown-to-html"), { recursive: true });
+    fs.writeFileSync(path.join(skillBase, "markdown-to-html", "SKILL.md"), "# Markdown to HTML", "utf-8");
+    fs.mkdirSync(path.join(skillBase, "tdd-implement"), { recursive: true });
+    fs.writeFileSync(path.join(skillBase, "tdd-implement", "SKILL.md"), "# TDD Implement", "utf-8");
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "feature-a.md"),
+      "---\nstatus: hardened\n---\n# Feature A\n",
+      "utf-8",
+    );
+
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "feature-a",
+          workDir,
+          phases: ["spec", "redteam", "harden", "implement", "review"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "implement",
+          currentPhaseIndex: 3,
+          phaseStatus: "waiting_for_user",
+          waitingReason: "implement_checkpoint",
+          pipelineStatus: "running",
+          reviewIterations: 0,
+          phaseAttempts: 0,
+          turnWriteCount: 0,
+          autoClearContext: false,
+        },
+      },
+    ];
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await commands.get("ralph")?.("continue --render-html", makeFakeContext(branch, workDir));
+
+    expect(sendUserMessages).toHaveLength(1);
+    expect(String(sendUserMessages[0]?.content)).toContain("Phase: Render Markdown");
+
+    const latestState = branch[branch.length - 1]?.data as {
+      currentPhase?: string;
+      currentPhaseIndex?: number;
+      phases?: string[];
+      phaseStatus?: string;
+      waitingReason?: string;
+      implementCheckpointApproved?: boolean;
+    };
+    expect(latestState.phases).toEqual(["spec", "redteam", "harden", "render", "implement", "review"]);
+    expect(latestState.currentPhase).toBe("render");
+    expect(latestState.currentPhaseIndex).toBe(3);
+    expect(latestState.phaseStatus).toBe("executing");
+    expect(latestState.waitingReason).toBeUndefined();
+    expect(latestState.implementCheckpointApproved).toBe(true);
+  });
 });
 
 describe("/ralph clear-context", () => {

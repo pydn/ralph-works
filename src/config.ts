@@ -13,6 +13,7 @@ export const GATE_PHASES = new Set(["implement", "review"]);
 export const WAITING_FOR_USER_PHASE_STATUS = "waiting_for_user";
 export const IMPLEMENT_CHECKPOINT_WAIT_REASON = "implement_checkpoint";
 export const RENDER_HTML_FLAG = "--render-html";
+export const RENDER_HTML_ALIASES = new Set([RENDER_HTML_FLAG, "html", "render-html", "with-html"]);
 export const YOLO_FLAG = "--yolo";
 export const RENDER_PHASE = "render";
 export const PROMPT_FILE_EXTENSIONS = new Set([".md", ".txt", ".html"]);

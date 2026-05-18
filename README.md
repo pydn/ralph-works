@@ -47,6 +47,7 @@ Reload Pi (`/reload`) after installing or updating the extension and skills.
 | ------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | `/ralph start <feature>`                                            | Start the default five-phase pipeline without HTML rendering       |
 | `/ralph start <feature> --render-html`                              | Start with Markdown-to-HTML rendering enabled                      |
+| `/ralph start <feature> html`                                       | Start with Markdown-to-HTML rendering enabled                      |
 | `/ralph start <feature> --yolo`                                     | Start without the pre-implementation human review checkpoint       |
 | `/ralph <feature>`                                                  | Shorthand for starting the default pipeline without HTML rendering |
 | `/ralph start <feature> spec,implement`                             | Run selected phases only                                           |
@@ -56,7 +57,8 @@ Reload Pi (`/reload`) after installing or updating the extension and skills.
 | `/ralph status`                                                     | Show current pipeline state                                        |
 | `/ralph pause`                                                      | Pause the active pipeline                                          |
 | `/ralph continue`                                                   | Re-launch the current or queued phase without advancing it         |
-| `/ralph continue --render-html`                                     | Enable HTML rendering before the render point, then continue       |
+| `/ralph continue --render-html`                                     | Enable HTML rendering before TDD, then continue                    |
+| `/ralph continue html`                                              | Alias for enabling HTML rendering before TDD                       |
 | `/ralph continue --yolo`                                            | Continue and keep straight-through mode enabled for later phases   |
 | `/ralph resume`                                                     | Resume the active pipeline at its current phase                    |
 | `/ralph resume <phase>`                                             | Resume at a specific phase                                         |
@@ -65,7 +67,7 @@ Reload Pi (`/reload`) after installing or updating the extension and skills.
 | `/ralph clear-context --auto`                                       | Enable auto-clear at every phase boundary                          |
 | `/ralph cancel`                                                     | Abort pipeline                                                     |
 
-Valid phase names are `spec`, `redteam`, `harden`, `render`, `implement`, and `review`. The `render` phase is opt-in; default runs skip it unless `--render-html` or an explicit phase list includes `render`.
+Valid phase names are `spec`, `redteam`, `harden`, `render`, `implement`, and `review`. The `render` phase is opt-in; default runs skip it unless `--render-html`, `html`, `render-html`, `with-html`, or an explicit phase list includes `render`.
 
 ## Phase Completion
 
