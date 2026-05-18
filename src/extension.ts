@@ -99,6 +99,21 @@ function blocksNewPipelineStart(state: PipelineState | null): boolean {
   return !["completed", "cancelled", "failed", "halted"].includes(state.pipelineStatus ?? "running");
 }
 
+/** Recognize a review turn that clearly ended LGTM even if the tool call was omitted. */
+function isLgtmReviewText(text: string): boolean {
+  if (!text.trim()) return false;
+  if (/(?:^|\n)\s*(?:[-*]\s*)?(?:\[CRITICAL\]|\bCRITICAL\b\s*:)/i.test(text)) return false;
+
+  const lgtm = /\bLGTM\b/i.test(text) && !/\b(?:not|not yet|cannot|can't|no)\s+LGTM\b/i.test(text);
+  const noCriticalFinding =
+    /\bno\s+critical\s+(?:bugs?|issues?|findings?|defects?|blockers?)\s+(?:were\s+|are\s+)?(?:found|detected|identified|remain|remaining)\b/i.test(
+      text,
+    ) ||
+    /\b(?:found|detected|identified)\s+no\s+critical\s+(?:bugs?|issues?|findings?|defects?|blockers?)\b/i.test(text);
+
+  return lgtm || noCriticalFinding;
+}
+
 /** Persist a waiting state and switch the TUI out of "working" mode. */
 function enterWaitingForUser(pi: ExtensionAPI, ctx: ExtensionContext, st: PipelineState): void {
   if (st.pipelineStatus !== "running") return;
@@ -140,6 +155,24 @@ function enterImplementCheckpoint(pi: ExtensionAPI, ctx: ExtensionContext, st: P
     "Review the completed planning phases before TDD implementation. Run /ralph continue to approve, or start with --yolo to run straight through.",
     "warning",
   );
+}
+
+/** Persist terminal success and switch the visible UI out of any waiting state. */
+function completePipeline(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState, message?: string): void {
+  const completedState: PipelineState = {
+    ...state,
+    pipelineStatus: "completed",
+    phaseStatus: "post_hook",
+    turnWriteCount: 0,
+    waitingReason: undefined,
+    readyToAdvancePhase: undefined,
+  };
+  saveState(pi, completedState);
+  refreshWidget(ctx, completedState);
+  ctx.ui.notify(message ?? `✅ Ralph loop complete for "${state.feature}"`, "info");
+  ctx.ui.setStatus(UI_WIDGET_ID, `✅ Done | ${state.feature}`);
+  writeDevCycleSummary(completedState);
+  writeMetrics(completedState);
 }
 
 /**
@@ -186,13 +219,7 @@ function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineSt
   const idx = state.currentPhaseIndex ?? 0;
   const completion = resolvePhaseCompletion(phases, idx, "explicit_signal");
   if (completion.action === "complete_pipeline") {
-    const u = { ...state, pipelineStatus: "completed", phaseStatus: "post_hook" };
-    saveState(pi, u);
-    refreshWidget(ctx, u);
-    ctx.ui.notify(`✅ Ralph loop complete for "${state.feature}"`, "info");
-    ctx.ui.setStatus(UI_WIDGET_ID, `✅ Done | ${state.feature}`);
-    writeDevCycleSummary(state);
-    writeMetrics(state);
+    completePipeline(pi, ctx, state);
     return;
   }
 
@@ -271,13 +298,7 @@ function handleReviewDecision(pi: ExtensionAPI, ctx: ExtensionContext, params: {
   const status = params.status as "LGTM" | "CRITICAL";
   const iter = state.reviewIterations ?? 0;
   if (status === "LGTM") {
-    const u = { ...state, pipelineStatus: "completed", phaseStatus: "post_hook" };
-    saveState(pi, u);
-    refreshWidget(ctx, u);
-    ctx.ui.notify(`✅ Ralph loop complete for "${state.feature}"`, "info");
-    ctx.ui.setStatus(UI_WIDGET_ID, `✅ Done | ${state.feature}`);
-    writeDevCycleSummary(state);
-    writeMetrics(state);
+    completePipeline(pi, ctx, state, `✅ Ralph review LGTM. Loop complete for "${state.feature}"`);
   } else if (status === "CRITICAL") {
     const maxIters = state.maxIterations ?? 10;
     if (iter >= maxIters) {
@@ -388,6 +409,16 @@ async function handleAgentEnd(
   const assistantText = extractMessageText(lastAssistantMessage?.content);
   const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
   const idx = state.currentPhaseIndex ?? 0;
+  if (state.currentPhase === "review" && state.phaseStatus === "executing" && isLgtmReviewText(assistantText)) {
+    completePipeline(
+      pi,
+      ctx,
+      state,
+      `✅ Ralph review LGTM: no critical bugs found. Loop complete for "${state.feature}"`,
+    );
+    return;
+  }
+
   if (state.currentPhase !== "review" && hasPhaseCompletionMarker(assistantText)) {
     const completion = resolvePhaseCompletion(phases, idx, "explicit_signal");
     if (completion.action !== "wait_for_explicit_completion") {
