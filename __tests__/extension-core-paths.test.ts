@@ -881,6 +881,40 @@ describe("review decision and completion paths", () => {
     expect(ctx.ui.setWorkingMessage).not.toHaveBeenCalledWith("Waiting for user input");
   });
 
+  it("completes review when the assistant reports no critical bugs without calling the decision tool", async () => {
+    const workDir = makeTempDir("ralph-review-text-lgtm-");
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["implement", "review"],
+      currentPhase: "review",
+      currentPhaseIndex: 1,
+      phaseStatus: "executing",
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "LGTM. No critical bugs found." }],
+          },
+        ],
+      },
+      ctx,
+    );
+
+    const state = latestState<{ pipelineStatus?: string; phaseStatus?: string }>(branch);
+    expect(state.pipelineStatus).toBe("completed");
+    expect(state.phaseStatus).toBe("post_hook");
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith("ralph-loop", expect.stringContaining("Done"));
+    expect(ctx.ui.setWorkingMessage).not.toHaveBeenCalledWith("Waiting for user input");
+  });
+
   it("rejects review decisions made outside the review phase", async () => {
     const workDir = makeTempDir("ralph-review-reject-");
     const branch: FakeEntry[] = [];
