@@ -17,6 +17,7 @@ interface FakeTool {
 function makeFakePi(branch: FakeEntry[]) {
   const handlers = new Map<string, (event: any, ctx: any) => unknown>();
   const commands = new Map<string, (args: string, ctx: any) => unknown>();
+  const completions = new Map<string, (prefix: string) => Array<{ value: string; label: string }>>();
   const tools = new Map<string, FakeTool>();
   const sendUserMessages: Array<{ content: unknown; options?: { deliverAs?: string } }> = [];
 
@@ -27,8 +28,15 @@ function makeFakePi(branch: FakeEntry[]) {
     registerTool(tool: { name: string; execute: (...args: any[]) => unknown }): void {
       tools.set(tool.name, tool);
     },
-    registerCommand(name: string, config: { handler: (args: string, ctx: any) => unknown }): void {
+    registerCommand(
+      name: string,
+      config: {
+        handler: (args: string, ctx: any) => unknown;
+        getArgumentCompletions?: (prefix: string) => Array<{ value: string; label: string }>;
+      },
+    ): void {
       commands.set(name, config.handler);
+      if (config.getArgumentCompletions) completions.set(name, config.getArgumentCompletions);
     },
     appendEntry(customType: string, data?: unknown): void {
       branch.push({ type: "custom", customType, data });
@@ -38,7 +46,7 @@ function makeFakePi(branch: FakeEntry[]) {
     },
   };
 
-  return { pi, handlers, commands, tools, sendUserMessages };
+  return { pi, handlers, commands, completions, tools, sendUserMessages };
 }
 
 function makeFakeContext(branch: FakeEntry[], cwd: string, options?: { idle?: boolean }) {
@@ -236,6 +244,49 @@ describe("/ralph start command", () => {
     expect(state.phases).toEqual(["spec", "redteam", "harden", "implement", "review"]);
     expect(state.promptText).toBeUndefined();
     expect(sendUserMessages).toHaveLength(1);
+  });
+
+  it("rejects the removed /ralph <feature> shorthand instead of starting a pipeline", async () => {
+    const workDir = makeTempDir("ralph-no-shorthand-");
+    const branch: FakeEntry[] = [];
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await commands.get("ralph")?.("feature-a --yolo", ctx);
+
+    expect(branch).toHaveLength(0);
+    expect(sendUserMessages).toHaveLength(0);
+    expect(fs.existsSync(path.join(workDir, ".ralph", "pipeline-lock-feature-a"))).toBe(false);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Unknown /ralph command: feature-a"), "error");
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Usage: /ralph start <feature>"), "error");
+  });
+
+  it("only advertises valid top-level /ralph subcommands in argument completions", async () => {
+    const branch: FakeEntry[] = [];
+    const { default: registerExtension } = await import("../index");
+    const { pi, completions } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const values = completions
+      .get("ralph")?.("")
+      .map((item) => item.value);
+
+    expect(values).toEqual([
+      "start",
+      "status",
+      "cancel",
+      "gate",
+      "continue",
+      "resume",
+      "pause",
+      "set-workdir",
+      "clear-context",
+    ]);
+    expect(values).not.toContain("spec");
+    expect(values).not.toContain("html");
+    expect(values).not.toContain("--yolo");
   });
 
   it("reads prompt text from a workspace file and applies an explicit phase list", async () => {
@@ -804,6 +855,62 @@ describe("review decision and completion paths", () => {
       "warning",
     );
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/ralph continue --render-html"), "warning");
+  });
+
+  it("auto-compacts before the pre-implementation checkpoint when enabled", async () => {
+    const workDir = makeTempDir("ralph-implement-checkpoint-compact-");
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "feature-a.md"),
+      `# Feature A\n\n${"Spec body.\n".repeat(256)}`,
+      "utf-8",
+    );
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["spec", "implement", "review"],
+      currentPhase: "spec",
+      currentPhaseIndex: 0,
+      phaseStatus: "executing",
+      autoClearContext: true,
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: `Spec complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+          },
+        ],
+      },
+      ctx,
+    );
+
+    expect(ctx.compact).toHaveBeenCalledTimes(1);
+    expect(sendUserMessages).toHaveLength(0);
+    const compactOptions = ctx.compact.mock.calls[0]?.[0] as { onComplete?: () => void };
+    compactOptions.onComplete?.();
+
+    const state = latestState<{
+      currentPhase?: string;
+      phaseStatus?: string;
+      waitingReason?: string;
+      contextClearCount?: number;
+    }>(branch);
+    expect(state.currentPhase).toBe("implement");
+    expect(state.phaseStatus).toBe("waiting_for_user");
+    expect(state.waitingReason).toBe("implement_checkpoint");
+    expect(state.contextClearCount).toBe(1);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Review the completed planning phases"),
+      "warning",
+    );
   });
 
   it("does not advertise the HTML render opt-in after render already ran", async () => {

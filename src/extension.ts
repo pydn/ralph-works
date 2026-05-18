@@ -24,12 +24,10 @@ import {
   GATE_THRESHOLD,
   IMPLEMENT_CHECKPOINT_WAIT_REASON,
   MAX_PHASE_ATTEMPTS,
-  RENDER_HTML_ALIASES,
   RENDER_PHASE,
   SKILL_BASE,
   UI_WIDGET_ID,
   WAITING_FOR_USER_PHASE_STATUS,
-  YOLO_FLAG,
 } from "./config";
 import type { ModelThinkingLevel, PipelineState, RalphModelPlan, RalphModelSelector } from "./domain";
 import { formatGateResults, runLintGates } from "./gates";
@@ -116,6 +114,26 @@ function extractMessageText(content: unknown): string {
 function blocksNewPipelineStart(state: PipelineState | null): boolean {
   if (!state) return false;
   return !["completed", "cancelled", "failed", "halted"].includes(state.pipelineStatus ?? "running");
+}
+
+const RALPH_TOP_LEVEL_COMMANDS = [
+  "start",
+  "status",
+  "cancel",
+  "gate",
+  "continue",
+  "resume",
+  "pause",
+  "set-workdir",
+  "clear-context",
+];
+
+const RALPH_USAGE =
+  "Usage: /ralph start <feature> [--render-html|html] [--yolo] | status | cancel | gate | set-workdir <path> | continue [--render-html|html] [--yolo] | resume | pause | clear-context [--auto]";
+
+/** Auto phase-boundary compaction is enabled unless a persisted state explicitly opts out. */
+function isAutoClearContextEnabled(state: PipelineState): boolean {
+  return state.autoClearContext !== false;
 }
 
 /** Recognize a review turn that clearly ended LGTM even if the tool call was omitted. */
@@ -574,33 +592,53 @@ async function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: Pipe
     readyToAdvancePhase: undefined,
   };
 
-  if (shouldPauseBeforeImplementCheckpoint(state, phases, idx, nextIdx, nextPhase)) {
-    enterImplementCheckpoint(pi, ctx, u);
-    return;
-  }
+  const pauseBeforeImplement = shouldPauseBeforeImplementCheckpoint(state, phases, idx, nextIdx, nextPhase);
+  const transitionState: PipelineState = pauseBeforeImplement
+    ? {
+        ...u,
+        phaseStatus: WAITING_FOR_USER_PHASE_STATUS,
+        waitingReason: IMPLEMENT_CHECKPOINT_WAIT_REASON,
+        turnWriteCount: 0,
+        readyToAdvancePhase: undefined,
+      }
+    : u;
 
-  saveState(pi, u);
-  refreshWidget(ctx, u);
+  saveState(pi, transitionState);
+  refreshWidget(ctx, transitionState);
 
-  // Auto-clear at phase boundary (except implement→review transition)
-  // Check BEFORE pre_hook blocks it: pass "executing" so cooldown/status gates still apply
-  const prevPhase = phases[idx];
-  if (state.autoClearContext && !(prevPhase === "implement" && nextPhase === "review")) {
-    const autoCheckState = { ...u, phaseStatus: "executing" } as PipelineState;
+  // Auto-clear at every phase boundary by default. Check before pre_hook blocks it,
+  // and ignore the manual clear cooldown so quick phase completions still compact.
+  if (isAutoClearContextEnabled(state)) {
+    const autoCheckState = {
+      ...transitionState,
+      phaseStatus: "executing",
+      lastContextClearAt: undefined,
+    } as PipelineState;
     const autoCheck = canClearContext(autoCheckState);
     if (autoCheck.ok) {
-      setPipelineCompactingUi(ctx, u);
+      setPipelineCompactingUi(ctx, transitionState);
       ctx.compact({
         customInstructions: "Preserve pipeline phase context. Focus on transitioning to the new phase.",
         onComplete: () => {
           try {
-            // Re-validate cooldown before committing (race guard)
+            // Re-validate the persisted transition shape before launching the next phase.
             if (!canClearContext(autoCheckState).ok) {
-              setPipelineWorkingUi(ctx, u);
-              refreshWidget(ctx, u);
-              return; // skip — manual clear raced ahead
+              if (pauseBeforeImplement) enterImplementCheckpoint(pi, ctx, transitionState);
+              else {
+                setPipelineWorkingUi(ctx, transitionState);
+                refreshWidget(ctx, transitionState);
+              }
+              return;
             }
-            const updated = { ...u, contextClearCount: (u.contextClearCount ?? 0) + 1, lastContextClearAt: Date.now() };
+            const updated = {
+              ...transitionState,
+              contextClearCount: (transitionState.contextClearCount ?? 0) + 1,
+              lastContextClearAt: Date.now(),
+            };
+            if (pauseBeforeImplement) {
+              enterImplementCheckpoint(pi, ctx, updated);
+              return;
+            }
             void launchPhase(pi, ctx, updated, {
               asFollowUp: true,
               prefixText: `⛔ CONTEXT RESET — Continue with Phase ${nextIdx + 1}: ${meta?.name ?? nextPhase}.`,
@@ -610,14 +648,20 @@ async function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: Pipe
           }
         },
         onError: () => {
-          void launchPhase(pi, ctx, u, { asFollowUp: true });
+          if (pauseBeforeImplement) enterImplementCheckpoint(pi, ctx, transitionState);
+          else void launchPhase(pi, ctx, transitionState, { asFollowUp: true });
         },
       });
       return;
     }
   }
 
-  await launchPhase(pi, ctx, u, { asFollowUp: true });
+  if (pauseBeforeImplement) {
+    enterImplementCheckpoint(pi, ctx, transitionState);
+    return;
+  }
+
+  await launchPhase(pi, ctx, transitionState, { asFollowUp: true });
 }
 
 /** Handle the structured review verdict tool and backtrack on critical findings. */
@@ -1065,25 +1109,7 @@ ${phasePrompt}`,
   pi.registerCommand("ralph", {
     description: "Dev-cycle pipeline (start | status | cancel | gate | set-workdir | continue | resume | pause)",
     getArgumentCompletions: (prefix: string) => {
-      const items = [
-        "start",
-        "status",
-        "cancel",
-        "gate",
-        "continue",
-        "resume",
-        "pause",
-        "set-workdir",
-        "clear-context",
-        ...RENDER_HTML_ALIASES,
-        YOLO_FLAG,
-        "spec",
-        "redteam",
-        "harden",
-        "render",
-        "implement",
-        "review",
-      ].map((v) => ({ value: v, label: v }));
+      const items = RALPH_TOP_LEVEL_COMMANDS.map((v) => ({ value: v, label: v }));
       return items.filter((i) => i.value.startsWith(prefix));
     },
     handler: async (args, ctx) => {
@@ -1417,7 +1443,7 @@ ${phasePrompt}`,
               `reviewIterations: ${state.reviewIterations ?? 0}`,
               `phaseAttempts: ${state.phaseAttempts ?? 0}`,
               `Context clears: ${state.contextClearCount ?? 0}`,
-              `Auto clear: ${(state.autoClearContext ?? false) ? "ON" : "OFF"}`,
+              `Auto clear: ${isAutoClearContextEnabled(state) ? "ON" : "OFF"}`,
               `Yolo mode: ${(state.yoloMode ?? false) ? "ON" : "OFF"}`,
               state.lastValidationFailure ? `Last validation failure:\n${state.lastValidationFailure}` : "",
               `Started: ${new Date(state.startedAt).toISOString()}`,
@@ -1540,36 +1566,7 @@ ${phasePrompt}`,
           break;
         }
         default: {
-          if (cmd && !cmd.startsWith("-")) {
-            // Shorthand: /ralph <feature>
-            if (!blocksNewPipelineStart(getState(ctx))) {
-              const feature = cmd;
-              const state: PipelineState = {
-                feature,
-                workDir: ctx.cwd,
-                phases: [...DEFAULT_PHASES],
-                maxIterations: 10,
-                startedAt: Date.now(),
-                currentPhaseIndex: 0,
-                currentPhase: "spec",
-                phaseStatus: "executing",
-                pipelineStatus: "running",
-                reviewIterations: 0,
-                phaseAttempts: 0,
-                turnWriteCount: 0,
-                autoClearContext: true,
-              };
-              saveState(pi, state);
-              refreshWidget(ctx, state);
-              createPipelineLock(feature, ctx.cwd);
-              sendPipelineUserMessage(pi, ctx, buildPhasePrompt("spec", state));
-            }
-          } else {
-            ctx.ui.notify(
-              "Usage: /ralph start <feature> [--render-html|html] [--yolo] | status | cancel | gate | set-workdir <path> | continue [--render-html|html] [--yolo] | resume | pause | clear-context [--auto]",
-              "info",
-            );
-          }
+          ctx.ui.notify(cmd ? `Unknown /ralph command: ${cmd}\n${RALPH_USAGE}` : RALPH_USAGE, cmd ? "error" : "info");
         }
       }
     },
