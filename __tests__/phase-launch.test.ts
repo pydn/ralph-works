@@ -389,6 +389,61 @@ describe("next-phase launch", () => {
     expect(widgetText).not.toContain("Prompt: none");
   });
 
+  it("applies separate semantic colors to status, progress, action, and detail text", async () => {
+    const workDir = makeTempDir("ralph-widget-palette-work-");
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "soft-ui",
+          workDir,
+          phases: ["spec", "implement", "review"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "implement",
+          currentPhaseIndex: 1,
+          phaseStatus: "executing",
+          pipelineStatus: "running",
+          reviewIterations: 1,
+          phaseAttempts: 2,
+          turnWriteCount: 0,
+          autoClearContext: false,
+          promptText: "Use calm role-based colors.",
+        },
+      },
+    ];
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const styled: Array<{ tone: string; text: string }> = [];
+    const ctx = makeFakeContext(branch, workDir);
+    ctx.ui.theme.fg = vi.fn((tone: string, text: string) => {
+      styled.push({ tone, text });
+      return `<${tone}>${text}</${tone}>`;
+    });
+    const messageUpdate = handlers.get("message_update");
+    expect(messageUpdate).toBeTypeOf("function");
+
+    await messageUpdate?.({ message: { role: "assistant" } }, ctx);
+
+    const widgetLines = ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[];
+    const widgetText = widgetLines.join("\n");
+    expect(stripAnsi(widgetText.replace(/<\/?[^>]+>/g, ""))).toContain("Ralph · RUNNING · soft-ui");
+    expect(styled).toEqual(expect.arrayContaining([{ tone: "customMessageLabel", text: "Ralph" }]));
+    expect(styled).toEqual(expect.arrayContaining([{ tone: "accent", text: "RUNNING" }]));
+    expect(styled).toEqual(expect.arrayContaining([{ tone: "success", text: "✓" }]));
+    expect(styled).toEqual(expect.arrayContaining([{ tone: "accent", text: "▶" }]));
+    expect(styled).toEqual(expect.arrayContaining([{ tone: "muted", text: "·" }]));
+    expect(styled).toEqual(
+      expect.arrayContaining([{ tone: "mdLink", text: "Run ralph_gate_check after implementation changes" }]),
+    );
+    expect(styled.some(({ tone, text }) => tone === "dim" && text.includes("Review iterations: 1"))).toBe(true);
+    expect(widgetLines.length).toBeLessThanOrEqual(4);
+  });
+
   it("renders a scrolling rainbow-gradient YOLO badge beside the feature label when yolo mode is active", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

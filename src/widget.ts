@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
   GATE_PHASES,
   IMPLEMENT_CHECKPOINT_WAIT_REASON,
@@ -26,7 +26,7 @@ let yoloAnimationCtx: ExtensionContext | undefined;
 let yoloAnimationState: PipelineState | undefined;
 let yoloAnimationCacheKey: string | undefined;
 
-type UiTone = "warning" | "accent" | "dim";
+type UiTone = ThemeColor;
 
 /** Normalize defensive phase defaults before any rendering math is performed. */
 function getPhaseDisplay(st: PipelineState): {
@@ -90,18 +90,18 @@ function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; a
 
   switch (st.pipelineStatus) {
     case "completed":
-      return { label: "COMPLETE", tone: "accent", actions: ["Review the .ralph summary or start another run"] };
+      return { label: "COMPLETE", tone: "success", actions: ["Review the .ralph summary or start another run"] };
     case "paused":
       return { label: "PAUSED", tone: "warning", actions: ["/ralph resume continues the pipeline"] };
     case "failed":
     case "halted":
       return {
         label: "BLOCKED",
-        tone: "warning",
+        tone: "error",
         actions: ["Fix the blocker, then run /ralph resume", "/ralph cancel abandons this run"],
       };
     case "cancelled":
-      return { label: "CANCELLED", tone: "dim", actions: ["/ralph start <feature> begins a new run"] };
+      return { label: "CANCELLED", tone: "muted", actions: ["/ralph start <feature> begins a new run"] };
     default:
       break;
   }
@@ -113,7 +113,7 @@ function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; a
     return { label: "VALIDATING", tone: "accent", actions: ["Validating phase output before transition"] };
   }
   if (st.phaseStatus === "corrupted") {
-    return { label: "STATE ERROR", tone: "warning", actions: ["/ralph cancel resets the pipeline state"] };
+    return { label: "STATE ERROR", tone: "error", actions: ["/ralph cancel resets the pipeline state"] };
   }
 
   return {
@@ -124,12 +124,12 @@ function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; a
 }
 
 /** Render a compact phase-progress rail using one symbol per phase. */
-function buildPhaseTrack(phases: string[], idx: number): string {
+function buildPhaseTrack(ctx: ExtensionContext, phases: string[], idx: number): string {
   return phases
     .map((_phase, phaseIdx) => {
-      if (phaseIdx < idx) return "✓";
-      if (phaseIdx === idx) return "▶";
-      return "·";
+      if (phaseIdx < idx) return styleUiText(ctx, "success", "✓");
+      if (phaseIdx === idx) return styleUiText(ctx, "accent", "▶");
+      return styleUiText(ctx, "muted", "·");
     })
     .join(" ");
 }
@@ -139,7 +139,7 @@ function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
   const { phases, idx, phaseName } = getPhaseDisplay(st);
   const widgetState = resolveWidgetState(st);
   const featureLabel = truncateUiText(st.feature, st.yoloMode ? 34 : 42);
-  const yoloLabel = st.yoloMode ? ` · ${formatYoloBadge()}` : "";
+  const yoloLabel = st.yoloMode ? `${styleUiText(ctx, "muted", " · ")}${formatYoloBadge()}` : "";
   const detailLines = [
     st.pipelineStatus && st.pipelineStatus !== "running" ? `Status: ${st.pipelineStatus}` : "",
     st.phaseStatus && !["executing", "pre_hook", WAITING_FOR_USER_PHASE_STATUS].includes(st.phaseStatus)
@@ -151,17 +151,32 @@ function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
     st.promptText ? "Prompt: provided" : "",
   ].filter(Boolean);
 
-  const lines = [
-    styleUiText(ctx, widgetState.tone, `Ralph · ${widgetState.label} · ${featureLabel}${yoloLabel}`),
-    styleUiText(
-      ctx,
-      "accent",
-      `▶ ${idx + 1}/${phases.length} ${truncateUiText(phaseName, 34)} · [${buildPhaseTrack(phases, idx)}]`,
-    ),
-  ];
+  const headerLine = [
+    styleUiText(ctx, "customMessageLabel", "Ralph"),
+    styleUiText(ctx, "muted", " · "),
+    styleUiText(ctx, widgetState.tone, widgetState.label),
+    styleUiText(ctx, "muted", " · "),
+    styleUiText(ctx, "mdCode", featureLabel),
+    yoloLabel,
+  ].join("");
+  const phaseLine = [
+    styleUiText(ctx, "mdHeading", `▶ ${idx + 1}/${phases.length} ${truncateUiText(phaseName, 34)}`),
+    styleUiText(ctx, "muted", " · "),
+    `[${buildPhaseTrack(ctx, phases, idx)}]`,
+  ].join("");
+
+  const lines = [headerLine, phaseLine];
 
   const action = widgetState.actions[0];
-  if (action) lines.push(styleUiText(ctx, widgetState.tone, `Action · ${truncateUiText(action, 52)}`));
+  if (action) {
+    lines.push(
+      [
+        styleUiText(ctx, "customMessageLabel", "Action"),
+        styleUiText(ctx, "muted", " · "),
+        styleUiText(ctx, "mdLink", truncateUiText(action, 52)),
+      ].join(""),
+    );
+  }
   if (detailLines.length > 0) lines.push(styleUiText(ctx, "dim", truncateUiText(detailLines.join(" · "), 60)));
   return lines.slice(0, UI_WIDGET_MAX_LINES);
 }
