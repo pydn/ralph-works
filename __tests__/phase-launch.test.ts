@@ -233,6 +233,107 @@ describe("next-phase launch", () => {
     expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("ralph-loop", undefined);
   });
 
+  it("treats missing autoClearContext as enabled for phase-boundary compaction", async () => {
+    const workDir = makeTempDir("ralph-auto-compact-default-work-");
+    const skillBase = makeTempDir("ralph-auto-compact-default-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "feature-a.md"),
+      `# Feature A\n\n${"Spec body.\n".repeat(256)}`,
+      "utf-8",
+    );
+
+    fs.mkdirSync(path.join(skillBase, "red-team-audit"), { recursive: true });
+    fs.writeFileSync(path.join(skillBase, "red-team-audit", "SKILL.md"), "# Red Team Audit", "utf-8");
+
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "feature-a",
+          workDir,
+          phases: ["spec", "redteam"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "spec",
+          currentPhaseIndex: 0,
+          phaseStatus: "executing",
+          pipelineStatus: "running",
+          reviewIterations: 0,
+          phaseAttempts: 0,
+          turnWriteCount: 0,
+        },
+      },
+    ];
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: `Spec is complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+          },
+        ],
+      },
+      ctx,
+    );
+
+    expect(ctx.compact).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto-compacts at phase boundaries despite recent clears and before review", async () => {
+    const workDir = makeTempDir("ralph-auto-compact-review-work-");
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "feature-a",
+          workDir,
+          phases: ["implement", "review"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "implement",
+          currentPhaseIndex: 0,
+          phaseStatus: "executing",
+          pipelineStatus: "running",
+          reviewIterations: 0,
+          phaseAttempts: 0,
+          turnWriteCount: 0,
+          autoClearContext: true,
+          lastContextClearAt: Date.now(),
+        },
+      },
+    ];
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: `Implementation complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+          },
+        ],
+      },
+      ctx,
+    );
+
+    expect(ctx.compact).toHaveBeenCalledTimes(1);
+  });
+
   it("marks the pipeline as waiting for user input when a phase ends without completion", async () => {
     const workDir = makeTempDir("ralph-wait-work-");
     const branch: FakeEntry[] = [

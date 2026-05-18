@@ -43,29 +43,28 @@ Reload Pi (`/reload`) after installing or updating the extension and skills.
 
 ## Commands
 
-| Command                                                             | Description                                                        |
-| ------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `/ralph start <feature>`                                            | Start the default five-phase pipeline without HTML rendering       |
-| `/ralph start <feature> --render-html`                              | Start with Markdown-to-HTML rendering enabled                      |
-| `/ralph start <feature> html`                                       | Start with Markdown-to-HTML rendering enabled                      |
-| `/ralph start <feature> --yolo`                                     | Start without the pre-implementation human review checkpoint       |
-| `/ralph <feature>`                                                  | Shorthand for starting the default pipeline without HTML rendering |
-| `/ralph start <feature> spec,implement`                             | Run selected phases only                                           |
-| `/ralph start <feature> "reduce nesting depth"`                     | With inline prompt                                                 |
-| `/ralph start <feature> .ralph/task.md`                             | Prompt from file                                                   |
-| `/ralph start <feature> "..." spec,redteam,harden,render,implement` | Prompt + specific phases                                           |
-| `/ralph status`                                                     | Show current pipeline state                                        |
-| `/ralph pause`                                                      | Pause the active pipeline                                          |
-| `/ralph continue`                                                   | Re-launch the current or queued phase without advancing it         |
-| `/ralph continue --render-html`                                     | Enable HTML rendering before TDD, then continue                    |
-| `/ralph continue html`                                              | Alias for enabling HTML rendering before TDD                       |
-| `/ralph continue --yolo`                                            | Continue and keep straight-through mode enabled for later phases   |
-| `/ralph resume`                                                     | Resume the active pipeline at its current phase                    |
-| `/ralph resume <phase>`                                             | Resume at a specific phase                                         |
-| `/ralph gate [paths...]`                                            | Run standalone quality gates                                       |
-| `/ralph clear-context`                                              | Manually clear context and reorient the agent                      |
-| `/ralph clear-context --auto`                                       | Enable auto-clear at every phase boundary                          |
-| `/ralph cancel`                                                     | Abort pipeline                                                     |
+| Command                                                             | Description                                                      |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `/ralph start <feature>`                                            | Start the default five-phase pipeline without HTML rendering     |
+| `/ralph start <feature> --render-html`                              | Start with Markdown-to-HTML rendering enabled                    |
+| `/ralph start <feature> html`                                       | Start with Markdown-to-HTML rendering enabled                    |
+| `/ralph start <feature> --yolo`                                     | Start without the pre-implementation human review checkpoint     |
+| `/ralph start <feature> spec,implement`                             | Run selected phases only                                         |
+| `/ralph start <feature> "reduce nesting depth"`                     | With inline prompt                                               |
+| `/ralph start <feature> .ralph/task.md`                             | Prompt from file                                                 |
+| `/ralph start <feature> "..." spec,redteam,harden,render,implement` | Prompt + specific phases                                         |
+| `/ralph status`                                                     | Show current pipeline state                                      |
+| `/ralph pause`                                                      | Pause the active pipeline                                        |
+| `/ralph continue`                                                   | Re-launch the current or queued phase without advancing it       |
+| `/ralph continue --render-html`                                     | Enable HTML rendering before TDD, then continue                  |
+| `/ralph continue html`                                              | Alias for enabling HTML rendering before TDD                     |
+| `/ralph continue --yolo`                                            | Continue and keep straight-through mode enabled for later phases |
+| `/ralph resume`                                                     | Resume the active pipeline at its current phase                  |
+| `/ralph resume <phase>`                                             | Resume at a specific phase                                       |
+| `/ralph gate [paths...]`                                            | Run standalone quality gates                                     |
+| `/ralph clear-context`                                              | Manually clear context and reorient the agent                    |
+| `/ralph clear-context --auto`                                       | Enable auto-clear at every phase boundary                        |
+| `/ralph cancel`                                                     | Abort pipeline                                                   |
 
 Valid phase names are `spec`, `redteam`, `harden`, `render`, `implement`, and `review`. The `render` phase is opt-in; default runs skip it unless `--render-html`, `html`, `render-html`, `with-html`, or an explicit phase list includes `render`.
 
@@ -144,8 +143,8 @@ When `autoClearContext` is **enabled** (default), the extension auto-clears at e
 
 - Compacts conversation via `ctx.compact()` with instructions to preserve pipeline state
 - On completion, sends a steer message listing current phase, artifact paths, and reorientation context
-- Skips the implement → review transition (so review retains implementation context)
-- Enforces a cooldown between clears to prevent rapid-fire compaction
+- Includes every phase boundary, including implement → review
+- Manual `/ralph clear-context` still enforces a cooldown to prevent rapid-fire operator-triggered compaction
 - Best-effort — failures are silently ignored so they never block the pipeline
 
 ### Status Check
