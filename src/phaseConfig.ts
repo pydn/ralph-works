@@ -10,7 +10,9 @@ export interface PhaseConfig {
   desc: string;
   skillPath: string;
   skillPathCandidates?: string[];
+  /** Cheap prerequisite check run before the phase prompt is launched. */
   preHook: (phaseKey: string, state: PipelineState) => boolean;
+  /** Validation run after the agent emits the explicit phase-complete marker. */
   postHook: (phaseKey: string, state: PipelineState) => PostHookResult;
 }
 
@@ -18,6 +20,11 @@ function resolveSkillPath(...candidates: string[]): string {
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0] ?? "";
 }
 
+/**
+ * Phase registry keeps lifecycle validation beside the phase's skill path.
+ * The extension orchestration should depend on this registry instead of
+ * scattering phase-specific filesystem checks through event handlers.
+ */
 export const PHASE_CONFIGS: Record<string, PhaseConfig> = {
   spec: {
     displayName: "Generate Spec",
@@ -131,12 +138,17 @@ export function runPreHook(phaseKey: string, state: PipelineState): boolean {
   return cfg.preHook(phaseKey, state);
 }
 
+/** Dispatch post-hook validation for the current phase. */
 export function runPostHook(phaseKey: string, state: PipelineState): PostHookResult {
   const cfg = PHASE_CONFIGS[phaseKey];
   if (!cfg) return { pass: false, errors: [`Unknown phase config for ${phaseKey}`] };
   return cfg.postHook(phaseKey, state);
 }
 
+/**
+ * Validate selected phases up front so a run fails before launching the agent
+ * when required phase skill files are missing.
+ */
 export function getMissingPhaseSkillPrerequisites(
   phases: string[],
 ): Array<{ phaseKey: string; displayName: string; paths: string[] }> {

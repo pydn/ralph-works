@@ -1,8 +1,12 @@
 import * as os from "node:os";
 import * as path from "node:path";
 
+/** Custom session entry type used to persist Ralph state into Pi JSONL. */
 export const CUSTOM_TYPE = "ralph-loop-state";
+
+/** Skill root can be overridden in tests; production defaults to Pi's global skill directory. */
 export const SKILL_BASE = process.env.PI_SKILL_BASE ?? path.join(os.homedir(), ".pi", "agent", "skills", "_global");
+
 export const MAX_PHASE_ATTEMPTS = 3;
 export const GATE_THRESHOLD = 3;
 export const GATE_PHASES = new Set(["implement", "review"]);

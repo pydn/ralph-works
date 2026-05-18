@@ -3,6 +3,10 @@ import * as path from "node:path";
 import type { PipelineState } from "./domain";
 import { DEFAULT_PHASES, PHASE_META } from "./stateMachine";
 
+/**
+ * Atomically write a per-phase completion marker and append to the attempt log.
+ * Marker files are the crash-recovery signal used by `/ralph resume`.
+ */
 export function writePhaseCompletionMarker(phaseKey: string, workDir: string): void {
   const ralphDir = path.join(workDir, ".ralph");
   if (!fs.existsSync(ralphDir)) fs.mkdirSync(ralphDir, { recursive: true });
@@ -21,6 +25,7 @@ export function writePhaseCompletionMarker(phaseKey: string, workDir: string): v
   } catch {}
 }
 
+/** Emit a human-readable run summary once the pipeline reaches a terminal success state. */
 export function writeDevCycleSummary(state: PipelineState): void {
   const ralphDir = path.join(state.workDir, ".ralph");
   if (!fs.existsSync(ralphDir)) fs.mkdirSync(ralphDir, { recursive: true });
@@ -40,6 +45,7 @@ export function writeDevCycleSummary(state: PipelineState): void {
   } catch {}
 }
 
+/** Persist lightweight metrics for later inspection outside the live Pi session. */
 export function writeMetrics(state: PipelineState): void {
   const ralphDir = path.join(state.workDir, ".ralph");
   if (!fs.existsSync(ralphDir)) fs.mkdirSync(ralphDir, { recursive: true });
@@ -78,6 +84,10 @@ export function writeMetrics(state: PipelineState): void {
   } catch {}
 }
 
+/**
+ * Detect an existing run lock. Locks older than 24 hours are considered stale
+ * because the extension does not yet have a true multi-pipeline coordinator.
+ */
 export function checkPipelineLock(feature: string, wd: string): { locked: boolean; stale?: boolean } {
   const lp = path.join(wd, ".ralph", `pipeline-lock-${feature}`);
   if (!fs.existsSync(lp)) return { locked: false };
@@ -89,6 +99,7 @@ export function checkPipelineLock(feature: string, wd: string): { locked: boolea
   }
 }
 
+/** Create the best-effort per-feature pipeline lock under `.ralph/`. */
 export function createPipelineLock(feature: string, wd: string): boolean {
   const ralphDir = path.join(wd, ".ralph");
   if (!fs.existsSync(ralphDir)) fs.mkdirSync(ralphDir, { recursive: true });
@@ -104,6 +115,7 @@ export function createPipelineLock(feature: string, wd: string): boolean {
   }
 }
 
+/** Remove the per-feature pipeline lock when a run completes, cancels, or resumes. */
 export function removePipelineLock(feature: string, wd: string): void {
   const lp = path.join(wd, ".ralph", `pipeline-lock-${feature}`);
   try {
@@ -111,6 +123,7 @@ export function removePipelineLock(feature: string, wd: string): void {
   } catch {}
 }
 
+/** Check whether a phase marker exists for resume-time crash recovery. */
 export function phaseCompletionMarkerExists(state: PipelineState, phaseKey: string): boolean {
   return fs.existsSync(path.join(state.workDir, ".ralph", `.phase-${phaseKey}-done`));
 }

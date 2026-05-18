@@ -8,10 +8,12 @@ import { getState, saveState } from "./stateStore";
 const DEFERRED_FOLLOW_UP_RETRY_MS = 25;
 const DEFERRED_FOLLOW_UP_MAX_ATTEMPTS = 40;
 
+/** Stable key for coalescing phase-transition nudges within a short TTL. */
 function transitionSteerKey(state: PipelineState): string {
   return `phase-transition:${state.currentPhaseIndex ?? 0}:${state.currentPhase ?? "unknown"}`;
 }
 
+/** Clear queued-steer metadata once the assistant starts responding to it. */
 export function withoutPendingSteer(state: PipelineState): PipelineState {
   const { pendingSteerKey: _pendingSteerKey, pendingSteerSentAt: _pendingSteerSentAt, ...rest } = state;
   return rest;
@@ -23,6 +25,10 @@ function shouldCoalesceSteer(state: PipelineState, steerKey: string, now = Date.
   return sentAt > 0 && now - sentAt < STEER_DEDUP_TTL_MS;
 }
 
+/**
+ * Persist the pending steer marker before sending so reloads and rapid nudges
+ * cannot stack multiple equivalent transition prompts.
+ */
 function markPendingSteer(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState, steerKey: string): boolean {
   const latest = getState(ctx) ?? state;
   if (shouldCoalesceSteer(latest, steerKey)) {
@@ -38,11 +44,13 @@ function isBusyPromptError(error: unknown): boolean {
   return /already processing a prompt|while streaming/i.test(message);
 }
 
+/** Some Pi versions expose an idle probe; absent support is treated as busy. */
 function isContextIdle(ctx: ExtensionContext): boolean {
   const maybeCtx = ctx as ExtensionContext & { isIdle?: () => boolean };
   return typeof maybeCtx.isIdle === "function" ? maybeCtx.isIdle() : false;
 }
 
+/** Retry follow-up delivery briefly when Pi is still processing the current turn. */
 function sendUserMessageWhenIdle(pi: ExtensionAPI, ctx: ExtensionContext, payload: string, attempt = 0): void {
   if (!isContextIdle(ctx)) {
     if (attempt < DEFERRED_FOLLOW_UP_MAX_ATTEMPTS) {
@@ -56,6 +64,12 @@ function sendUserMessageWhenIdle(pi: ExtensionAPI, ctx: ExtensionContext, payloa
   pi.sendUserMessage(payload);
 }
 
+/**
+ * Send a message through the safest available Pi delivery mode.
+ *
+ * Steer messages are size-capped before delivery. Follow-ups wait for idle when
+ * possible, because some Pi builds reject queued regular messages while busy.
+ */
 export function sendPipelineUserMessage(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
@@ -92,6 +106,7 @@ export function sendPipelineUserMessage(
   }
 }
 
+/** Send a steer/follow-up only if an equivalent pending message is not fresh. */
 export function sendDedupedPipelineUserMessage(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
@@ -104,6 +119,7 @@ export function sendDedupedPipelineUserMessage(
   sendPipelineUserMessage(pi, ctx, text, options);
 }
 
+/** Build and send the prompt for the state's current phase. */
 export function sendPhasePrompt(
   pi: ExtensionAPI,
   ctx: ExtensionContext,

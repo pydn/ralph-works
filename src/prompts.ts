@@ -5,6 +5,10 @@ import type { PipelineState } from "./domain";
 import { PHASE_CONFIGS } from "./phaseConfig";
 import { PHASE_COMPLETE_MARKER, PHASE_ORDER, sanitizeFeatureName } from "./stateMachine";
 
+/**
+ * Split slash-command arguments while preserving quoted prompt text.
+ * This avoids the old whitespace-only parser losing multi-word prompts.
+ */
 export function parseCommandArgs(input: string): string[] {
   const args: string[] = [];
   let current = "";
@@ -44,6 +48,10 @@ export function parseCommandArgs(input: string): string[] {
   return args;
 }
 
+/**
+ * Expand prompt-file arguments into prompt text, but only for safe files inside
+ * the current workspace. Suspicious or missing paths fall back to literal text.
+ */
 export function resolvePromptInput(arg: string, wd: string): string | undefined {
   const ext = path.extname(arg).toLowerCase();
   if (PROMPT_FILE_EXTENSIONS.has(ext)) {
@@ -57,6 +65,7 @@ export function resolvePromptInput(arg: string, wd: string): string | undefined 
   return arg;
 }
 
+/** Remove Ralph flags from positional args while returning their parsed values. */
 export function parseRalphFlags(args: string[]): { args: string[]; renderHtml: boolean; yolo: boolean } {
   const filtered = args.filter((arg) => arg !== RENDER_HTML_FLAG && arg !== YOLO_FLAG);
   return {
@@ -66,6 +75,7 @@ export function parseRalphFlags(args: string[]): { args: string[]; renderHtml: b
   };
 }
 
+/** Insert the optional render phase at its canonical point in the phase order. */
 export function addRenderPhase(phases: string[]): string[] {
   if (phases.includes(RENDER_PHASE)) return [...phases];
   const renderOrder = PHASE_ORDER.findIndex((phase) => phase === RENDER_PHASE);
@@ -77,6 +87,7 @@ export function addRenderPhase(phases: string[]): string[] {
   return [...phases.slice(0, idx), RENDER_PHASE, ...phases.slice(idx)];
 }
 
+/** HTML rendering can only be enabled before the pipeline has passed render's slot. */
 export function canAddRenderBeforeCurrentPhase(phases: string[], currentPhaseIndex: number): boolean {
   const currentPhase = phases[currentPhaseIndex];
   const currentOrder = PHASE_ORDER.findIndex((phase) => phase === currentPhase);
@@ -84,6 +95,7 @@ export function canAddRenderBeforeCurrentPhase(phases: string[], currentPhaseInd
   return currentOrder >= 0 && currentOrder < renderOrder;
 }
 
+/** Reconcile a saved current phase with a phase list that may have gained render. */
 export function resolveCurrentPhaseIndex(state: PipelineState, phases: string[], fallbackIndex: number): number {
   if (state.currentPhase) {
     const currentPhaseIndex = phases.indexOf(state.currentPhase);
@@ -107,6 +119,13 @@ function findLatestSpec(wd: string): string | null {
   }
 }
 
+/**
+ * Build the phase prompt sent to the agent.
+ *
+ * This is intentionally self-contained: it embeds the selected skill content,
+ * the user task, phase-specific artifact paths, and the exact completion rule
+ * so reload and follow-up launches can rehydrate the agent from persisted state.
+ */
 export function buildPhasePrompt(phaseKey: string, state: PipelineState): string {
   const cfg = PHASE_CONFIGS[phaseKey];
   if (!cfg) return `Unknown phase: ${phaseKey}`;
