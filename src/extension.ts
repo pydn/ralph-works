@@ -79,6 +79,7 @@ import {
   setPipelineWorkingUi,
 } from "./widget";
 
+/** Extract plain text from Pi message content blocks. */
 function extractMessageText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -92,6 +93,7 @@ function extractMessageText(content: unknown): string {
   return textParts.join("\n").trim();
 }
 
+/** Persist a waiting state and switch the TUI out of "working" mode. */
 function enterWaitingForUser(pi: ExtensionAPI, ctx: ExtensionContext, st: PipelineState): void {
   if (st.pipelineStatus !== "running") return;
   if (st.phaseStatus !== "executing" && st.phaseStatus !== WAITING_FOR_USER_PHASE_STATUS) return;
@@ -101,6 +103,7 @@ function enterWaitingForUser(pi: ExtensionAPI, ctx: ExtensionContext, st: Pipeli
   refreshWidget(ctx, waitingState);
 }
 
+/** Decide whether to stop between planning and implementation for operator approval. */
 function shouldPauseBeforeImplementCheckpoint(
   state: PipelineState,
   phases: string[],
@@ -115,6 +118,7 @@ function shouldPauseBeforeImplementCheckpoint(
   return true;
 }
 
+/** Pause before implementation so the operator can inspect generated planning artifacts. */
 function enterImplementCheckpoint(pi: ExtensionAPI, ctx: ExtensionContext, st: PipelineState): void {
   const checkpointState: PipelineState = {
     ...st,
@@ -132,6 +136,10 @@ function enterImplementCheckpoint(pi: ExtensionAPI, ctx: ExtensionContext, st: P
   );
 }
 
+/**
+ * Validate prerequisites, persist executing state, refresh UI, then prompt the
+ * agent for the current phase. This is the only normal phase-entry path.
+ */
 function launchPhase(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
@@ -162,6 +170,11 @@ function launchPhase(
   sendPhasePrompt(pi, ctx, executingState, options);
 }
 
+/**
+ * Move from a completed phase to the next phase or terminal success state.
+ * This owns boundary side effects: summaries, checkpoint pauses, auto-compaction,
+ * and deterministic next-phase launch.
+ */
 function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState) {
   const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
   const idx = state.currentPhaseIndex ?? 0;
@@ -237,6 +250,7 @@ function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineSt
   launchPhase(pi, ctx, u, { asFollowUp: true });
 }
 
+/** Handle the structured review verdict tool and backtrack on critical findings. */
 function handleReviewDecision(pi: ExtensionAPI, ctx: ExtensionContext, params: { status: string; issues?: string[] }) {
   const state = getState(ctx);
   if (!state) return;
@@ -292,6 +306,10 @@ function handleReviewDecision(pi: ExtensionAPI, ctx: ExtensionContext, params: {
   }
 }
 
+/**
+ * Run post-hook validation after an explicit phase-complete signal.
+ * Failed validation keeps the same phase active and sends remediation guidance.
+ */
 function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: boolean; message: string } {
   const state = getState(ctx);
   if (!state) return { ok: false, message: "No active pipeline." };
@@ -344,6 +362,11 @@ function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: b
   return { ok: true, message: `Phase "${pk}" completion recorded.` };
 }
 
+/**
+ * Interpret the assistant's finished turn without treating every turn as a
+ * phase boundary. Non-review phases advance only through explicit completion;
+ * implement can also advance after a passing registered gate check.
+ */
 async function handleAgentEnd(
   pi: ExtensionAPI,
   event: { messages: Array<{ role?: string; content?: unknown }> },
@@ -405,6 +428,7 @@ export default function (pi: ExtensionAPI) {
       refreshWidget(ctx, state);
       return;
     }
+    // A new assistant turn means any pending steer has been accepted by Pi.
     const nextState = withoutPendingSteer(state);
     const updated: PipelineState =
       nextState.phaseStatus === WAITING_FOR_USER_PHASE_STATUS
@@ -431,6 +455,7 @@ export default function (pi: ExtensionAPI) {
       refreshWidget(ctx, state);
       return;
     }
+    // Regular user text is treated as the operator answering a waiting prompt.
     const updated: PipelineState = { ...state, phaseStatus: "executing", turnWriteCount: 0 };
     saveState(pi, updated);
     setPipelineWorkingUi(ctx, updated);
@@ -499,6 +524,7 @@ ${phasePrompt}`,
     if (event.toolName === "write" || event.toolName === "edit") {
       const newCount = currentCount + 1;
       if (newCount >= GATE_THRESHOLD) {
+        // Passing gates mark implement as ready; agent_end performs the actual phase completion.
         saveState(pi, { ...state, turnWriteCount: 0 });
         ctx.ui.notify("🚧 Auto-gate: running lint checks...", "info");
         const results = runLintGates(state.workDir);
@@ -545,6 +571,7 @@ ${phasePrompt}`,
     async execute(_id, params, _sig, onUpdate, ctx) {
       const state = getState(ctx);
       if (!state) return { content: [{ type: "text", text: "No active pipeline." }], details: {} };
+      // Pi's callback type is generic, but this tool only streams text updates.
       const update = onUpdate as undefined | ((value: { content: Array<{ type: "text"; text: string }> }) => void);
       update?.({ content: [{ type: "text", text: "🚧 Running lint gates..." }] });
       const results = runLintGates(state.workDir, params.paths);
@@ -641,6 +668,7 @@ ${phasePrompt}`,
           let promptArg: string | undefined;
           const parsedStartArgs = parseRalphFlags(parts.slice(2));
           if (parsedStartArgs.args[0]) {
+            // Ambiguous second arg: an all-phase token is a phase list; otherwise it is prompt text.
             const mp = parsedStartArgs.args[0].split(",").map((p) => p.trim());
             if (mp.every((p) => validPhases.has(p))) {
               phases = mp;
@@ -656,7 +684,7 @@ ${phasePrompt}`,
             }
           }
           if (parsedStartArgs.renderHtml) phases = addRenderPhase(phases);
-          // Validate phase order
+          // Validate phase order before creating locks or writing session state.
           const validation = validatePhaseOrder(phases);
           if (!validation.valid) {
             ctx.ui.notify(`Invalid phase order: ${validation.error}`, "error");
@@ -668,7 +696,6 @@ ${phasePrompt}`,
             return;
           }
           const promptText = promptArg ? resolvePromptInput(promptArg, ctx.cwd) : undefined;
-          // Check pipeline lock
           const lockCheck = checkPipelineLock(feature, ctx.cwd);
           if (lockCheck.locked && !lockCheck.stale) {
             ctx.ui.notify("Pipeline already running — /ralph cancel first.", "error");
@@ -791,7 +818,7 @@ ${phasePrompt}`,
             const ri = phases.indexOf(resumePhase);
             if (ri >= 0) targetIdx = ri;
           }
-          // Check completion markers for crash recovery
+          // Skip a phase that already wrote its completion marker before an interruption.
           if (phaseCompletionMarkerExists(state, phases[targetIdx])) {
             targetIdx = Math.min(targetIdx + 1, phases.length - 1);
           }

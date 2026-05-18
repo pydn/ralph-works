@@ -2,6 +2,7 @@ import * as child from "node:child_process";
 import type { GateResult } from "./domain";
 import { isValidTargetPath, resolveGates, sanitizeErrorOutput } from "./stateMachine";
 
+// Prevent overlapping manual and auto-gate executions inside the same extension process.
 let isGating = false;
 
 function runShell(cmd: string, cwd: string, timeoutMs?: number): { ok: boolean; output: string } {
@@ -18,6 +19,13 @@ function runShell(cmd: string, cwd: string, timeoutMs?: number): { ok: boolean; 
   }
 }
 
+/**
+ * Resolve and run the current project's quality gates.
+ *
+ * The target-path support is intentionally conservative. Only tools that
+ * commonly accept file arguments get appended paths, and each path is filtered
+ * before it is interpolated into the command string.
+ */
 export function runLintGates(wd: string, targetPaths?: string[]): GateResult[] {
   if (isGating) {
     return [{ name: "skip", pass: true, output: "Gate check already running — skipping." }];
@@ -52,6 +60,7 @@ export function runLintGates(wd: string, targetPaths?: string[]): GateResult[] {
   }
 }
 
+/** Render gate results into a compact Markdown report for steer/tool output. */
 export function formatGateResults(results: GateResult[]): string {
   const rows = results.map((r) => `| ${r.name} | ${r.pass ? "✅ PASS" : "❌ FAIL"} |`);
   return `## Lint Gate Results\n\n| Gate | Status |\n|------|--------|\n${rows.join("\n")}\n\n${results.map((r) => (r.pass ? "" : `\`\`\`\n${r.name} output:\n${r.output}\n\`\`\``)).join("\n\n")}`;
