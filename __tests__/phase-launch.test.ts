@@ -65,6 +65,10 @@ function makeTempDir(prefix: string): string {
   return dir;
 }
 
+function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
 afterEach(() => {
   delete process.env.PI_SKILL_BASE;
   vi.useRealTimers();
@@ -385,7 +389,9 @@ describe("next-phase launch", () => {
     expect(widgetText).not.toContain("Prompt: none");
   });
 
-  it("renders a rainbow YOLO badge beside the feature label when yolo mode is active", async () => {
+  it("renders a scrolling rainbow-gradient YOLO badge beside the feature label when yolo mode is active", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
     const workDir = makeTempDir("ralph-yolo-widget-work-");
     const branch: FakeEntry[] = [
       {
@@ -415,18 +421,27 @@ describe("next-phase launch", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir);
-    ctx.ui.theme.fg = vi.fn((tone: string, text: string) => `<${tone}>${text}</${tone}>`);
     const messageUpdate = handlers.get("message_update");
     expect(messageUpdate).toBeTypeOf("function");
 
     await messageUpdate?.({ message: { role: "assistant" } }, ctx);
+    expect(ctx.ui.setWidget).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(160);
 
-    const widgetLines = ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[];
-    const header = widgetLines[0];
-    expect(header).toContain("fast-ui");
-    expect(header.indexOf("fast-ui")).toBeLessThan(header.indexOf("<accent>Y</accent>"));
-    expect(header).toContain("<accent>Y</accent><warning>O</warning><dim>L</dim><accent>O</accent>");
-    expect(widgetLines.length).toBeLessThanOrEqual(4);
+    expect(ctx.ui.setWidget).toHaveBeenCalledTimes(2);
+    const firstWidgetLines = ctx.ui.setWidget.mock.calls[0]?.[1] as string[];
+    const secondWidgetLines = ctx.ui.setWidget.mock.calls[1]?.[1] as string[];
+    const firstHeader = firstWidgetLines[0];
+    const secondHeader = secondWidgetLines[0];
+    const visibleHeader = stripAnsi(firstHeader);
+    expect(visibleHeader).toContain("fast-ui");
+    expect(visibleHeader.indexOf("fast-ui")).toBeLessThan(visibleHeader.indexOf("YOLO"));
+    expect(visibleHeader).toContain("fast-ui · YOLO");
+    expect(firstHeader).toMatch(/\u001b\[38;2;\d+;\d+;\d+mY/);
+    expect(firstHeader).toMatch(/\u001b\[38;2;\d+;\d+;\d+mO/);
+    expect(secondHeader).not.toBe(firstHeader);
+    expect(stripAnsi(secondHeader)).toContain("fast-ui · YOLO");
+    expect(secondWidgetLines.length).toBeLessThanOrEqual(4);
   });
 
   it("dedupes identical widget renders across fresh event contexts", async () => {

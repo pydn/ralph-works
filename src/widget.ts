@@ -10,6 +10,21 @@ import type { PipelineState } from "./domain";
 import { DEFAULT_PHASES, PHASE_META } from "./stateMachine";
 
 const widgetRenderCache = new Map<string, string>();
+const YOLO_GRADIENT_FRAME_MS = 160;
+const YOLO_GRADIENT_COLORS: Array<[number, number, number]> = [
+  [255, 68, 68],
+  [255, 149, 43],
+  [255, 222, 67],
+  [69, 214, 93],
+  [44, 205, 255],
+  [89, 126, 255],
+  [190, 86, 255],
+  [255, 82, 192],
+];
+let yoloAnimationTimer: ReturnType<typeof setInterval> | undefined;
+let yoloAnimationCtx: ExtensionContext | undefined;
+let yoloAnimationState: PipelineState | undefined;
+let yoloAnimationCacheKey: string | undefined;
 
 type UiTone = "warning" | "accent" | "dim";
 
@@ -30,14 +45,14 @@ function styleUiText(ctx: ExtensionContext, tone: UiTone, text: string): string 
   return ctx.ui.theme?.fg ? ctx.ui.theme.fg(tone, text) : text;
 }
 
-function formatYoloBadge(ctx: ExtensionContext): string {
-  const letters: Array<{ tone: UiTone; text: string }> = [
-    { tone: "accent", text: "Y" },
-    { tone: "warning", text: "O" },
-    { tone: "dim", text: "L" },
-    { tone: "accent", text: "O" },
-  ];
-  return letters.map(({ tone, text }) => styleUiText(ctx, tone, text)).join("");
+function formatYoloBadge(): string {
+  const frame = Math.floor(Date.now() / YOLO_GRADIENT_FRAME_MS);
+  return Array.from("YOLO")
+    .map((letter, idx) => {
+      const [r, g, b] = YOLO_GRADIENT_COLORS[(frame + idx) % YOLO_GRADIENT_COLORS.length];
+      return `\u001b[38;2;${r};${g};${b}m${letter}\u001b[39m`;
+    })
+    .join("");
 }
 
 /** Strip control characters so partial terminal escape sequences never leak into widgets. */
@@ -124,7 +139,7 @@ function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
   const { phases, idx, phaseName } = getPhaseDisplay(st);
   const widgetState = resolveWidgetState(st);
   const featureLabel = truncateUiText(st.feature, st.yoloMode ? 34 : 42);
-  const yoloLabel = st.yoloMode ? ` · ${formatYoloBadge(ctx)}` : "";
+  const yoloLabel = st.yoloMode ? ` · ${formatYoloBadge()}` : "";
   const detailLines = [
     st.pipelineStatus && st.pipelineStatus !== "running" ? `Status: ${st.pipelineStatus}` : "",
     st.phaseStatus && !["executing", "pre_hook", WAITING_FOR_USER_PHASE_STATUS].includes(st.phaseStatus)
@@ -170,8 +185,45 @@ function setPipelineWidget(
   ctx.ui.setWidget(UI_WIDGET_ID, lines, { placement: "belowEditor" });
 }
 
+function shouldAnimateYoloBadge(st: PipelineState): boolean {
+  return Boolean(st.yoloMode) && (st.pipelineStatus ?? "running") === "running";
+}
+
+function stopYoloBadgeAnimation(): void {
+  if (yoloAnimationTimer) clearInterval(yoloAnimationTimer);
+  yoloAnimationTimer = undefined;
+  yoloAnimationCtx = undefined;
+  yoloAnimationState = undefined;
+  yoloAnimationCacheKey = undefined;
+}
+
+function syncYoloBadgeAnimation(ctx: ExtensionContext, st: PipelineState, cacheKey: string): void {
+  if (!shouldAnimateYoloBadge(st)) {
+    stopYoloBadgeAnimation();
+    return;
+  }
+
+  yoloAnimationCtx = ctx;
+  yoloAnimationState = st;
+  yoloAnimationCacheKey = cacheKey;
+
+  if (yoloAnimationTimer) return;
+  yoloAnimationTimer = setInterval(() => {
+    if (!yoloAnimationCtx || !yoloAnimationState || !yoloAnimationCacheKey) return;
+    if (!shouldAnimateYoloBadge(yoloAnimationState)) {
+      stopYoloBadgeAnimation();
+      return;
+    }
+    setPipelineWidget(yoloAnimationCtx, buildWidgetLines(yoloAnimationCtx, yoloAnimationState), {
+      cacheKey: yoloAnimationCacheKey,
+    });
+  }, YOLO_GRADIENT_FRAME_MS);
+  yoloAnimationTimer.unref?.();
+}
+
 /** Reset render de-duplication when the current pipeline is explicitly cancelled. */
 export function clearPipelineWidgetCache(): void {
+  stopYoloBadgeAnimation();
   widgetRenderCache.clear();
 }
 
@@ -201,5 +253,7 @@ export function setPipelineWaitingUi(ctx: ExtensionContext, _st: PipelineState):
 
 /** Public widget refresh entrypoint used by lifecycle handlers after state changes. */
 export function refreshWidget(ctx: ExtensionContext, st: PipelineState, options?: { force?: boolean }): void {
-  setPipelineWidget(ctx, buildWidgetLines(ctx, st), { ...options, cacheKey: getWidgetRenderCacheKey(st) });
+  const cacheKey = getWidgetRenderCacheKey(st);
+  setPipelineWidget(ctx, buildWidgetLines(ctx, st), { ...options, cacheKey });
+  syncYoloBadgeAnimation(ctx, st, cacheKey);
 }
