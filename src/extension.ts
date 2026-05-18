@@ -79,6 +79,13 @@ import {
   setPipelineWaitingUi,
   setPipelineWorkingUi,
 } from "./widget";
+import {
+  buildWorkDirPolicyWarning,
+  formatExpectedArtifactPaths,
+  formatPostHookFailure,
+  getExpectedArtifactPaths,
+  resolvePipelineWorkDir,
+} from "./workdir";
 
 /** Extract plain text from Pi message content blocks. */
 function extractMessageText(content: unknown): string {
@@ -193,9 +200,19 @@ function launchPhase(
 ): void {
   const pk = state.currentPhase;
   if (!pk) return;
+  const workDirWarning = buildWorkDirPolicyWarning(state);
+  if (workDirWarning) ctx.ui.notify(workDirWarning, "warning");
   if (!runPreHook(pk, state)) {
-    ctx.ui.notify(`Pre-hook failed for phase "${pk}". Fix prerequisites and /ralph resume.`, "error");
-    const failedState: PipelineState = { ...state, pipelineStatus: "failed", phaseStatus: "pre_hook" };
+    const failureMessage = [`Pre-hook failed for phase "${pk}". Fix prerequisites and /ralph resume.`, workDirWarning]
+      .filter(Boolean)
+      .join("\n\n");
+    ctx.ui.notify(failureMessage, "error");
+    const failedState: PipelineState = {
+      ...state,
+      pipelineStatus: "failed",
+      phaseStatus: "pre_hook",
+      lastValidationFailure: failureMessage,
+    };
     saveState(pi, failedState);
     refreshWidget(ctx, failedState);
     return;
@@ -212,7 +229,10 @@ function launchPhase(
   saveState(pi, executingState);
   setPipelineWorkingUi(ctx, executingState);
   refreshWidget(ctx, executingState);
-  sendPhasePrompt(pi, ctx, executingState, options);
+  const promptOptions = workDirWarning
+    ? { ...options, prefixText: [workDirWarning, options?.prefixText].filter(Boolean).join("\n\n") }
+    : options;
+  sendPhasePrompt(pi, ctx, executingState, promptOptions);
 }
 
 /**
@@ -361,26 +381,40 @@ function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: b
   const result = runPostHook(pk, state);
   if (!result.pass) {
     const attempts = state.phaseAttempts ?? 0;
+    const failureDetails = formatPostHookFailure(pk, state, result);
     if (attempts >= MAX_PHASE_ATTEMPTS) {
-      const failedState: PipelineState = { ...state, pipelineStatus: "failed", phaseStatus: "post_hook" };
+      const failedState: PipelineState = {
+        ...state,
+        pipelineStatus: "failed",
+        phaseStatus: "post_hook",
+        lastValidationFailure: failureDetails,
+      };
       saveState(pi, failedState);
       refreshWidget(ctx, failedState);
-      ctx.ui.notify(`Phase "${pk}" failed ${MAX_PHASE_ATTEMPTS} times — halted.`, "error");
-      return { ok: false, message: `Phase "${pk}" failed validation too many times.` };
+      ctx.ui.notify(`Phase "${pk}" failed ${MAX_PHASE_ATTEMPTS} times — halted.\n${failureDetails}`, "error");
+      return { ok: false, message: failureDetails };
     }
 
-    const errList = result.errors?.map((e) => `- ${e}`).join("\n") || "Unknown error";
-    ctx.ui.notify(`Post-hook failed for "${pk}" (attempt ${attempts + 1}/${MAX_PHASE_ATTEMPTS})`, "warning");
-    sendPipelineUserMessage(
-      pi,
-      ctx,
-      `⛔ Phase validation failed:\n\n${errList}\nFix and retry. Call the registered \`ralph_gate_check\` tool after; do not run it in \`bash\`.`,
-      { deliverAs: "steer" },
+    ctx.ui.notify(
+      `Post-hook failed for "${pk}" (attempt ${attempts + 1}/${MAX_PHASE_ATTEMPTS})\n${failureDetails}`,
+      "warning",
     );
-    const updatedState: PipelineState = { ...state, phaseAttempts: attempts + 1, turnWriteCount: 0 };
+    const retryInstruction =
+      pk === "implement"
+        ? "Fix failures and call the registered `ralph_gate_check` tool after; do not run it in `bash`."
+        : "Fix the expected phase artifacts under the persisted workDir, then retry phase completion.";
+    sendPipelineUserMessage(pi, ctx, `⛔ Phase validation failed:\n\n${failureDetails}\n\n${retryInstruction}`, {
+      deliverAs: "steer",
+    });
+    const updatedState: PipelineState = {
+      ...state,
+      phaseAttempts: attempts + 1,
+      turnWriteCount: 0,
+      lastValidationFailure: failureDetails,
+    };
     saveState(pi, updatedState);
     refreshWidget(ctx, updatedState);
-    return { ok: false, message: `Phase "${pk}" failed validation.` };
+    return { ok: false, message: failureDetails };
   }
 
   writePhaseCompletionMarker(pk, state.workDir);
@@ -391,6 +425,7 @@ function handlePhaseCompletion(pi: ExtensionAPI, ctx: ExtensionContext): { ok: b
     turnWriteCount: 0,
     waitingReason: undefined,
     readyToAdvancePhase: undefined,
+    lastValidationFailure: undefined,
   });
   return { ok: true, message: `Phase "${pk}" completion recorded.` };
 }
@@ -608,6 +643,37 @@ ${phasePrompt}`,
     await handleAgentEnd(pi, event as { messages: Array<{ role?: string; content?: unknown }> }, ctx);
   });
 
+  // ── Tool: ralph_set_workdir ─────────────────────────────
+  pi.registerTool({
+    name: "ralph_set_workdir",
+    label: "Ralph Set WorkDir",
+    description: "Update the active Ralph run root when work moves into a dedicated git worktree.",
+    promptSnippet:
+      "If you create or switch to a dedicated git worktree, call this with the worktree root before writing artifacts or completing the phase.",
+    parameters: Type.Object({ workDir: Type.String() }),
+    async execute(_id, params, _sig, _onUpdate, ctx) {
+      const state = getState(ctx);
+      if (!state) return { content: [{ type: "text", text: "No active pipeline." }], details: {} };
+      const requestedWorkDir = String((params as { workDir?: string }).workDir ?? "").trim();
+      if (!requestedWorkDir) return { content: [{ type: "text", text: "Missing required workDir." }], details: {} };
+      const resolution = resolvePipelineWorkDir(state.workDir, requestedWorkDir, ctx.cwd);
+      if (!resolution.ok || !resolution.workDir) {
+        return { content: [{ type: "text", text: `ERROR: ${resolution.message}` }], details: resolution };
+      }
+
+      const updated: PipelineState = {
+        ...state,
+        workDir: resolution.workDir,
+        turnWriteCount: 0,
+        lastValidationFailure: undefined,
+      };
+      saveState(pi, updated);
+      refreshWidget(ctx, updated);
+      ctx.ui.notify(resolution.message, "info");
+      return { content: [{ type: "text", text: resolution.message }], details: { workDir: resolution.workDir } };
+    },
+  });
+
   // ── Tool: ralph_gate_check ──────────────────────────────
   pi.registerTool({
     name: "ralph_gate_check",
@@ -674,7 +740,7 @@ ${phasePrompt}`,
 
   // ── Command: /ralph ────────────────────────────────────
   pi.registerCommand("ralph", {
-    description: "Dev-cycle pipeline (start | status | cancel | gate | continue | resume | pause)",
+    description: "Dev-cycle pipeline (start | status | cancel | gate | set-workdir | continue | resume | pause)",
     getArgumentCompletions: (prefix: string) => {
       const items = [
         "start",
@@ -684,6 +750,7 @@ ${phasePrompt}`,
         "continue",
         "resume",
         "pause",
+        "set-workdir",
         "clear-context",
         RENDER_HTML_FLAG,
         YOLO_FLAG,
@@ -899,6 +966,33 @@ ${phasePrompt}`,
           ctx.ui.notify(`Pipeline paused. Use /ralph resume to continue.`, "warning");
           break;
         }
+        case "set-workdir": {
+          const state = getState(ctx);
+          if (!state) {
+            ctx.ui.notify("No active pipeline.", "error");
+            return;
+          }
+          const requestedWorkDir = parts[1];
+          if (!requestedWorkDir) {
+            ctx.ui.notify("Usage: /ralph set-workdir <path>", "error");
+            return;
+          }
+          const resolution = resolvePipelineWorkDir(state.workDir, requestedWorkDir, ctx.cwd);
+          if (!resolution.ok || !resolution.workDir) {
+            ctx.ui.notify(resolution.message, "error");
+            return;
+          }
+          const updated: PipelineState = {
+            ...state,
+            workDir: resolution.workDir,
+            turnWriteCount: 0,
+            lastValidationFailure: undefined,
+          };
+          saveState(pi, updated);
+          refreshWidget(ctx, updated);
+          ctx.ui.notify(resolution.message, "info");
+          break;
+        }
         case "gate": {
           const state = getState(ctx) || { workDir: ctx.cwd };
           const results = runLintGates(state.workDir, parts.slice(1));
@@ -922,20 +1016,26 @@ ${phasePrompt}`,
           const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
           const idx = state.currentPhaseIndex ?? 0;
           const pk = phases[idx];
+          const expectedArtifacts = formatExpectedArtifactPaths(getExpectedArtifactPaths(pk, state));
           ctx.ui.notify(
             [
               `Feature: ${state.feature}`,
               `Status: ${state.pipelineStatus ?? "running"}`,
               `phaseStatus: ${state.phaseStatus ?? "executing"}`,
               `Current: Phase ${idx + 1} — ${PHASE_META[pk]?.name ?? pk}`,
+              `WorkDir: ${state.workDir}`,
+              expectedArtifacts,
               `Phases: ${phases.join(" → ")}`,
               `reviewIterations: ${state.reviewIterations ?? 0}`,
               `phaseAttempts: ${state.phaseAttempts ?? 0}`,
               `Context clears: ${state.contextClearCount ?? 0}`,
               `Auto clear: ${(state.autoClearContext ?? false) ? "ON" : "OFF"}`,
               `Yolo mode: ${(state.yoloMode ?? false) ? "ON" : "OFF"}`,
+              state.lastValidationFailure ? `Last validation failure:\n${state.lastValidationFailure}` : "",
               `Started: ${new Date(state.startedAt).toISOString()}`,
-            ].join("\n"),
+            ]
+              .filter(Boolean)
+              .join("\n"),
             "info",
           );
           break;
@@ -1077,7 +1177,7 @@ ${phasePrompt}`,
             }
           } else {
             ctx.ui.notify(
-              "Usage: /ralph start <feature> [--render-html] [--yolo] | status | cancel | gate | continue [--render-html] [--yolo] | resume | pause | clear-context [--auto]",
+              "Usage: /ralph start <feature> [--render-html] [--yolo] | status | cancel | gate | set-workdir <path> | continue [--render-html] [--yolo] | resume | pause | clear-context [--auto]",
               "info",
             );
           }

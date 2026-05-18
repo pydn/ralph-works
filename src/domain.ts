@@ -61,6 +61,8 @@ export interface PipelineState {
   implementCheckpointApproved?: boolean;
   /** Set by passing gates so agent_end can advance implement deterministically. */
   readyToAdvancePhase?: string;
+  /** Latest full validation failure details for /ralph status and persisted history. */
+  lastValidationFailure?: string;
 }
 
 export type PipelineDeliveryMode = "steer" | "followUp";

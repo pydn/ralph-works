@@ -4,6 +4,7 @@ import { PROMPT_FILE_EXTENSIONS, RENDER_HTML_FLAG, RENDER_PHASE, YOLO_FLAG } fro
 import type { PipelineState } from "./domain";
 import { PHASE_CONFIGS } from "./phaseConfig";
 import { PHASE_COMPLETE_MARKER, PHASE_ORDER, sanitizeFeatureName } from "./stateMachine";
+import { formatExpectedArtifactPaths, getExpectedArtifactPaths } from "./workdir";
 
 /**
  * Split slash-command arguments while preserving quoted prompt text.
@@ -140,6 +141,12 @@ export function buildPhasePrompt(phaseKey: string, state: PipelineState): string
   }
   const specFile = findLatestSpec(state.workDir);
   const auditFile = `docs/security/redteam-findings-${state.feature}.md`;
+  const expectedArtifactSection = [
+    "## Run Root and Artifacts",
+    `Persisted workDir: ${state.workDir}`,
+    formatExpectedArtifactPaths(getExpectedArtifactPaths(phaseKey, state)),
+    "If you create or switch to a dedicated git worktree for this run, call the registered `ralph_set_workdir` tool with that worktree root before writing phase artifacts or completing the phase.",
+  ].join("\n");
   let phaseContext = "";
   switch (phaseKey) {
     case "spec":
@@ -181,5 +188,5 @@ Call the registered \`ralph_gate_check\` tool after implementation. Do not run \
   ]
     .filter(Boolean)
     .join("\n");
-  return `# Ralph Pipeline — Phase: ${cfg.displayName}\n\n${taskSection}\n\n## Skill Context\n<ralph-skill-instructions>\n${skillContent || "(Skill file not available)"}</ralph-skill-instructions>\n\n## Phase Instructions\n${phaseContext}\n\n## Rules\n${rules}`;
+  return `# Ralph Pipeline — Phase: ${cfg.displayName}\n\n${taskSection}\n\n${expectedArtifactSection}\n\n## Skill Context\n<ralph-skill-instructions>\n${skillContent || "(Skill file not available)"}</ralph-skill-instructions>\n\n## Phase Instructions\n${phaseContext}\n\n## Rules\n${rules}`;
 }
