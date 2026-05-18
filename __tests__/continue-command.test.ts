@@ -296,6 +296,47 @@ describe("/ralph continue", () => {
     expect(latestState.waitingReason).toBeUndefined();
     expect(latestState.implementCheckpointApproved).toBe(true);
   });
+
+  it("does not leave a redundant bottom resume status when the compact widget shows a blocked run", async () => {
+    const workDir = makeTempDir("ralph-resume-blocked-widget-");
+    const skillBase = makeTempDir("ralph-resume-blocked-widget-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+
+    const branch: FakeEntry[] = [
+      {
+        type: "custom",
+        customType: "ralph-loop-state",
+        data: {
+          feature: "feature-a",
+          workDir,
+          phases: ["spec", "redteam"],
+          maxIterations: 10,
+          startedAt: Date.now(),
+          currentPhase: "redteam",
+          currentPhaseIndex: 1,
+          phaseStatus: "pre_hook",
+          pipelineStatus: "failed",
+          reviewIterations: 0,
+          phaseAttempts: 0,
+          turnWriteCount: 0,
+          autoClearContext: false,
+        },
+      },
+    ];
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+    const ctx = makeFakeContext(branch, workDir);
+
+    await commands.get("ralph")?.("resume", ctx);
+
+    expect(sendUserMessages).toHaveLength(0);
+    const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
+    expect(widgetText).toContain("Ralph · BLOCKED · feature-a");
+    expect(widgetText).toContain("Fix the blocker, then run /ralph resume");
+    expect(ctx.ui.setStatus).not.toHaveBeenCalledWith("ralph-loop", expect.stringContaining("Resuming |"));
+  });
 });
 
 describe("/ralph clear-context", () => {

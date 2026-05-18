@@ -839,7 +839,6 @@ ${phasePrompt}`,
           saveState(pi, state);
           refreshWidget(ctx, state);
           ctx.ui.notify(`Starting pipeline for "${feature}" (${phases.join(", ")})`, "info");
-          ctx.ui.setStatus(UI_WIDGET_ID, `🔄 Starting | ${feature}`);
           launchPhase(pi, ctx, state);
           if (getState(ctx)?.pipelineStatus === "failed") removePipelineLock(feature, ctx.cwd);
           break;
@@ -917,7 +916,6 @@ ${phasePrompt}`,
           saveState(pi, updated);
           refreshWidget(ctx, updated);
           ctx.ui.notify(`Continuing Phase ${targetIdx + 1} (${PHASE_META[pk]?.name ?? pk})`, "info");
-          ctx.ui.setStatus(UI_WIDGET_ID, `🔄 Continuing | ${state.feature}`);
           launchPhase(pi, ctx, updated);
           break;
         }
@@ -960,7 +958,6 @@ ${phasePrompt}`,
           };
           saveState(pi, updated);
           refreshWidget(ctx, updated);
-          ctx.ui.setStatus(UI_WIDGET_ID, `🔄 Resuming | ${state.feature}`);
           launchPhase(pi, ctx, updated);
           break;
         }
@@ -970,8 +967,10 @@ ${phasePrompt}`,
             ctx.ui.notify("No active pipeline.", "info");
             return;
           }
-          saveState(pi, { ...state, pipelineStatus: "paused", phaseStatus: "post_hook" });
-          ctx.ui.setStatus(UI_WIDGET_ID, `⏸ Paused | ${state.feature}`);
+          const pausedState: PipelineState = { ...state, pipelineStatus: "paused", phaseStatus: "post_hook" };
+          saveState(pi, pausedState);
+          refreshWidget(ctx, pausedState);
+          ctx.ui.setStatus(UI_WIDGET_ID, undefined);
           ctx.ui.notify(`Pipeline paused. Use /ralph resume to continue.`, "warning");
           break;
         }
