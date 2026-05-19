@@ -27,6 +27,7 @@ import {
   RENDER_PHASE,
   SKILL_BASE,
   UI_WIDGET_ID,
+  VALIDATION_FAILED_PHASE_STATUS,
   WAITING_FOR_USER_PHASE_STATUS,
 } from "./config";
 import type { GateResult, ModelThinkingLevel, PipelineState, RalphModelPlan, RalphModelSelector } from "./domain";
@@ -755,7 +756,7 @@ async function handlePhaseCompletion(
     return { ok: false, message: `Pipeline is not running (status: ${state.pipelineStatus ?? "unknown"}).` };
   if (state.currentPhase === "review")
     return { ok: false, message: "Review phase must end via `ralph_review_decision`, not the completion marker." };
-  if (state.phaseStatus !== "executing")
+  if (state.phaseStatus !== "executing" && state.phaseStatus !== VALIDATION_FAILED_PHASE_STATUS)
     return { ok: false, message: `Current phase is not executing (status: ${state.phaseStatus ?? "unknown"}).` };
 
   const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
@@ -792,8 +793,10 @@ async function handlePhaseCompletion(
     });
     const updatedState: PipelineState = {
       ...state,
+      phaseStatus: VALIDATION_FAILED_PHASE_STATUS,
       phaseAttempts: attempts + 1,
       turnWriteCount: 0,
+      readyToAdvancePhase: undefined,
       lastValidationFailure: failureDetails,
     };
     saveState(pi, updatedState);
@@ -862,13 +865,19 @@ async function handleAgentEnd(
   }
 
   if (state.currentPhase === "implement" && state.phaseStatus === "executing") {
-    sendDedupedPipelineUserMessage(
-      pi,
-      ctx,
-      state,
-      buildImplementGateReminder(state.workDir),
-      { deliverAs: "steer", dedupeKey: `implement-gate:${idx}` },
-    );
+    if (state.lastValidationFailure) {
+      refreshWidget(ctx, state);
+      return;
+    }
+    sendDedupedPipelineUserMessage(pi, ctx, state, buildImplementGateReminder(state.workDir), {
+      deliverAs: "steer",
+      dedupeKey: `implement-gate:${idx}`,
+    });
+    return;
+  }
+
+  if (state.phaseStatus === VALIDATION_FAILED_PHASE_STATUS) {
+    refreshWidget(ctx, state);
     return;
   }
 
@@ -1098,7 +1107,9 @@ ${phasePrompt}`,
         "",
         `| Gate | Status | Command | Source |`,
         `|------|--------|---------|--------|`,
-        ...results.map((r) => `| ${r.name} | ${r.pass ? "✅ PASS" : "❌ FAIL"} | ${r.command ?? ""} | ${r.source ?? ""} |`),
+        ...results.map(
+          (r) => `| ${r.name} | ${r.pass ? "✅ PASS" : "❌ FAIL"} | ${r.command ?? ""} | ${r.source ?? ""} |`,
+        ),
         "",
       ];
       for (const result of results.filter((r) => !r.pass || r.skipped)) {
@@ -1273,6 +1284,16 @@ ${phasePrompt}`,
           if (continueArgs.errors.length) {
             ctx.ui.notify(continueArgs.errors.join("\n"), "error");
             return;
+          }
+          if (state.phaseStatus === VALIDATION_FAILED_PHASE_STATUS) {
+            removePipelineLock(state.feature, state.workDir);
+            createPipelineLock(state.feature, state.workDir);
+            ctx.ui.notify(
+              `Re-running validation for Phase ${(state.currentPhaseIndex ?? 0) + 1} (${PHASE_META[state.currentPhase ?? ""]?.name ?? state.currentPhase ?? "unknown"})`,
+              "info",
+            );
+            await handlePhaseCompletion(pi, ctx);
+            break;
           }
           const basePhases = state.phases?.length ? state.phases : DEFAULT_PHASES;
           let phases = [...basePhases];
@@ -1450,11 +1471,11 @@ ${phasePrompt}`,
             noConfiguredGates
               ? "No Ralph gates configured"
               : results.every((r) => r.pass)
-              ? "✅ All gates passed"
-              : `❌ Failed: ${results
-                  .filter((r) => !r.pass)
-                  .map((r) => r.name)
-                  .join(", ")}`,
+                ? "✅ All gates passed"
+                : `❌ Failed: ${results
+                    .filter((r) => !r.pass)
+                    .map((r) => r.name)
+                    .join(", ")}`,
             results.every((r) => r.pass) ? "info" : "error",
           );
           break;
