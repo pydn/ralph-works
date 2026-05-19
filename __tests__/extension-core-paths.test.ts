@@ -810,7 +810,9 @@ describe("gate tool and auto-gate paths", () => {
     expect(result.details?.allPass).toBe(true);
     expect(result.content?.[0]?.text).toContain("No Ralph Gates Configured");
     expect(result.content?.[0]?.text).toContain("No configured Ralph gates were run");
-    expect(latestState<{ readyToAdvancePhase?: string; turnWriteCount?: number }>(branch).readyToAdvancePhase).toBeUndefined();
+    expect(
+      latestState<{ readyToAdvancePhase?: string; turnWriteCount?: number }>(branch).readyToAdvancePhase,
+    ).toBeUndefined();
     expect(latestState<{ readyToAdvancePhase?: string; turnWriteCount?: number }>(branch).turnWriteCount).toBe(0);
     expect(ctx.ui.setStatus).toHaveBeenCalledWith("ralph-loop", "No Ralph gates configured");
   });
@@ -1139,7 +1141,7 @@ describe("review decision and completion paths", () => {
     expect(String(sendUserMessages[0]?.content)).toContain("Phase: Ralph Review Loop");
   });
 
-  it("keeps implement active and reports the gate-resolution error when configured gates are invalid", async () => {
+  it("puts implement into validation_failed and does not queue generic TDD reminders after gate validation fails", async () => {
     const workDir = makeTempDir("ralph-implement-invalid-gate-");
     fs.mkdirSync(path.join(workDir, ".ralph"), { recursive: true });
     fs.writeFileSync(
@@ -1164,6 +1166,7 @@ describe("review decision and completion paths", () => {
     const { pi, handlers, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
+    const ctx = makeFakeContext(branch, workDir, { idle: true });
     await handlers.get("agent_end")?.(
       {
         messages: [
@@ -1173,16 +1176,75 @@ describe("review decision and completion paths", () => {
           },
         ],
       },
-      makeFakeContext(branch, workDir, { idle: true }),
+      ctx,
     );
 
     const state = latestState<{ currentPhase?: string; phaseStatus?: string; phaseAttempts?: number }>(branch);
     expect(state.currentPhase).toBe("implement");
-    expect(state.phaseStatus).toBe("executing");
+    expect(state.phaseStatus).toBe("validation_failed");
     expect(state.phaseAttempts).toBe(1);
     expect(sendUserMessages).toHaveLength(1);
     expect(String(sendUserMessages[0]?.content)).toContain("Gate Configuration");
     expect(String(sendUserMessages[0]?.content)).toContain("Unsafe gate command");
+
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "I am waiting for validation remediation." }],
+          },
+        ],
+      },
+      ctx,
+    );
+
+    expect(sendUserMessages).toHaveLength(1);
+    const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
+    expect(widgetText).toContain("Ralph · VALIDATION FAILED · feature-a");
+    expect(widgetText).toContain("/ralph continue reruns validation");
+  });
+
+  it("reruns post-hook validation from validation_failed on /ralph continue", async () => {
+    const workDir = makeTempDir("ralph-continue-validation-failed-");
+    fs.mkdirSync(path.join(workDir, ".ralph"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, ".ralph", "gate-config.json"),
+      JSON.stringify({
+        version: "1.0",
+        name: "invalid-gates",
+        gates: [{ name: "Injected", command: "tsc; cat /etc/passwd" }],
+      }),
+      "utf-8",
+    );
+    const skillBase = makeTempDir("ralph-continue-validation-failed-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "tdd-implement");
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 0,
+      phaseStatus: "validation_failed",
+      phaseAttempts: 1,
+      lastValidationFailure: "Previous gate configuration failure",
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await commands.get("ralph")?.("continue", makeFakeContext(branch, workDir, { idle: true }));
+
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; phaseAttempts?: number }>(branch);
+    expect(state.currentPhase).toBe("implement");
+    expect(state.phaseStatus).toBe("validation_failed");
+    expect(state.phaseAttempts).toBe(2);
+    expect(sendUserMessages).toHaveLength(1);
+    expect(String(sendUserMessages[0]?.content)).toContain("Phase validation failed");
+    expect(String(sendUserMessages[0]?.content)).toContain("Unsafe gate command");
+    expect(String(sendUserMessages[0]?.content)).not.toContain("Phase: TDD Implement");
   });
 
   it("keeps implement running and steers toward documented manual tests when no gates are configured", async () => {

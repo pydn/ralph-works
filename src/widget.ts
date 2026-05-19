@@ -4,6 +4,7 @@ import {
   IMPLEMENT_CHECKPOINT_WAIT_REASON,
   UI_WIDGET_ID,
   UI_WIDGET_MAX_LINES,
+  VALIDATION_FAILED_PHASE_STATUS,
   WAITING_FOR_USER_PHASE_STATUS,
 } from "./config";
 import type { PipelineState } from "./domain";
@@ -73,6 +74,14 @@ function truncateUiText(value: string | undefined, maxLength: number): string {
 
 /** Map persisted pipeline state to a short status label and one operator action. */
 function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; actions: string[] } {
+  if (st.phaseStatus === VALIDATION_FAILED_PHASE_STATUS) {
+    return {
+      label: "VALIDATION FAILED",
+      tone: "error",
+      actions: ["/ralph continue reruns validation", "/ralph cancel abandons this run"],
+    };
+  }
+
   if (st.phaseStatus === WAITING_FOR_USER_PHASE_STATUS) {
     if (st.waitingReason === IMPLEMENT_CHECKPOINT_WAIT_REASON) {
       return {
@@ -119,7 +128,9 @@ function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; a
   return {
     label: "RUNNING",
     tone: "accent",
-    actions: GATE_PHASES.has(st.currentPhase ?? "") ? ["Run configured gates or documented tests before completion"] : [],
+    actions: GATE_PHASES.has(st.currentPhase ?? "")
+      ? ["Run configured gates or documented tests before completion"]
+      : [],
   };
 }
 

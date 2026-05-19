@@ -11,6 +11,7 @@ export const MAX_PHASE_ATTEMPTS = 3;
 export const GATE_THRESHOLD = 3;
 export const GATE_PHASES = new Set(["implement", "review"]);
 export const WAITING_FOR_USER_PHASE_STATUS = "waiting_for_user";
+export const VALIDATION_FAILED_PHASE_STATUS = "validation_failed";
 export const IMPLEMENT_CHECKPOINT_WAIT_REASON = "implement_checkpoint";
 export const RENDER_HTML_FLAG = "--render-html";
 export const RENDER_HTML_ALIASES = new Set([RENDER_HTML_FLAG, "html", "render-html", "with-html"]);
