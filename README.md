@@ -76,28 +76,17 @@ Normal assistant turn completion does not advance the pipeline. For non-review p
 RALPH_PHASE_COMPLETE
 ```
 
-The controller then runs the phase post-hook and queues the next phase as a follow-up message. `implement` also advances at turn end after a passing `ralph_gate_check`, so a completed TDD pass can hand off to review even if the marker was omitted. By default, if earlier planning phases ran before `implement`, the controller pauses at a human review checkpoint before TDD starts; run `/ralph continue` to approve or start with `--yolo` to skip that checkpoint. The `review` phase ends through the `ralph_review_decision` tool instead of the completion marker.
+The controller then runs the phase post-hook and queues the next phase as a follow-up message. `implement` also advances at turn end after a passing configured `ralph_gate_check`, so a completed TDD pass can hand off to review even if the marker was omitted. By default, if earlier planning phases ran before `implement`, the controller pauses at a human review checkpoint before TDD starts; run `/ralph continue` to approve or start with `--yolo` to skip that checkpoint. The `review` phase ends through the `ralph_review_decision` tool instead of the completion marker.
 
 ## Quality Gates
 
-During TDD and review phases, the extension auto-runs language-aware quality gates after 3 consecutive code write/edit tool results. Manual gate checks are also available through `/ralph gate [paths...]`.
+Ralph gates are opt-in. During TDD and review phases, the extension auto-runs configured quality gates after 3 consecutive code write/edit tool results only when `.ralph/gate-config.json` exists. Manual gate checks are also available through `/ralph gate [paths...]`.
 
-When implementation gates pass, the controller can hand off from `implement` to `review` at turn end even if the assistant omitted the final completion marker. A `CRITICAL` review decision backtracks to `implement`; `LGTM` completes the pipeline.
+When configured implementation gates pass, the controller can hand off from `implement` to `review` at turn end even if the assistant omitted the final completion marker. If no gates are configured, Ralph reports that state and expects the agent to run the repository's documented test commands manually before using the normal phase completion marker. A `CRITICAL` review decision backtracks to `implement`; `LGTM` completes the pipeline.
 
-### Auto-Detection
+### Gate Configuration
 
-Gates are selected based on project type (scanned via filesystem markers):
-
-| Detected Stack                                  | Default Gates                                                       |
-| ----------------------------------------------- | ------------------------------------------------------------------- |
-| TypeScript (`tsconfig.json` + `package.json`)   | `npx tsc --noEmit`, `npx eslint . --ext .ts,.tsx`, `npx vitest run` |
-| JavaScript (`package.json` only)                | `npx eslint . --ext .js,.jsx`, `npx jest`                           |
-| Python (`pyproject.toml` or `requirements.txt`) | `ruff check .`, `ruff format --check .`, `pytest tests/`            |
-| Unknown or fresh directory                      | Non-failing setup gate that reports no supported project markers    |
-
-### Config Override
-
-Create `.ralph/gate-config.json` to override defaults:
+Create `.ralph/gate-config.json` to enable Ralph-managed gates:
 
 ```json
 {
@@ -111,7 +100,7 @@ Create `.ralph/gate-config.json` to override defaults:
 }
 ```
 
-Commands are validated against a whitelist of allowed tools and rejected if they contain shell metacharacters. Invalid configs fall back to auto-detected defaults.
+Commands are validated against a whitelist of allowed tools and rejected if they contain shell metacharacters. Invalid configs fail gate resolution and do not fall back to inferred defaults.
 
 ### Standalone Gate Check
 
@@ -120,11 +109,11 @@ Commands are validated against a whitelist of allowed tools and rejected if they
 /ralph gate src/foo.ts               # Run gates and pass supported target path(s)
 ```
 
-Target paths are appended only to direct gate commands that commonly accept file arguments: `tsc`, `eslint`, `ruff`, `flake8`, and `pylint`. The auto-detected TypeScript and JavaScript defaults currently start with `npx`, so they run project-wide unless you provide a `.ralph/gate-config.json` with direct commands or commands that already include the desired targets.
+Target paths are appended only to direct gate commands that commonly accept file arguments: `tsc`, `eslint`, `ruff`, `flake8`, and `pylint`. Commands that start with wrappers such as `npx`, `npm`, `uv`, or `node` run exactly as configured.
 
 ### Auto-Gate Trigger
 
-During `implement` and `review` phases, gates auto-run after every 3 consecutive `write` or `edit` tool results. Any other tool result resets the counter. A concurrency lock prevents duplicate execution.
+During `implement` and `review` phases, configured gates auto-run after every 3 consecutive `write` or `edit` tool results. Any other tool result resets the counter. If no `.ralph/gate-config.json` exists, the auto-gate counter resets without running inferred commands. A concurrency lock prevents duplicate execution.
 
 ## Context Clearing
 

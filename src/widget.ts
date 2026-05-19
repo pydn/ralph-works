@@ -119,7 +119,7 @@ function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; a
   return {
     label: "RUNNING",
     tone: "accent",
-    actions: GATE_PHASES.has(st.currentPhase ?? "") ? ["Run ralph_gate_check after implementation changes"] : [],
+    actions: GATE_PHASES.has(st.currentPhase ?? "") ? ["Run configured gates or documented tests before completion"] : [],
   };
 }
 

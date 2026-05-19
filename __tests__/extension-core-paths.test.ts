@@ -79,6 +79,20 @@ function makeTempDir(prefix: string): string {
   return dir;
 }
 
+function writePassingGateConfig(workDir: string): void {
+  fs.mkdirSync(path.join(workDir, ".ralph"), { recursive: true });
+  fs.writeFileSync(path.join(workDir, "pass-gate.js"), "process.exit(0);\n", "utf-8");
+  fs.writeFileSync(
+    path.join(workDir, ".ralph", "gate-config.json"),
+    JSON.stringify({
+      version: "1.0",
+      name: "test-gates",
+      gates: [{ name: "Passing Script", command: "node pass-gate.js" }],
+    }),
+    "utf-8",
+  );
+}
+
 function seedSkill(skillBase: string, skillName: string): void {
   const dir = path.join(skillBase, skillName);
   fs.mkdirSync(dir, { recursive: true });
@@ -206,6 +220,7 @@ describe("/ralph start command", () => {
 
   it("tells implement agents to call the registered gate tool instead of running a shell command", async () => {
     const workDir = makeTempDir("ralph-implement-tool-prompt-");
+    writePassingGateConfig(workDir);
     const skillBase = makeTempDir("ralph-implement-tool-prompt-skills-");
     process.env.PI_SKILL_BASE = skillBase;
     seedSkill(skillBase, "tdd-implement");
@@ -218,8 +233,10 @@ describe("/ralph start command", () => {
     await commands.get("ralph")?.("start feature-a implement", makeFakeContext(branch, workDir));
 
     expect(sendUserMessages).toHaveLength(1);
-    expect(String(sendUserMessages[0]?.content)).toContain("Call the registered `ralph_gate_check` tool");
-    expect(String(sendUserMessages[0]?.content)).toContain("Do not run `ralph_gate_check` in `bash`");
+    expect(String(sendUserMessages[0]?.content)).toContain("registered `ralph_gate_check` tool");
+    expect(String(sendUserMessages[0]?.content)).toContain("do not run `ralph_gate_check` in bash");
+    expect(String(sendUserMessages[0]?.content)).toContain(".ralph/gate-config.json");
+    expect(String(sendUserMessages[0]?.content)).toContain("Passing Script: node pass-gate.js");
   });
 
   it("persists yolo mode from the start command", async () => {
@@ -696,6 +713,7 @@ describe("extension event guards", () => {
 describe("gate tool and auto-gate paths", () => {
   it("resets the consecutive write counter after auto-gating on the threshold write", async () => {
     const workDir = makeTempDir("ralph-autogate-work-");
+    writePassingGateConfig(workDir);
     const branch: FakeEntry[] = [];
     pushState(branch, workDir, {
       phases: ["implement", "review"],
@@ -739,6 +757,7 @@ describe("gate tool and auto-gate paths", () => {
 
   it("manual ralph_gate_check returns structured results and clears the write counter", async () => {
     const workDir = makeTempDir("ralph-manual-gate-");
+    writePassingGateConfig(workDir);
     const branch: FakeEntry[] = [];
     pushState(branch, workDir, {
       phases: ["implement", "review"],
@@ -756,6 +775,7 @@ describe("gate tool and auto-gate paths", () => {
     const result = (await tools
       .get("ralph_gate_check")
       ?.execute("gate-1", { paths: ["src/file.ts", "src/file.ts;rm"] }, undefined, onUpdate, ctx)) as {
+      content?: Array<{ text?: string }>;
       details?: { allPass?: boolean };
     };
 
@@ -763,6 +783,36 @@ describe("gate tool and auto-gate paths", () => {
     expect(onUpdate).toHaveBeenCalled();
     expect(latestState<{ turnWriteCount?: number }>(branch).turnWriteCount).toBe(0);
     expect(ctx.ui.setStatus).toHaveBeenCalledWith("ralph-loop", "✅ Gates clear");
+    expect(result.content?.[0]?.text).toContain("node pass-gate.js");
+    expect(result.content?.[0]?.text).toContain(".ralph/gate-config.json");
+  });
+
+  it("manual ralph_gate_check reports no configured gates without marking implement ready", async () => {
+    const workDir = makeTempDir("ralph-manual-no-gates-");
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 0,
+      turnWriteCount: 2,
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, tools } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    const result = (await tools.get("ralph_gate_check")?.execute("gate-1", {}, undefined, vi.fn(), ctx)) as {
+      content?: Array<{ text?: string }>;
+      details?: { allPass?: boolean };
+    };
+
+    expect(result.details?.allPass).toBe(true);
+    expect(result.content?.[0]?.text).toContain("No Ralph Gates Configured");
+    expect(result.content?.[0]?.text).toContain("No configured Ralph gates were run");
+    expect(latestState<{ readyToAdvancePhase?: string; turnWriteCount?: number }>(branch).readyToAdvancePhase).toBeUndefined();
+    expect(latestState<{ readyToAdvancePhase?: string; turnWriteCount?: number }>(branch).turnWriteCount).toBe(0);
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith("ralph-loop", "No Ralph gates configured");
   });
 
   it("manual ralph_gate_check reports nonzero gate commands as failures", async () => {
@@ -1044,6 +1094,7 @@ describe("review decision and completion paths", () => {
 
   it("launches review after a passing TDD gate even when the implement marker is omitted", async () => {
     const workDir = makeTempDir("ralph-implement-gate-review-");
+    writePassingGateConfig(workDir);
     const skillBase = makeTempDir("ralph-implement-gate-review-skills-");
     process.env.PI_SKILL_BASE = skillBase;
     seedSkill(skillBase, "pr-reviewer");
@@ -1088,7 +1139,53 @@ describe("review decision and completion paths", () => {
     expect(String(sendUserMessages[0]?.content)).toContain("Phase: Ralph Review Loop");
   });
 
-  it("keeps implement running and steers toward the registered gate tool instead of pausing after TDD", async () => {
+  it("keeps implement active and reports the gate-resolution error when configured gates are invalid", async () => {
+    const workDir = makeTempDir("ralph-implement-invalid-gate-");
+    fs.mkdirSync(path.join(workDir, ".ralph"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, ".ralph", "gate-config.json"),
+      JSON.stringify({
+        version: "1.0",
+        name: "invalid-gates",
+        gates: [{ name: "Injected", command: "tsc; cat /etc/passwd" }],
+      }),
+      "utf-8",
+    );
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 0,
+      phaseStatus: "executing",
+      phaseAttempts: 0,
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: `Implementation complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+          },
+        ],
+      },
+      makeFakeContext(branch, workDir, { idle: true }),
+    );
+
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; phaseAttempts?: number }>(branch);
+    expect(state.currentPhase).toBe("implement");
+    expect(state.phaseStatus).toBe("executing");
+    expect(state.phaseAttempts).toBe(1);
+    expect(sendUserMessages).toHaveLength(1);
+    expect(String(sendUserMessages[0]?.content)).toContain("Gate Configuration");
+    expect(String(sendUserMessages[0]?.content)).toContain("Unsafe gate command");
+  });
+
+  it("keeps implement running and steers toward documented manual tests when no gates are configured", async () => {
     const workDir = makeTempDir("ralph-implement-missing-gate-");
     const branch: FakeEntry[] = [];
     pushState(branch, workDir, {
@@ -1121,7 +1218,8 @@ describe("review decision and completion paths", () => {
     expect(state.phaseStatus).toBe("executing");
     expect(sendUserMessages).toHaveLength(1);
     expect(sendUserMessages[0]?.options?.deliverAs).toBe("steer");
-    expect(String(sendUserMessages[0]?.content)).toContain("Call the registered `ralph_gate_check` tool");
+    expect(String(sendUserMessages[0]?.content)).toContain("Ralph gates are not configured");
+    expect(String(sendUserMessages[0]?.content)).toContain("documented test commands manually");
     expect(ctx.ui.setWorkingMessage).not.toHaveBeenCalledWith("Waiting for user input");
   });
 

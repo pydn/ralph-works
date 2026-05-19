@@ -478,7 +478,7 @@ describe("next-phase launch", () => {
       expect.arrayContaining([
         expect.stringContaining("Ralph · RUNNING"),
         expect.stringContaining("RUNNING"),
-        expect.stringContaining("Run ralph_gate_check"),
+        expect.stringContaining("Run configured gates"),
       ]),
       { placement: "belowEditor" },
     );
@@ -539,9 +539,7 @@ describe("next-phase launch", () => {
     expect(styled).toEqual(expect.arrayContaining([{ tone: "success", text: "✓" }]));
     expect(styled).toEqual(expect.arrayContaining([{ tone: "accent", text: "▶" }]));
     expect(styled).toEqual(expect.arrayContaining([{ tone: "muted", text: "·" }]));
-    expect(styled).toEqual(
-      expect.arrayContaining([{ tone: "mdLink", text: "Run ralph_gate_check after implementation changes" }]),
-    );
+    expect(styled.some(({ tone, text }) => tone === "mdLink" && text.includes("Run configured gates"))).toBe(true);
     expect(styled.some(({ tone, text }) => tone === "dim" && text.includes("Review iterations: 1"))).toBe(true);
     expect(widgetLines.length).toBeLessThanOrEqual(4);
   });

@@ -29,7 +29,7 @@ import {
   UI_WIDGET_ID,
   WAITING_FOR_USER_PHASE_STATUS,
 } from "./config";
-import type { ModelThinkingLevel, PipelineState, RalphModelPlan, RalphModelSelector } from "./domain";
+import type { GateResult, ModelThinkingLevel, PipelineState, RalphModelPlan, RalphModelSelector } from "./domain";
 import { formatGateResults, runLintGates } from "./gates";
 import {
   sendDedupedPipelineUserMessage,
@@ -72,6 +72,8 @@ import {
   resolvePhaseCompletion,
   resolveSessionStartAction,
   hasPhaseCompletionMarker,
+  resolveGateConfiguration,
+  PHASE_COMPLETE_MARKER,
 } from "./stateMachine";
 import {
   wrapSteerMessage,
@@ -724,6 +726,21 @@ async function handleReviewDecision(
   }
 }
 
+function hasRunConfiguredGates(results: GateResult[]): boolean {
+  return results.some((result) => Boolean(result.command) && !result.skipped);
+}
+
+function buildImplementGateReminder(workDir: string): string {
+  const resolution = resolveGateConfiguration(workDir);
+  if (resolution.errors.length > 0) {
+    return `Ralph gate configuration is invalid at ${resolution.source}. Fix the gate config or run the repository's documented test commands manually before completing implementation. Errors:\n${resolution.errors.map((error) => `- ${error}`).join("\n")}`;
+  }
+  if (resolution.gates.length > 0) {
+    return `Implementation is still in the TDD phase. Configured Ralph gates are available; call the registered \`ralph_gate_check\` tool now if implementation is complete. Do not run \`ralph_gate_check\` in \`bash\`; it is a Pi extension tool, not a shell command. If the tool is not visible, continue with documented project commands and let the completion post-hook or operator run \`/ralph gate\`.`;
+  }
+  return `Implementation is still in the TDD phase. Ralph gates are not configured for this workDir, so do not assume default lint/typecheck/test commands. Run the repository's documented test commands manually, then end the final assistant message with \`${PHASE_COMPLETE_MARKER}\` when implementation is complete.`;
+}
+
 /**
  * Run post-hook validation after an explicit phase-complete signal.
  * Failed validation keeps the same phase active and sends remediation guidance.
@@ -768,7 +785,7 @@ async function handlePhaseCompletion(
     );
     const retryInstruction =
       pk === "implement"
-        ? "Fix failures and call the registered `ralph_gate_check` tool after; do not run it in `bash`."
+        ? `Fix implementation validation failures. ${buildImplementGateReminder(state.workDir)}`
         : "Fix the expected phase artifacts under the persisted workDir, then retry phase completion.";
     sendPipelineUserMessage(pi, ctx, `⛔ Phase validation failed:\n\n${failureDetails}\n\n${retryInstruction}`, {
       deliverAs: "steer",
@@ -849,7 +866,7 @@ async function handleAgentEnd(
       pi,
       ctx,
       state,
-      "Implementation is still in the TDD phase. Call the registered `ralph_gate_check` tool now if implementation is complete. Do not run `ralph_gate_check` in `bash`; it is a Pi extension tool, not a shell command. If work remains, continue the Red-Green-Refactor cycle and call the tool when ready.",
+      buildImplementGateReminder(state.workDir),
       { deliverAs: "steer", dedupeKey: `implement-gate:${idx}` },
     );
     return;
@@ -974,12 +991,18 @@ ${phasePrompt}`,
       const newCount = currentCount + 1;
       if (newCount >= GATE_THRESHOLD) {
         // Passing gates mark implement as ready; agent_end performs the actual phase completion.
-        saveState(pi, { ...state, turnWriteCount: 0 });
+        const gateResolution = resolveGateConfiguration(state.workDir);
+        saveState(pi, {
+          ...state,
+          turnWriteCount: 0,
+          readyToAdvancePhase: gateResolution.configured ? state.readyToAdvancePhase : undefined,
+        });
+        if (!gateResolution.configured) return;
         ctx.ui.notify("🚧 Auto-gate: running lint checks...", "info");
         const results = runLintGates(state.workDir);
         if (results.every((r) => r.pass)) {
           ctx.ui.notify("✅ All gates passed", "info");
-          if (state.currentPhase === "implement")
+          if (state.currentPhase === "implement" && hasRunConfiguredGates(results))
             saveState(pi, { ...state, turnWriteCount: 0, readyToAdvancePhase: "implement" });
         } else {
           ctx.ui.notify(
@@ -1045,34 +1068,57 @@ ${phasePrompt}`,
   pi.registerTool({
     name: "ralph_gate_check",
     label: "Ralph Gate Check",
-    description: "Run quality gates (tsc --noEmit, vitest run). Use after every implementation step.",
-    promptSnippet: "Run lint gates — use after implementation/remediation",
+    description: "Run configured Ralph quality gates from .ralph/gate-config.json.",
+    promptSnippet: "Run configured Ralph gates after implementation/remediation",
     parameters: Type.Object({ paths: Type.Optional(Type.Array(Type.String())) }),
     async execute(_id, params, _sig, onUpdate, ctx) {
       const state = getState(ctx);
       if (!state) return { content: [{ type: "text", text: "No active pipeline." }], details: {} };
       // Pi's callback type is generic, but this tool only streams text updates.
       const update = onUpdate as undefined | ((value: { content: Array<{ type: "text"; text: string }> }) => void);
-      update?.({ content: [{ type: "text", text: "🚧 Running lint gates..." }] });
+      update?.({ content: [{ type: "text", text: "🚧 Running configured Ralph gates..." }] });
       const results = runLintGates(state.workDir, params.paths);
       const allPass = results.every((r) => r.pass);
+      const ranConfiguredGates = hasRunConfiguredGates(results);
+      const noConfiguredGates = results.every((r) => r.skipped);
       saveState(pi, {
         ...state,
         turnWriteCount: 0,
-        readyToAdvancePhase: allPass && state.currentPhase === "implement" ? "implement" : undefined,
+        readyToAdvancePhase:
+          allPass && ranConfiguredGates && state.currentPhase === "implement" ? "implement" : undefined,
       });
       const failed = results.filter((r) => !r.pass);
+      const heading = noConfiguredGates
+        ? "No Ralph Gates Configured"
+        : allPass
+          ? "✅ All Gates Passed"
+          : "❌ Gate Failures";
       const report = [
-        `## ${allPass ? "✅ All Gates Passed" : "❌ Gate Failures"}`,
+        `## ${heading}`,
         "",
-        `| Gate | Status |`,
-        `|------|--------|`,
-        ...results.map((r) => `| ${r.name} | ${r.pass ? "✅ PASS" : "❌ FAIL"} |`),
+        `| Gate | Status | Command | Source |`,
+        `|------|--------|---------|--------|`,
+        ...results.map((r) => `| ${r.name} | ${r.pass ? "✅ PASS" : "❌ FAIL"} | ${r.command ?? ""} | ${r.source ?? ""} |`),
         "",
       ];
-      for (const f of failed) report.push(`\`${f.output.slice(0, 3000)}\``);
-      report.push(allPass ? "All gates passed. Proceed to next phase." : "Fix failures and re-run ralph_gate_check.");
-      ctx.ui.setStatus(UI_WIDGET_ID, allPass ? `✅ Gates clear` : `❌ Gates: ${failed.map((f) => f.name).join(", ")}`);
+      for (const result of results.filter((r) => !r.pass || r.skipped)) {
+        report.push(`\`${result.output.slice(0, 3000)}\``);
+      }
+      report.push(
+        noConfiguredGates
+          ? "No configured Ralph gates were run. Run the repository's documented test commands manually."
+          : allPass
+            ? "All configured gates passed. Proceed to next phase."
+            : "Fix failures and re-run ralph_gate_check.",
+      );
+      ctx.ui.setStatus(
+        UI_WIDGET_ID,
+        noConfiguredGates
+          ? "No Ralph gates configured"
+          : allPass
+            ? `✅ Gates clear`
+            : `❌ Gates: ${failed.map((f) => f.name).join(", ")}`,
+      );
       return { content: [{ type: "text", text: report.join("\n") }], details: { results, allPass } };
     },
   });
@@ -1399,8 +1445,11 @@ ${phasePrompt}`,
         case "gate": {
           const state = getState(ctx) || { workDir: ctx.cwd };
           const results = runLintGates(state.workDir, parts.slice(1));
+          const noConfiguredGates = results.every((r) => r.skipped);
           ctx.ui.notify(
-            results.every((r) => r.pass)
+            noConfiguredGates
+              ? "No Ralph gates configured"
+              : results.every((r) => r.pass)
               ? "✅ All gates passed"
               : `❌ Failed: ${results
                   .filter((r) => !r.pass)

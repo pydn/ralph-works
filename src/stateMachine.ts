@@ -223,6 +223,7 @@ export interface GateDefinition {
   name: string;
   command: string;
   timeoutMs: number;
+  source?: string;
 }
 
 export interface ProjectStack {
@@ -230,6 +231,13 @@ export interface ProjectStack {
   testRunner: string; // "vitest" | "jest" | "pytest" | "unittest" | "mocha" | "unknown"
   lintTool: string; // "ruff" | "eslint" | "flake8" | "pylint" | "unknown"
   formatTool: string; // "ruff" | "prettier" | "black" | "isort" | "unknown"
+}
+
+export interface GateResolution {
+  gates: GateDefinition[];
+  configured: boolean;
+  source?: string;
+  errors: string[];
 }
 
 // ── Gate Detection Functions ─────────────────────────────────
@@ -247,6 +255,10 @@ function getDefaultFs(): FsLike {
     _defaultFs = require("fs") as FsLike;
   }
   return _defaultFs;
+}
+
+function getGateConfigPath(workDir: string): string {
+  return workDir.endsWith("/") ? `${workDir}.ralph/gate-config.json` : `${workDir}/.ralph/gate-config.json`;
 }
 
 /**
@@ -303,7 +315,7 @@ export function detectProjectStack(workDir: string, _fs?: FsLike): ProjectStack 
  */
 export function loadGateConfig(workDir: string, _fs?: FsLike): GateConfig | null {
   const fs = _fs ?? getDefaultFs();
-  const configPath = workDir.endsWith("/") ? `${workDir}.ralph/gate-config.json` : `${workDir}/.ralph/gate-config.json`;
+  const configPath = getGateConfigPath(workDir);
 
   if (!fs.existsSync(configPath)) return null;
 
@@ -330,75 +342,68 @@ export function loadGateConfig(workDir: string, _fs?: FsLike): GateConfig | null
 }
 
 /**
- * Build gate definition list from config override or auto-detection.
+ * Resolve gate definitions from explicit Ralph configuration only.
  *
- * Resolution: (1) valid config → use config gates
- *             (2) no config / invalid → auto-detect stack → default gates
- *
- * Validates each command's first token against GATE_COMMAND_WHITELIST.
+ * Missing config is a valid "no gates configured" state. Invalid explicit
+ * config is reported as a gate-resolution error and never falls back to
+ * inferred project defaults.
  */
-export function resolveGates(workDir: string, stack?: ProjectStack | FsLike, _fs?: FsLike): GateDefinition[] {
+export function resolveGateConfiguration(workDir: string, _fs?: FsLike): GateResolution {
   const fs = _fs ?? getDefaultFs();
-  const projectStack =
-    typeof stack === "object" && stack !== null && "language" in stack ? (stack as ProjectStack) : undefined;
+  const source = getGateConfigPath(workDir);
+
+  if (!fs.existsSync(source)) return { gates: [], configured: false, errors: [] };
 
   const config = loadGateConfig(workDir, fs);
+  if (!config) {
+    return {
+      gates: [],
+      configured: true,
+      source,
+      errors: [
+        `Invalid gate configuration at ${source}. Expected version "1.0", a string name, and a non-empty gates array with name and command fields.`,
+      ],
+    };
+  }
 
-  if (config) {
-    // Validate commands: whitelist + shell metacharacter check
-    for (const gate of config.gates) {
-      const firstToken = gate.command.trim().split(/\s+/)[0];
-      const basename = firstToken.split(/[\\/]/).pop() ?? firstToken;
-      if (!GATE_COMMAND_WHITELIST.has(basename)) {
-        return buildDefaultGates(projectStack ?? detectProjectStack(workDir, fs));
-      }
-      // Block shell metacharacter injection (; | & ` $ () etc.)
-      if (!isValidGateCommand(gate.command)) {
-        return buildDefaultGates(projectStack ?? detectProjectStack(workDir, fs));
-      }
+  const errors: string[] = [];
+  for (const gate of config.gates) {
+    if (!isValidGateCommand(gate.command)) {
+      errors.push(`Unsafe gate command for "${gate.name}" in ${source}: shell metacharacters are not allowed.`);
+      continue;
     }
-    // All commands valid — return from config
-    return config.gates.map((g) => ({
+    const firstToken = gate.command.trim().split(/\s+/)[0];
+    const basename = firstToken.split(/[\\/]/).pop() ?? firstToken;
+    if (!GATE_COMMAND_WHITELIST.has(basename)) {
+      errors.push(`Unsupported gate command "${basename}" for "${gate.name}" in ${source}.`);
+    }
+  }
+
+  if (errors.length > 0) return { gates: [], configured: true, source, errors };
+
+  return {
+    configured: true,
+    source,
+    errors: [],
+    gates: config.gates.map((g) => ({
       name: g.name,
       command: g.command,
       timeoutMs: g.timeoutMs ?? getDefaultTimeout(g.name),
-    }));
-  }
-
-  // No valid config — auto-detect and build defaults
-  const detected = projectStack ?? detectProjectStack(workDir, fs);
-  return buildDefaultGates(detected);
+      source,
+    })),
+  };
 }
 
-/** Build default gate list for a detected project stack */
-function buildDefaultGates(stack: ProjectStack): GateDefinition[] {
-  switch (stack.language) {
-    case "typescript":
-      return [
-        { name: "Type Check", command: "npx tsc --noEmit", timeoutMs: 60000 },
-        { name: "Lint", command: "npx eslint . --ext .ts,.tsx", timeoutMs: 60000 },
-        { name: "Test", command: "npx vitest run", timeoutMs: 300000 },
-      ];
-    case "javascript":
-      return [
-        { name: "Lint", command: "npx eslint . --ext .js,.jsx", timeoutMs: 60000 },
-        { name: "Test", command: "npx jest", timeoutMs: 300000 },
-      ];
-    case "python":
-      return [
-        { name: "Lint", command: "ruff check .", timeoutMs: 60000 },
-        { name: "Format", command: "ruff format --check .", timeoutMs: 30000 },
-        { name: "Test", command: "pytest tests/", timeoutMs: 300000 },
-      ];
-    default:
-      return [
-        {
-          name: "Skip: no project markers detected",
-          command: `node -e "process.stdout.write('No gate configuration or supported project markers detected in this directory; skipping gates.\\n')"`,
-          timeoutMs: 10000,
-        },
-      ];
-  }
+/**
+ * Build gate definition list from explicit config.
+ *
+ * The optional stack argument is retained for API compatibility with older
+ * tests/callers, but stack detection no longer selects default gates.
+ */
+export function resolveGates(workDir: string, stack?: ProjectStack | FsLike, _fs?: FsLike): GateDefinition[] {
+  const fs =
+    typeof stack === "object" && stack !== null && "existsSync" in stack ? (stack as FsLike) : (_fs ?? getDefaultFs());
+  return resolveGateConfiguration(workDir, fs).gates;
 }
 
 /** Get default timeout based on gate type name */

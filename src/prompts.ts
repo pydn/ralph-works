@@ -4,7 +4,7 @@ import { PROMPT_FILE_EXTENSIONS, RENDER_PHASE } from "./config";
 import type { PipelineState } from "./domain";
 import { parseRalphFlags } from "./modelPlan";
 import { PHASE_CONFIGS } from "./phaseConfig";
-import { PHASE_COMPLETE_MARKER, PHASE_ORDER, sanitizeFeatureName } from "./stateMachine";
+import { PHASE_COMPLETE_MARKER, PHASE_ORDER, resolveGateConfiguration, sanitizeFeatureName } from "./stateMachine";
 import { formatExpectedArtifactPaths, getExpectedArtifactPaths } from "./workdir";
 
 /**
@@ -161,19 +161,27 @@ Requirements: Mermaid diagrams rendered, severity badges styled, responsive typo
 Use atomic write pattern: write to ${sanitized}-final.html.tmp then rename to final path.`;
       break;
     }
-    case "implement":
+    case "implement": {
+      const gateResolution = resolveGateConfiguration(state.workDir);
+      const gateInstructions =
+        gateResolution.errors.length > 0
+          ? `Ralph gate configuration is present but invalid at ${gateResolution.source}. Fix the configuration or rely on documented project commands before completing implementation.\nErrors:\n${gateResolution.errors.map((e) => `- ${e}`).join("\n")}`
+          : gateResolution.gates.length > 0
+            ? `Configured Ralph gates are available through the registered \`ralph_gate_check\` tool.\nConfig source: ${gateResolution.source}\nCommands:\n${gateResolution.gates.map((g) => `- ${g.name}: ${g.command}`).join("\n")}\nIf the registered tool is not visible in your tool list, do not run \`ralph_gate_check\` in bash; continue with documented project commands and let the completion post-hook or operator run \`/ralph gate\`.`
+            : "No Ralph gates are configured for this workDir. Run the project's documented test commands manually during Red-Green-Refactor, and do not assume universal lint/typecheck/test defaults exist.";
       phaseContext = `## Task
 Implement via Red-Green-Refactor.
 Read spec: docs/specs/${state.feature}-final.html (HTML) or docs/specs/${state.feature}.md (markdown fallback)
-Call the registered \`ralph_gate_check\` tool after implementation. Do not run \`ralph_gate_check\` in \`bash\`; it is a Pi extension tool, not a shell command.`;
+${gateInstructions}`;
       break;
+    }
     case "review":
       phaseContext = `## Task\nMulti-pass PR review. Call \`ralph_review_decision\` with status LGTM or CRITICAL.`;
       break;
   }
   const rules = [
     phaseKey === "implement"
-      ? "- After implementation steps, call the registered `ralph_gate_check` tool. Do not run `ralph_gate_check` in `bash`."
+      ? "- Use configured Ralph gates only when `.ralph/gate-config.json` exists. Otherwise run the repository's documented test commands manually and complete with the phase marker."
       : "",
     phaseKey === "review"
       ? "- End the review by calling `ralph_review_decision` with status LGTM or CRITICAL."
