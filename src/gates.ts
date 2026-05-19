@@ -1,6 +1,6 @@
 import * as child from "node:child_process";
 import type { GateResult } from "./domain";
-import { isValidTargetPath, resolveGates, sanitizeErrorOutput } from "./stateMachine";
+import { isValidTargetPath, resolveGateConfiguration, sanitizeErrorOutput } from "./stateMachine";
 
 // Prevent overlapping manual and auto-gate executions inside the same extension process.
 let isGating = false;
@@ -33,7 +33,30 @@ export function runLintGates(wd: string, targetPaths?: string[]): GateResult[] {
   isGating = true;
 
   try {
-    const gates = resolveGates(wd);
+    const resolution = resolveGateConfiguration(wd);
+    if (resolution.errors.length > 0) {
+      return [
+        {
+          name: "Gate Configuration",
+          pass: false,
+          output: resolution.errors.join("\n"),
+          source: resolution.source,
+        },
+      ];
+    }
+    if (resolution.gates.length === 0) {
+      return [
+        {
+          name: "No configured gates",
+          pass: true,
+          skipped: true,
+          output:
+            "No .ralph/gate-config.json found. Ralph gates are opt-in; run the project's documented test commands manually.",
+        },
+      ];
+    }
+
+    const gates = resolution.gates;
     const results: GateResult[] = [];
 
     for (const gate of gates) {
@@ -51,7 +74,13 @@ export function runLintGates(wd: string, targetPaths?: string[]): GateResult[] {
 
       const timeout = gate.timeoutMs || 60_000;
       const rc = runShell(cmd, wd, timeout);
-      results.push({ name: gate.name, pass: rc.ok, output: sanitizeErrorOutput(rc.output || "") });
+      results.push({
+        name: gate.name,
+        pass: rc.ok,
+        output: sanitizeErrorOutput(rc.output || ""),
+        command: cmd,
+        source: gate.source,
+      });
     }
 
     return results;
@@ -62,6 +91,12 @@ export function runLintGates(wd: string, targetPaths?: string[]): GateResult[] {
 
 /** Render gate results into a compact Markdown report for steer/tool output. */
 export function formatGateResults(results: GateResult[]): string {
-  const rows = results.map((r) => `| ${r.name} | ${r.pass ? "✅ PASS" : "❌ FAIL"} |`);
-  return `## Lint Gate Results\n\n| Gate | Status |\n|------|--------|\n${rows.join("\n")}\n\n${results.map((r) => (r.pass ? "" : `\`\`\`\n${r.name} output:\n${r.output}\n\`\`\``)).join("\n\n")}`;
+  const rows = results.map(
+    (r) => `| ${r.name} | ${r.pass ? "✅ PASS" : "❌ FAIL"} | ${r.command ?? ""} | ${r.source ?? ""} |`,
+  );
+  const details = results
+    .map((r) => (r.pass && !r.skipped ? "" : `\`\`\`\n${r.name} output:\n${r.output}\n\`\`\``))
+    .filter(Boolean)
+    .join("\n\n");
+  return `## Ralph Gate Results\n\n| Gate | Status | Command | Source |\n|------|--------|---------|--------|\n${rows.join("\n")}\n\n${details}`;
 }

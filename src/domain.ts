@@ -6,6 +6,9 @@ export interface GateResult {
   name: string;
   pass: boolean;
   output: string;
+  command?: string;
+  source?: string;
+  skipped?: boolean;
 }
 
 /**

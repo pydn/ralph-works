@@ -61,7 +61,7 @@ Phase detect + advance → shortcut? → send steer message → all done? → ma
 | `getState(ctx)`              | Walks full branch chain root-to-tip, returns **last** custom entry match (not first)                       |
 | `saveState(pi, state)`       | `pi.appendEntry(CUSTOM_TYPE, state)` — appends to session JSONL                                            |
 | `buildPipelinePrompt(state)` | Constructs master prompt with phase instructions, anti-shortcut rules, quality gates                       |
-| `runLintGates(workDir)`      | Runs tsc --noEmit + vitest run; returns `GateResult[]`                                                     |
+| `runLintGates(workDir)`      | Runs configured `.ralph/gate-config.json` commands; returns `GateResult[]`                                 |
 | `detectCurrentPhase(ctx)`    | Regex on last 20 assistant messages to infer current phase from conversation text                          |
 | `refreshWidget(ctx, state)`  | Updates TUI widget with phase progress (defensive defaults for empty phases)                               |
 
@@ -81,7 +81,7 @@ Phase detect + advance → shortcut? → send steer message → all done? → ma
 
 #### Registered Tool: `ralph_gate_check`
 
-- Runs tsc --noEmit + vitest run
+- Runs configured gates from `.ralph/gate-config.json`; reports no configured gates when the file is absent
 - Accepts optional `paths[]` parameter (defaults to entire project)
 - Resets auto-gate counter on explicit check
 
@@ -91,7 +91,7 @@ During implement/review phases, the extension tracks write operations:
 
 - Counts only `write` and `edit` tool calls (not `bash`, `read`, etc.)
 - Resets counter on any non-write tool call
-- Triggers after 3 consecutive writes → runs lint gates automatically
+- Triggers after 3 consecutive writes only when gates are explicitly configured
 
 ## Critical Development Rules
 

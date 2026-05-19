@@ -9,6 +9,7 @@ import {
   sanitizeFeatureName,
   detectProjectStack,
   loadGateConfig,
+  resolveGateConfiguration,
   resolveGates,
   GATE_COMMAND_WHITELIST,
   isValidGateCommand,
@@ -479,31 +480,49 @@ describe("resolveGates", () => {
     const gates = resolveGates("/tmp/test-project", undefined, fs);
     expect(gates.length).toBe(3);
     expect(gates[0].name).toBe("type-check");
+    expect(gates[0].source).toBe("/tmp/test-project/.ralph/gate-config.json");
   });
 
-  it("returns tsc+eslint+vitest defaults for TypeScript stack (no config)", () => {
+  it("does not infer JavaScript defaults for an ESM package with only a documented npm test script", () => {
+    const packageOnlyConfig = JSON.stringify({
+      type: "module",
+      scripts: {
+        test: "node --import jiti/register tests/danger-gate.test.ts",
+      },
+      devDependencies: {
+        jiti: "^2.6.1",
+      },
+    });
+    const fs = {
+      existsSync: (p: string) => p === "/tmp/test-project/package.json",
+      readFileSync: (p: string) => {
+        if (p === "/tmp/test-project/package.json") return packageOnlyConfig;
+        throw new Error(`unexpected read: ${p}`);
+      },
+    };
+    const gates = resolveGates("/tmp/test-project", undefined, fs);
+    expect(gates).toEqual([]);
+  });
+
+  it("returns no gates for TypeScript stack when no explicit config exists", () => {
     const fs = makeFsMock(new Set(["/tmp/test-project/tsconfig.json", "/tmp/test-project/package.json"]));
     const gates = resolveGates("/tmp/test-project", undefined, fs);
-    expect(gates.length).toBeGreaterThanOrEqual(2);
-    expect(gates.some((g) => g.name.toLowerCase().includes("tsc") || g.command.includes("tsc"))).toBe(true);
+    expect(gates).toEqual([]);
   });
 
-  it("returns ruff+ruff+pytest defaults for Python stack (no config)", () => {
+  it("returns no gates for Python stack when no explicit config exists", () => {
     const fs = makeFsMock(new Set(["/tmp/test-project/pyproject.toml"]));
     const gates = resolveGates("/tmp/test-project", undefined, fs);
-    expect(gates.length).toBeGreaterThanOrEqual(2);
-    expect(gates.some((g) => g.command.includes("ruff") || g.command.includes("pytest"))).toBe(true);
+    expect(gates).toEqual([]);
   });
 
-  it("returns a non-failing setup gate for a fresh directory with no project markers", () => {
+  it("returns no gates for a fresh directory with no explicit config", () => {
     const fs = makeFsMock(new Set());
     const gates = resolveGates("/tmp/test-project", undefined, fs);
-    expect(gates).toHaveLength(1);
-    expect(gates[0]?.name).toContain("no project markers detected");
-    expect(gates[0]?.command).toContain("node -e");
+    expect(gates).toEqual([]);
   });
 
-  it("falls back to auto-detect when config has non-whitelisted command", () => {
+  it("reports a gate-resolution error when config has non-whitelisted command", () => {
     const badConfig = JSON.stringify({
       version: "1.0",
       name: "evil-stack",
@@ -513,8 +532,9 @@ describe("resolveGates", () => {
       existsSync: (p: string) => p.includes("gate-config") || p.endsWith("tsconfig.json") || p.endsWith("package.json"),
       readFileSync: () => badConfig,
     };
-    const gates = resolveGates("/tmp/test-project", undefined, fs);
-    expect(gates.some((g) => g.command === "rm -rf /")).toBe(false);
+    const resolution = resolveGateConfiguration("/tmp/test-project", fs);
+    expect(resolution.gates).toEqual([]);
+    expect(resolution.errors[0]).toContain('Unsupported gate command "rm"');
   });
 
   it("accepts whitelisted compound command (uv run ruff)", () => {
@@ -566,12 +586,12 @@ describe("gate resolution idempotency", () => {
     expect(gates1.map((g) => g.command)).toEqual(gates2.map((g) => g.command));
   });
 
-  it("returns same defaults for unknown stack (fallback consistency)", () => {
+  it("returns consistent empty gate lists for unknown unconfigured stacks", () => {
     const fs = makeFsMock(new Set());
     const gates1 = resolveGates("/tmp/test-project", undefined, fs);
     const gates2 = resolveGates("/tmp/test-project", undefined, fs);
     expect(gates1).toEqual(gates2);
-    expect(gates1[0]?.name).toContain("no project markers detected");
+    expect(gates1).toEqual([]);
   });
 });
 
@@ -647,7 +667,7 @@ describe("isValidTargetPath", () => {
 });
 
 describe("resolveGates rejects shell injection in config", () => {
-  it("falls back to defaults when config has semicolon injection", () => {
+  it("reports an error without falling back to defaults when config has semicolon injection", () => {
     const injectedConfig = JSON.stringify({
       version: "1.0",
       name: "injected",
@@ -657,10 +677,9 @@ describe("resolveGates rejects shell injection in config", () => {
       existsSync: (p: string) => p.includes("gate-config") || p.endsWith("tsconfig.json") || p.endsWith("package.json"),
       readFileSync: () => injectedConfig,
     };
-    const gates = resolveGates("/tmp/test-project", undefined, fs);
-    // Should have fallen back to TS defaults, not used the injected command
-    expect(gates.some((g) => g.command.includes(";"))).toBe(false);
-    expect(gates.some((g) => g.command.includes("tsc") || g.name.toLowerCase().includes("type"))).toBe(true);
+    const resolution = resolveGateConfiguration("/tmp/test-project", fs);
+    expect(resolution.gates).toEqual([]);
+    expect(resolution.errors[0]).toContain("Unsafe gate command");
   });
 });
 
