@@ -31,6 +31,7 @@ function shouldCoalesceSteer(state: PipelineState, steerKey: string, now = Date.
  */
 function markPendingSteer(pi: ExtensionAPI, ctx: ExtensionContext, state: PipelineState, steerKey: string): boolean {
   const latest = getState(ctx) ?? state;
+  if (latest.pipelineStatus !== "running") return false;
   if (shouldCoalesceSteer(latest, steerKey)) {
     ctx.ui.notify("Skipped duplicate pending Ralph phase steer.", "info");
     return false;
@@ -50,8 +51,16 @@ function isContextIdle(ctx: ExtensionContext): boolean {
   return typeof maybeCtx.isIdle === "function" ? maybeCtx.isIdle() : false;
 }
 
+/** Ralph-origin messages should not launch new work after the pipeline is paused/cancelled/failed. */
+function canDeliverPipelineMessage(ctx: ExtensionContext): boolean {
+  const latest = getState(ctx);
+  return Boolean(latest && latest.pipelineStatus === "running");
+}
+
 /** Retry follow-up delivery briefly when Pi is still processing the current turn. */
 function sendUserMessageWhenIdle(pi: ExtensionAPI, ctx: ExtensionContext, payload: string, attempt = 0): void {
+  if (!canDeliverPipelineMessage(ctx)) return;
+
   if (!isContextIdle(ctx)) {
     if (attempt < DEFERRED_FOLLOW_UP_MAX_ATTEMPTS) {
       setTimeout(() => sendUserMessageWhenIdle(pi, ctx, payload, attempt + 1), DEFERRED_FOLLOW_UP_RETRY_MS);
@@ -78,6 +87,7 @@ export function sendPipelineUserMessage(
 ): void {
   const normalized = text.trim();
   if (!normalized) return;
+  if (!canDeliverPipelineMessage(ctx)) return;
 
   const deliverAs = options?.deliverAs;
   const payload =

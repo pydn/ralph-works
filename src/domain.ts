@@ -104,6 +104,8 @@ export interface PipelineState {
   pendingSteerKey?: string;
   pendingSteerSentAt?: number;
   waitingReason?: string;
+  /** Original phaseStatus captured when `/ralph pause` records pipelineStatus: paused. */
+  pausedFromPhaseStatus?: string;
   yoloMode?: boolean;
   /** Set after the operator approves moving from planning into implementation. */
   implementCheckpointApproved?: boolean;
