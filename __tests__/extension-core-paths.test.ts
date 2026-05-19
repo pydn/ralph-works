@@ -708,6 +708,113 @@ describe("extension event guards", () => {
     expect(state.pendingSteerSentAt).toBeUndefined();
     expect(state.turnWriteCount).toBe(0);
   });
+
+  it("pauses without overwriting phase status, clears pending steer metadata, and aborts when available", async () => {
+    const workDir = makeTempDir("ralph-pause-hard-");
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      currentPhase: "implement",
+      currentPhaseIndex: 3,
+      phaseStatus: "executing",
+      pendingSteerKey: "implement-gate:3",
+      pendingSteerSentAt: Date.now(),
+      readyToAdvancePhase: "implement",
+      turnWriteCount: 2,
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir) as ReturnType<typeof makeFakeContext> & {
+      abort: ReturnType<typeof vi.fn>;
+      signal: AbortSignal;
+    };
+    ctx.abort = vi.fn();
+    ctx.signal = new AbortController().signal;
+
+    await commands.get("ralph")?.("pause", ctx);
+
+    const state = latestState<{
+      pipelineStatus?: string;
+      phaseStatus?: string;
+      pausedFromPhaseStatus?: string;
+      pendingSteerKey?: string;
+      pendingSteerSentAt?: number;
+      readyToAdvancePhase?: string;
+      turnWriteCount?: number;
+    }>(branch);
+    expect(state.pipelineStatus).toBe("paused");
+    expect(state.phaseStatus).toBe("executing");
+    expect(state.pausedFromPhaseStatus).toBe("executing");
+    expect(state.pendingSteerKey).toBeUndefined();
+    expect(state.pendingSteerSentAt).toBeUndefined();
+    expect(state.readyToAdvancePhase).toBeUndefined();
+    expect(state.turnWriteCount).toBe(0);
+    expect(ctx.abort).toHaveBeenCalledTimes(1);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("abort requested"), "warning");
+  });
+
+  it("states soft-pause limitations when no abort API is available", async () => {
+    const workDir = makeTempDir("ralph-pause-soft-");
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      currentPhase: "implement",
+      currentPhaseIndex: 3,
+      phaseStatus: "executing",
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await commands.get("ralph")?.("pause", ctx);
+
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("current assistant turn may continue"),
+      "warning",
+    );
+  });
+
+  it("resumes a paused waiting checkpoint without relaunching the phase", async () => {
+    const workDir = makeTempDir("ralph-resume-paused-waiting-");
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["spec", "implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 1,
+      phaseStatus: "waiting_for_user",
+      pausedFromPhaseStatus: "waiting_for_user",
+      waitingReason: "implement_checkpoint",
+      pipelineStatus: "paused",
+      pendingSteerKey: "phase-transition:1:implement",
+      pendingSteerSentAt: Date.now(),
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, commands, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir);
+    await commands.get("ralph")?.("resume", ctx);
+
+    const state = latestState<{
+      pipelineStatus?: string;
+      phaseStatus?: string;
+      pausedFromPhaseStatus?: string;
+      waitingReason?: string;
+      pendingSteerKey?: string;
+      pendingSteerSentAt?: number;
+    }>(branch);
+    expect(state.pipelineStatus).toBe("running");
+    expect(state.phaseStatus).toBe("waiting_for_user");
+    expect(state.pausedFromPhaseStatus).toBeUndefined();
+    expect(state.waitingReason).toBe("implement_checkpoint");
+    expect(state.pendingSteerKey).toBeUndefined();
+    expect(state.pendingSteerSentAt).toBeUndefined();
+    expect(sendUserMessages).toHaveLength(0);
+  });
 });
 
 describe("gate tool and auto-gate paths", () => {

@@ -164,6 +164,57 @@ function enterWaitingForUser(pi: ExtensionAPI, ctx: ExtensionContext, st: Pipeli
   refreshWidget(ctx, waitingState);
 }
 
+function buildPausedState(state: PipelineState): PipelineState {
+  const cleared = withoutPendingSteer(state);
+  return {
+    ...cleared,
+    pipelineStatus: "paused",
+    pausedFromPhaseStatus: state.pausedFromPhaseStatus ?? state.phaseStatus,
+    turnWriteCount: 0,
+    readyToAdvancePhase: undefined,
+  };
+}
+
+function requestCurrentAgentAbort(ctx: ExtensionContext): "requested" | "idle" | "unavailable" | "failed" {
+  const maybeCtx = ctx as ExtensionContext & { abort?: () => void; signal?: AbortSignal };
+  if (typeof maybeCtx.abort !== "function") return "unavailable";
+  if (!maybeCtx.signal) return "idle";
+  if (maybeCtx.signal.aborted) return "requested";
+  try {
+    maybeCtx.abort();
+    return "requested";
+  } catch {
+    return "failed";
+  }
+}
+
+function formatPauseNotice(abortStatus: ReturnType<typeof requestCurrentAgentAbort>): string {
+  if (abortStatus === "requested") {
+    return "Pipeline paused; current assistant turn abort requested. Ralph will not launch additional phase work until /ralph resume.";
+  }
+  if (abortStatus === "idle") {
+    return "Pipeline paused. Ralph will not launch additional phase work until /ralph resume.";
+  }
+  if (abortStatus === "failed") {
+    return "Pipeline paused, but aborting the current assistant turn failed; the current assistant turn may continue. Ralph will not launch additional phase work until /ralph resume.";
+  }
+  return "Pipeline paused. This Pi build cannot abort the current assistant turn, so the current assistant turn may continue; Ralph will not launch additional phase work until /ralph resume.";
+}
+
+function restorePausedNonLaunchingState(state: PipelineState): PipelineState | undefined {
+  if (state.pipelineStatus !== "paused") return undefined;
+  const phaseStatus = state.pausedFromPhaseStatus ?? state.phaseStatus;
+  if (phaseStatus !== WAITING_FOR_USER_PHASE_STATUS && phaseStatus !== VALIDATION_FAILED_PHASE_STATUS) return undefined;
+  return {
+    ...withoutPendingSteer(state),
+    pipelineStatus: "running",
+    phaseStatus,
+    pausedFromPhaseStatus: undefined,
+    turnWriteCount: 0,
+    readyToAdvancePhase: undefined,
+  };
+}
+
 /** Decide whether to stop between planning and implementation for operator approval. */
 function shouldPauseBeforeImplementCheckpoint(
   state: PipelineState,
@@ -1391,6 +1442,21 @@ ${phasePrompt}`,
             ctx.ui.notify("Pipeline already completed.", "info");
             return;
           }
+          const pausedNonLaunchingState = restorePausedNonLaunchingState(state);
+          if (pausedNonLaunchingState) {
+            removePipelineLock(state.feature, state.workDir);
+            createPipelineLock(state.feature, state.workDir);
+            saveState(pi, pausedNonLaunchingState);
+            if (pausedNonLaunchingState.phaseStatus === WAITING_FOR_USER_PHASE_STATUS) {
+              setPipelineWaitingUi(ctx, pausedNonLaunchingState);
+            }
+            refreshWidget(ctx, pausedNonLaunchingState);
+            ctx.ui.notify(
+              `Resumed paused pipeline at Phase ${(pausedNonLaunchingState.currentPhaseIndex ?? 0) + 1} (${PHASE_META[pausedNonLaunchingState.currentPhase ?? ""]?.name ?? pausedNonLaunchingState.currentPhase ?? "unknown"})`,
+              "info",
+            );
+            break;
+          }
           // Remove stale lock or keep existing
           removePipelineLock(state.feature, state.workDir);
           createPipelineLock(state.feature, state.workDir);
@@ -1408,7 +1474,7 @@ ${phasePrompt}`,
           const pk = phases[targetIdx];
           ctx.ui.notify(`Resuming at Phase ${targetIdx + 1} (${PHASE_META[pk]?.name ?? pk})`, "info");
           const updated: PipelineState = {
-            ...state,
+            ...withoutPendingSteer(state),
             currentPhaseIndex: targetIdx,
             currentPhase: pk,
             phaseStatus: "pre_hook",
@@ -1417,6 +1483,7 @@ ${phasePrompt}`,
             waitingReason: undefined,
             implementCheckpointApproved: state.implementCheckpointApproved || pk === "implement",
             readyToAdvancePhase: undefined,
+            pausedFromPhaseStatus: undefined,
           };
           saveState(pi, updated);
           refreshWidget(ctx, updated);
@@ -1429,11 +1496,12 @@ ${phasePrompt}`,
             ctx.ui.notify("No active pipeline.", "info");
             return;
           }
-          const pausedState: PipelineState = { ...state, pipelineStatus: "paused", phaseStatus: "post_hook" };
+          const pausedState = buildPausedState(state);
+          const abortStatus = requestCurrentAgentAbort(ctx);
           saveState(pi, pausedState);
           refreshWidget(ctx, pausedState);
           ctx.ui.setStatus(UI_WIDGET_ID, undefined);
-          ctx.ui.notify(`Pipeline paused. Use /ralph resume to continue.`, "warning");
+          ctx.ui.notify(formatPauseNotice(abortStatus), "warning");
           break;
         }
         case "set-workdir": {
