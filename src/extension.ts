@@ -77,6 +77,13 @@ import {
   PHASE_COMPLETE_MARKER,
 } from "./stateMachine";
 import {
+  enterImplementCheckpoint as buildImplementCheckpointState,
+  enterPhaseExecution,
+  enterPhasePreHook,
+  enterValidationFailed,
+  markPhaseValidated,
+} from "./stateController";
+import {
   wrapSteerMessage,
   MAX_STEER_SIZE,
   validatePhaseIndex,
@@ -232,13 +239,7 @@ function shouldPauseBeforeImplementCheckpoint(
 
 /** Pause before implementation so the operator can inspect generated planning artifacts. */
 function enterImplementCheckpoint(pi: ExtensionAPI, ctx: ExtensionContext, st: PipelineState): void {
-  const checkpointState: PipelineState = {
-    ...st,
-    phaseStatus: WAITING_FOR_USER_PHASE_STATUS,
-    waitingReason: IMPLEMENT_CHECKPOINT_WAIT_REASON,
-    turnWriteCount: 0,
-    readyToAdvancePhase: undefined,
-  };
+  const checkpointState = buildImplementCheckpointState(st);
   saveState(pi, checkpointState);
   setPipelineWaitingUi(ctx, checkpointState);
   refreshWidget(ctx, checkpointState);
@@ -593,14 +594,7 @@ async function launchPhase(
     return;
   }
 
-  const executingState: PipelineState = {
-    ...state,
-    phaseStatus: "executing",
-    phaseAttempts: 0,
-    turnWriteCount: 0,
-    waitingReason: undefined,
-    readyToAdvancePhase: undefined,
-  };
+  const executingState = enterPhaseExecution(state);
   const selector = resolvePhaseModelSelector(executingState.modelPlan, pk);
   const applied = selector
     ? await applyPhaseModel(pi, ctx, executingState, "apply")
@@ -635,27 +629,10 @@ async function advancePhase(pi: ExtensionAPI, ctx: ExtensionContext, state: Pipe
   const nextIdx = completion.nextPhaseIndex ?? Math.min(idx + 1, phases.length - 1);
   const nextPhase = completion.nextPhase ?? phases[nextIdx];
   const meta = PHASE_META[nextPhase];
-  const u: PipelineState = {
-    ...state,
-    currentPhaseIndex: nextIdx,
-    currentPhase: nextPhase,
-    phaseStatus: "pre_hook",
-    phaseAttempts: 0,
-    turnWriteCount: 0,
-    waitingReason: undefined,
-    readyToAdvancePhase: undefined,
-  };
+  const u = enterPhasePreHook(state, { phaseIndex: nextIdx, phase: nextPhase });
 
   const pauseBeforeImplement = shouldPauseBeforeImplementCheckpoint(state, phases, idx, nextIdx, nextPhase);
-  const transitionState: PipelineState = pauseBeforeImplement
-    ? {
-        ...u,
-        phaseStatus: WAITING_FOR_USER_PHASE_STATUS,
-        waitingReason: IMPLEMENT_CHECKPOINT_WAIT_REASON,
-        turnWriteCount: 0,
-        readyToAdvancePhase: undefined,
-      }
-    : u;
+  const transitionState = pauseBeforeImplement ? buildImplementCheckpointState(u) : u;
 
   saveState(pi, transitionState);
   refreshWidget(ctx, transitionState);
@@ -753,18 +730,17 @@ async function handleReviewDecision(
     }
     const phases = state.phases ?? DEFAULT_PHASES;
     const implIdx = phases.indexOf("implement");
-    const u: PipelineState = {
-      ...state,
-      currentPhaseIndex: implIdx >= 0 ? implIdx : 3,
-      currentPhase: "implement",
-      phaseStatus: "pre_hook",
-      reviewIterations: iter + 1,
-      phaseAttempts: 0,
-      turnWriteCount: 0,
-      waitingReason: undefined,
-      implementCheckpointApproved: true,
-      readyToAdvancePhase: undefined,
-    };
+    const u = enterPhasePreHook(
+      {
+        ...state,
+        reviewIterations: iter + 1,
+        implementCheckpointApproved: true,
+      },
+      {
+        phaseIndex: implIdx >= 0 ? implIdx : 3,
+        phase: "implement",
+      },
+    );
     saveState(pi, u);
     refreshWidget(ctx, u);
     ctx.ui.notify(`⚠️ Review CRITICAL (iteration ${iter + 1}/${maxIters}) — backtracking to implement`, "warning");
@@ -842,29 +818,14 @@ async function handlePhaseCompletion(
     sendPipelineUserMessage(pi, ctx, `⛔ Phase validation failed:\n\n${failureDetails}\n\n${retryInstruction}`, {
       deliverAs: "steer",
     });
-    const updatedState: PipelineState = {
-      ...state,
-      phaseStatus: VALIDATION_FAILED_PHASE_STATUS,
-      phaseAttempts: attempts + 1,
-      turnWriteCount: 0,
-      readyToAdvancePhase: undefined,
-      lastValidationFailure: failureDetails,
-    };
+    const updatedState = enterValidationFailed(state, failureDetails);
     saveState(pi, updatedState);
     refreshWidget(ctx, updatedState);
     return { ok: false, message: failureDetails };
   }
 
   writePhaseCompletionMarker(pk, state.workDir);
-  await advancePhase(pi, ctx, {
-    ...state,
-    pipelineStatus: "running",
-    phaseStatus: "post_hook",
-    turnWriteCount: 0,
-    waitingReason: undefined,
-    readyToAdvancePhase: undefined,
-    lastValidationFailure: undefined,
-  });
+  await advancePhase(pi, ctx, markPhaseValidated(state));
   return { ok: true, message: `Phase "${pk}" completion recorded.` };
 }
 
@@ -1401,22 +1362,18 @@ ${phasePrompt}`,
             (pk === "implement" || renderFromImplementCheckpoint);
           removePipelineLock(state.feature, state.workDir);
           createPipelineLock(state.feature, state.workDir);
-          let updated: PipelineState = {
-            ...state,
-            phases,
-            currentPhaseIndex: targetIdx,
-            currentPhase: pk,
-            phaseStatus: "pre_hook",
-            pipelineStatus: "running",
-            phaseAttempts: 0,
-            turnWriteCount: 0,
-            waitingReason: undefined,
-            yoloMode,
-            implementCheckpointApproved: state.implementCheckpointApproved || approvingImplementCheckpoint || yoloMode,
-            readyToAdvancePhase: undefined,
-            modelPlan: modelPlanResult.plan,
-            originalModel: state.originalModel ?? selectorFromCurrentModel(ctx.model, getCurrentThinkingLevel(pi)),
-          };
+          let updated = enterPhasePreHook(
+            {
+              ...state,
+              phases,
+              yoloMode,
+              implementCheckpointApproved:
+                state.implementCheckpointApproved || approvingImplementCheckpoint || yoloMode,
+              modelPlan: modelPlanResult.plan,
+              originalModel: state.originalModel ?? selectorFromCurrentModel(ctx.model, getCurrentThinkingLevel(pi)),
+            },
+            { phaseIndex: targetIdx, phase: pk },
+          );
           if (hasModelUpdate) {
             updated = appendModelEventState(
               updated,
@@ -1473,16 +1430,15 @@ ${phasePrompt}`,
           }
           const pk = phases[targetIdx];
           ctx.ui.notify(`Resuming at Phase ${targetIdx + 1} (${PHASE_META[pk]?.name ?? pk})`, "info");
-          const updated: PipelineState = {
-            ...withoutPendingSteer(state),
-            currentPhaseIndex: targetIdx,
-            currentPhase: pk,
-            phaseStatus: "pre_hook",
-            pipelineStatus: "running",
-            phaseAttempts: 0,
-            waitingReason: undefined,
-            implementCheckpointApproved: state.implementCheckpointApproved || pk === "implement",
-            readyToAdvancePhase: undefined,
+          const updated = {
+            ...enterPhasePreHook(
+              {
+                ...withoutPendingSteer(state),
+                implementCheckpointApproved: state.implementCheckpointApproved || pk === "implement",
+              },
+              { phaseIndex: targetIdx, phase: pk },
+            ),
+            turnWriteCount: state.turnWriteCount,
             pausedFromPhaseStatus: undefined,
           };
           saveState(pi, updated);
