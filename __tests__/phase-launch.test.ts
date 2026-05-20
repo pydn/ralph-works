@@ -385,7 +385,7 @@ describe("next-phase launch", () => {
     expect(ctx.ui.setWidget).toHaveBeenLastCalledWith(
       "ralph-loop",
       expect.arrayContaining([
-        expect.stringContaining("ralph-works · WAITING FOR USER INPUT"),
+        expect.stringContaining("WAITING FOR USER INPUT"),
         expect.stringContaining("WAITING FOR USER INPUT"),
         expect.stringContaining("▶ 1/2 Generate Spec"),
         expect.stringContaining("Reply to the prompt"),
@@ -393,6 +393,7 @@ describe("next-phase launch", () => {
       { placement: "belowEditor" },
     );
     expect(widgetLines.length).toBeLessThanOrEqual(4);
+    expect(stripAnsi(widgetLines.join("\n"))).toContain("ralph-works · WAITING FOR USER INPUT");
     expect(widgetLines.join("\n")).not.toContain("Phase 1/2");
     expect(widgetLines.join("\n")).not.toMatch(/\[[#-]+\] \d+%/);
   });
@@ -476,7 +477,7 @@ describe("next-phase launch", () => {
     expect(ctx.ui.setWidget).toHaveBeenLastCalledWith(
       "ralph-loop",
       expect.arrayContaining([
-        expect.stringContaining("ralph-works · RUNNING"),
+        expect.stringContaining("RUNNING"),
         expect.stringContaining("RUNNING"),
         expect.stringContaining("Run configured gates"),
       ]),
@@ -491,7 +492,7 @@ describe("next-phase launch", () => {
     expect(widgetText).not.toContain("Prompt: none");
   });
 
-  it("applies separate semantic colors to status, progress, action, and detail text", async () => {
+  it("applies the ralph-works wordmark palette and separate semantic widget colors", async () => {
     const workDir = makeTempDir("ralph-widget-palette-work-");
     const branch: FakeEntry[] = [
       {
@@ -534,11 +535,14 @@ describe("next-phase launch", () => {
     const widgetLines = ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[];
     const widgetText = widgetLines.join("\n");
     expect(stripAnsi(widgetText.replace(/<\/?[^>]+>/g, ""))).toContain("ralph-works · RUNNING · soft-ui");
-    expect(styled).toEqual(expect.arrayContaining([{ tone: "customMessageLabel", text: "ralph-works" }]));
+    expect(widgetLines[0]).toContain("\u001b[38;2;38;54;61mralph\u001b[39m");
+    expect(widgetLines[0]).toContain("\u001b[38;2;230;165;27m-\u001b[39m");
+    expect(widgetLines[0]).toContain("\u001b[38;2;47;111;123mworks\u001b[39m");
     expect(styled).toEqual(expect.arrayContaining([{ tone: "accent", text: "RUNNING" }]));
     expect(styled).toEqual(expect.arrayContaining([{ tone: "success", text: "✓" }]));
     expect(styled).toEqual(expect.arrayContaining([{ tone: "accent", text: "▶" }]));
     expect(styled).toEqual(expect.arrayContaining([{ tone: "muted", text: "·" }]));
+    expect(styled).toEqual(expect.arrayContaining([{ tone: "customMessageLabel", text: "Action" }]));
     expect(styled.some(({ tone, text }) => tone === "mdLink" && text.includes("Run configured gates"))).toBe(true);
     expect(styled.some(({ tone, text }) => tone === "dim" && text.includes("Review iterations: 1"))).toBe(true);
     expect(widgetLines.length).toBeLessThanOrEqual(4);
@@ -708,7 +712,7 @@ ${"Hardened spec body.\n".repeat(128)}`,
       const lines = call[1] as string[];
       expect(lines.length).toBeLessThanOrEqual(4);
       expect(call[2]).toEqual({ placement: "belowEditor" });
-      expect(lines.join("\n")).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
+      expect(stripAnsi(lines.join("\n"))).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
     }
 
     const renderedTransition = widgetCalls.map((lines) => lines.join("\n")).join("\n\n");

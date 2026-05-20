@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { refreshWidget } from "../src/widget";
 
+function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
 describe("ralph-works rename", () => {
   it("registers /ralph-works as the user-facing command", async () => {
     const commands = new Map<string, unknown>();
@@ -19,7 +23,7 @@ describe("ralph-works rename", () => {
     expect(commands.has("ralph")).toBe(false);
   });
 
-  it("renders ralph-works as the widget product label", () => {
+  it("renders ralph-works as the widget product wordmark", () => {
     const styled: Array<{ tone: string; text: string }> = [];
     const ctx = {
       ui: {
@@ -50,7 +54,10 @@ describe("ralph-works rename", () => {
     });
 
     const widgetLines = ctx.ui.setWidget.mock.calls[0]?.[1] as string[];
-    expect(widgetLines.join("\n")).toContain("ralph-works");
-    expect(styled).toEqual(expect.arrayContaining([{ tone: "customMessageLabel", text: "ralph-works" }]));
+    expect(stripAnsi(widgetLines.join("\n"))).toContain("ralph-works");
+    expect(widgetLines[0]).toContain("\u001b[38;2;38;54;61mralph\u001b[39m");
+    expect(widgetLines[0]).toContain("\u001b[38;2;230;165;27m-\u001b[39m");
+    expect(widgetLines[0]).toContain("\u001b[38;2;47;111;123mworks\u001b[39m");
+    expect(styled).toEqual(expect.arrayContaining([{ tone: "accent", text: "RUNNING" }]));
   });
 });

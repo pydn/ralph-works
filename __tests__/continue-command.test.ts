@@ -53,6 +53,10 @@ function makeTempDir(prefix: string): string {
   return dir;
 }
 
+function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
 afterEach(() => {
   delete process.env.PI_SKILL_BASE;
   vi.resetModules();
@@ -333,7 +337,7 @@ describe("/ralph-works continue", () => {
 
     expect(sendUserMessages).toHaveLength(0);
     const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
-    expect(widgetText).toContain("ralph-works · BLOCKED · feature-a");
+    expect(stripAnsi(widgetText)).toContain("ralph-works · BLOCKED · feature-a");
     expect(widgetText).toContain("Fix the blocker, then run /ralph-works resume");
     expect(ctx.ui.setStatus).not.toHaveBeenCalledWith("ralph-loop", expect.stringContaining("Resuming |"));
   });

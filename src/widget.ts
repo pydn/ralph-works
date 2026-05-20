@@ -2,7 +2,6 @@ import type { ExtensionContext, ThemeColor } from "@earendil-works/pi-coding-age
 import {
   GATE_PHASES,
   IMPLEMENT_CHECKPOINT_WAIT_REASON,
-  UI_WIDGET_PRODUCT_LABEL,
   UI_WIDGET_ID,
   UI_WIDGET_MAX_LINES,
   VALIDATION_FAILED_PHASE_STATUS,
@@ -23,6 +22,11 @@ const YOLO_GRADIENT_COLORS: Array<[number, number, number]> = [
   [190, 86, 255],
   [255, 82, 192],
 ];
+const RALPH_WORKS_WORDMARK_COLORS = {
+  charcoal: [38, 54, 61],
+  amber: [230, 165, 27],
+  teal: [47, 111, 123],
+} as const satisfies Record<string, [number, number, number]>;
 let yoloAnimationTimer: ReturnType<typeof setInterval> | undefined;
 let yoloAnimationCtx: ExtensionContext | undefined;
 let yoloAnimationState: PipelineState | undefined;
@@ -45,6 +49,19 @@ function getPhaseDisplay(st: PipelineState): {
 
 function styleUiText(ctx: ExtensionContext, tone: UiTone, text: string): string {
   return ctx.ui.theme?.fg ? ctx.ui.theme.fg(tone, text) : text;
+}
+
+function formatTrueColorText(color: [number, number, number], text: string): string {
+  const [r, g, b] = color;
+  return `\u001b[38;2;${r};${g};${b}m${text}\u001b[39m`;
+}
+
+function formatRalphWorksWordmark(): string {
+  return [
+    formatTrueColorText(RALPH_WORKS_WORDMARK_COLORS.charcoal, "ralph"),
+    formatTrueColorText(RALPH_WORKS_WORDMARK_COLORS.amber, "-"),
+    formatTrueColorText(RALPH_WORKS_WORDMARK_COLORS.teal, "works"),
+  ].join("");
 }
 
 function formatYoloBadge(): string {
@@ -165,7 +182,7 @@ function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
   ].filter(Boolean);
 
   const headerLine = [
-    styleUiText(ctx, "customMessageLabel", UI_WIDGET_PRODUCT_LABEL),
+    formatRalphWorksWordmark(),
     styleUiText(ctx, "muted", " · "),
     styleUiText(ctx, widgetState.tone, widgetState.label),
     styleUiText(ctx, "muted", " · "),

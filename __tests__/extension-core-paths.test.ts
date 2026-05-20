@@ -79,6 +79,10 @@ function makeTempDir(prefix: string): string {
   return dir;
 }
 
+function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
 function writePassingGateConfig(workDir: string): void {
   fs.mkdirSync(path.join(workDir, ".ralph"), { recursive: true });
   fs.writeFileSync(path.join(workDir, "pass-gate.js"), "process.exit(0);\n", "utf-8");
@@ -1323,7 +1327,7 @@ describe("review decision and completion paths", () => {
 
     expect(sendUserMessages).toHaveLength(1);
     const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
-    expect(widgetText).toContain("ralph-works · VALIDATION FAILED · feature-a");
+    expect(stripAnsi(widgetText)).toContain("ralph-works · VALIDATION FAILED · feature-a");
     expect(widgetText).toContain("/ralph-works continue reruns validation");
   });
 
@@ -1439,7 +1443,7 @@ describe("review decision and completion paths", () => {
     expect(state.phaseStatus).toBe("post_hook");
     expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("ralph-loop", undefined);
     const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
-    expect(widgetText).toContain("ralph-works · COMPLETE");
+    expect(stripAnsi(widgetText)).toContain("ralph-works · COMPLETE");
     expect(widgetText).toContain("✓ 2/2 ralph-works Review Loop");
     expect(widgetText).toContain("[✓ ✓]");
     expect(ctx.ui.setWorkingMessage).not.toHaveBeenCalledWith("Waiting for user input");
@@ -1532,7 +1536,7 @@ describe("review decision and completion paths", () => {
     expect(state.phaseStatus).toBe("post_hook");
     expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("ralph-loop", undefined);
     const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
-    expect(widgetText).toContain("ralph-works · COMPLETE");
+    expect(stripAnsi(widgetText)).toContain("ralph-works · COMPLETE");
     expect(widgetText).toContain("✓ 2/2 ralph-works Review Loop");
     expect(widgetText).toContain("[✓ ✓]");
   });
