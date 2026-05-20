@@ -26,78 +26,26 @@ Do not start a tracked item without checking whether another agent has already c
 
 ## Architecture Overview
 
-### Pipeline Phases (Sequential)
+Phases: **Generate Spec** → **Red Team Audit** → **Harden Spec** → **TDD Implementation** → **ralph-works Review Loop**.
 
-1. **Generate Spec** → Markdown engineering specification (`docs/specs/FEATURE.md`)
-2. **Red Team Audit** → Adversarial security review with `[CRITICAL]`/`[WARNING]`/`[INFO]` tags
-3. **Harden Spec** → Patch markdown spec in-place, write changelog, convert to HTML for readability
-4. **TDD Implementation** → Red-Green-Refactor cycle with pre/post quality gates
-5. **ralph-works Review Loop** → Multi-pass PR review (Logic + Security + Style) with remediation
-
-### Data Flow
-
-```
-/ralph-works start <feature> [prompt] [phases]
-    │
-    ▼
-Command Handler → saveState() → Session JSONL (custom entries)
-    │
-    ▼ pi.sendUserMessage(pipelinePrompt)
-LLM streams tokens ── message_update ──► Live Widget (real-time phase detection)
-    │
-    ▼ agent_end (turn complete)
-Phase detect + advance → shortcut? → send steer message → all done? → mark complete
-```
-
-## Code Structure
-
-### `index.ts` — Main Extension Entry Point
-
-#### Key Components
-
-| Component                    | Purpose                                                                                                    |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `PipelineState` interface    | `{ feature, workDir, phases[], maxIterations, startedAt, currentPhase?, currentPhaseIndex?, promptText? }` |
-| `getState(ctx)`              | Walks full branch chain root-to-tip, returns **last** custom entry match (not first)                       |
-| `saveState(pi, state)`       | `pi.appendEntry(CUSTOM_TYPE, state)` — appends to session JSONL                                            |
-| `buildPipelinePrompt(state)` | Constructs master prompt with phase instructions, anti-shortcut rules, quality gates                       |
-| `runLintGates(workDir)`      | Runs configured `.ralph/gate-config.json` commands; returns `GateResult[]`                                 |
-| `detectCurrentPhase(ctx)`    | Regex on last 20 assistant messages to infer current phase from conversation text                          |
-| `refreshWidget(ctx, state)`  | Updates TUI widget with phase progress (defensive defaults for empty phases)                               |
-
-#### Extension API Hooks
-
-| Hook                 | Fires When                    | Use For                                      |
-| -------------------- | ----------------------------- | -------------------------------------------- |
-| `session_start`      | New session or reload         | Restore state, widget refresh, auto-resume   |
-| `message_start`      | LLM begins generating         | Reset streaming accumulators                 |
-| `message_update`     | Each token batch arrives      | Live UI updates, phase detection             |
-| `agent_end`          | LLM finishes its turn         | Phase advancement, anti-shortcut, gate check |
-| `tool_result`        | After any tool call completes | Auto-gate on writes, side effects            |
-| `before_agent_start` | Before system prompt is sent  | Skill injection, context augmentation        |
-| `resources_discover` | Extension loads               | Register skills, templates                   |
-
-**⚠️ Critical**: `session_start` fires AFTER the extension function runs. Put startup logic in `session_start`, not module scope.
-
-#### Registered Tool: `ralph_gate_check`
-
-- Runs configured gates from `.ralph/gate-config.json`; reports no configured gates when the file is absent
-- Accepts optional `paths[]` parameter (defaults to entire project)
-- Resets auto-gate counter on explicit check
-
-#### Auto-Gating Mechanism
-
-During implement/review phases, the extension tracks write operations:
-
-- Counts only `write` and `edit` tool calls (not `bash`, `read`, etc.)
-- Resets counter on any non-write tool call
-- Triggers after 3 consecutive writes only when gates are explicitly configured
+For detailed architecture (data flow, hook table, component reference): read `docs/agent-reference.md` before modifying extension internals.
 
 ## Critical Development Rules
+
+## Tool Usage Protocol
+
+### Prefer Built-in Tools Over Bash for File Operations
+- Use `read` tool instead of `bash cat` or `bash head`
+- Use `write` or `edit` tool instead of `bash echo`, `bash tee`, `bash sed`
+- Use `ls` tool instead of `bash ls`
+- Use `grep` tool instead of `bash grep` when searching file contents
+- Reserve `bash` for: compilation (`npx tsc`), test runs (`npm test`), git operations, and commands with no equivalent built-in tool
 
 ### Red-Green TDD Is Required
 
 Always implement behavior changes using red-green TDD: add or update the regression test first, run the targeted test to confirm it fails for the expected reason, implement the smallest production change, then rerun the targeted test and relevant gates.
+
+**⚠️ Critical**: `session_start` fires AFTER the extension function runs. Put startup logic in `session_start`, not module scope. See `docs/agent-reference.md` for full hook table and component reference.
 
 ### 1. State Mutation — ALWAYS CREATE COPIES
 
@@ -242,107 +190,6 @@ Follow these rules **every time** you modify `.ts` files:
 
 - **TypeScript compilation before testing** — always run `npx tsc --noEmit` before running extension tests. TypeScript errors mask runtime issues
 
-## Common Patterns
+**For detailed API patterns** (persisting state, steering LLM, registering tools/commands), **deployment instructions**, and **testing checklist**: read `docs/agent-reference.md` before implementing new features or deploying.
 
-### Persisting state across compaction
-
-```typescript
-pi.appendEntry("my-custom-type", { field1, field2 }); // append to session JSONL
-
-// Read back (iterate full chain, return last):
-let latest = null;
-for (const e of ctx.sessionManager.getBranch()) {
-  if (e.type === "custom" && e.customType === "my-custom-type" && e.data) {
-    latest = e.data;
-  }
-}
-return latest; // null if never saved
-```
-
-### Steering the LLM mid-conversation
-
-```typescript
-pi.sendMessage(
-  { role: "user", content: [{ type: "text", text: "...steer..." }] },
-  { triggerTurn: true, deliverAs: "steer" },
-);
-```
-
-`deliverAs: "steer"` ensures the message is treated as a system-level instruction, not a regular user message.
-
-### Registering a tool available to the agent
-
-```typescript
-pi.registerTool({
-  name: "my_tool",
-  label: "My Tool",
-  description: "What it does",
-  promptSnippet: "Brief hint for LLM",
-  parameters: Type.Object({ arg: Type.Optional(Type.String()) }),
-  async execute(toolCallId, params, signal, onUpdate, ctx) {
-    return { content: [{ type: "text", text: "result" }] };
-  },
-});
-```
-
-### Registering a slash command
-
-```typescript
-pi.registerCommand("mycmd", {
-  description: "...",
-  handler: async (args, ctx) => {
-    const parts = args.trim().split(/\s+/);
-    // parse and act
-  },
-});
-```
-
-## Deployment
-
-Copy or symlink this directory to `~/.pi/agent/extensions/ralph-loop/`:
-
-```bash
-ln -s $(pwd) ~/.pi/agent/extensions/ralph-loop
-```
-
-Or install directly:
-
-```bash
-mkdir -p ~/.pi/agent/extensions/ralph-loop
-cp index.ts package.json README.md ~/.pi/agent/extensions/ralph-loop/
-```
-
-Reload Pi (`/reload`) to activate.
-
-## Skills Directory Structure
-
-Skills are loaded from `~/.pi/agent/skills/_global/` via `before_agent_start`:
-
-- `generate-spec/SKILL.md` — Markdown-first spec generation
-- `red-team-audit/SKILL.md` — Adversarial security review with severity tagging
-- `harden-spec/SKILL.md` — Patch markdown spec in-place, write changelog
-- `tdd-implement/SKILL.md` — Red-Green-Refactor cycle instructions
-- `pi-skills/pr-reviewer/SKILL.md` — Multi-pass PR review guidelines
-- `markdown-to-html/SKILL.md` — Convert hardened markdown to polished HTML (7-chunk build strategy)
-
-**Note**: The extension currently injects skills individually per-phase via the `PHASE_CONFIGS` registry in `index.ts`. The `markdown-to-html` skill should be referenced from the harden phase prompt. If it is not loaded, the agent will attempt single-shot HTML generation which fails on large specs (>20KB). Ensure the harden phase instruction explicitly tells the agent to use chunked file writes (see Common Pitfalls above).
-
-## Open Risks / Future Work
-
-1. **Phase advancement is heuristic** — regex on conversation text. Replace with explicit tool call (`ralph_phase_complete`).
-2. **No rollback mechanism** — if Phase 4 breaks everything, no way to revert without manual git commands. Consider `git stash` or branch-per-phase.
-3. **Gate timeout is static (120s)** — should be configurable per-project or auto-scaled based on project size.
-4. **No concurrent pipeline support** — only one pipeline per session. Multi-feature parallel pipelines would need state scoping by feature name.
-5. **Compaction recovery relies on `currentPhaseIndex`** — if this field gets dropped during extreme compaction, fallback to text detection is unreliable.
-
-## Testing Checklist (Before Pushing)
-
-- [ ] TypeScript compiles: `npx tsc --noEmit`
-- [ ] No lint violations: `npx eslint . --ext .ts,.tsx` (if configured)
-- [ ] Extension loads in Pi without errors after `/reload`
-- [ ] `/ralph-works start test-feature` starts pipeline with all 5 phases
-- [ ] Phase detection works during streaming (`message_update`)
-- [ ] Anti-shortcut triggers when agent writes "Complete Summary" early
-- [ ] Auto-resume works on session reload with unfinished phases
-- [ ] `ralph_gate_check` tool returns structured results
-- [ ] Skill injection only occurs when pipeline is active (`getState(ctx)` check)
+Skills: loaded from `~/.pi/agent/skills/_global/`. Key skills: `generate-spec`, `red-team-audit`, `harden-spec`, `tdd-implement`, `pr-reviewer`, `markdown-to-html`.
