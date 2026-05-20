@@ -55,9 +55,9 @@ describe("ralph-works rename", () => {
 
     const widgetLines = ctx.ui.setWidget.mock.calls[0]?.[1] as string[];
     expect(stripAnsi(widgetLines.join("\n"))).toContain("ralph-works");
-    expect(widgetLines[0]).toContain("\u001b[38;2;244;240;231mralph\u001b[39m");
+    expect(widgetLines[0]).toContain("\u001b[38;2;38;54;61mralph\u001b[39m");
     expect(widgetLines[0]).toContain("\u001b[38;2;230;165;27m-\u001b[39m");
-    expect(widgetLines[0]).toContain("\u001b[38;2;95;166;179mworks\u001b[39m");
+    expect(widgetLines[0]).toContain("\u001b[38;2;38;54;61mworks\u001b[39m");
     expect(styled).toEqual(expect.arrayContaining([{ tone: "accent", text: "RUNNING" }]));
   });
 });
