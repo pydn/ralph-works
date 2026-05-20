@@ -2,6 +2,15 @@
 
 Full dev-cycle pipeline for [Pi](https://github.com/earendil-works/pi-coding-agent). Phase orchestration runs as a single continuous agent workflow, so Pi does not spawn a subprocess or TTY per phase. Configured quality gates still run shell commands from the extension process.
 
+## Visual Story
+
+The hosted walkthrough is designed for sharing the project with engineers:
+
+- GitHub Pages: https://pydn.github.io/ralph-works/
+- Source: [`docs/ralph-works/index.html`](docs/ralph-works/index.html)
+
+To publish it, enable GitHub Pages for this repository from the `main` branch and `/docs` folder.
+
 ## Phases
 
 1. **Generate Spec** - Markdown engineering specification with problem statement, architecture diagram, and implementation plan

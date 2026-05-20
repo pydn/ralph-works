@@ -1,0 +1,2812 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ralph-works | Agent Autonomy With Developer Control</title>
+    <meta
+      name="description"
+      content="A visual walkthrough of ralph-works, the Pi extension that makes long agent runs inspectable with specs, gates, checkpoints, TDD, and review loops."
+    />
+    <link rel="canonical" href="https://pydn.github.io/ralph-works/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="ralph-works - Agent autonomy with developer control" />
+    <meta
+      property="og:description"
+      content="See how ralph-works turns a feature request into an inspectable Pi development run with specs, gates, checkpoints, TDD, and review."
+    />
+    <meta property="og:url" content="https://pydn.github.io/ralph-works/" />
+    <meta
+      property="og:image"
+      content="https://pydn.github.io/ralph-works/social-preview.png"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:site_name" content="ralph-works" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ralph-works - Agent autonomy with developer control" />
+    <meta
+      name="twitter:description"
+      content="A visual walkthrough of the Pi extension for safer long-running agent development cycles."
+    />
+    <meta
+      name="twitter:image"
+      content="https://pydn.github.io/ralph-works/social-preview.png"
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #07090d;
+        --bg-2: #0b1118;
+        --surface: rgba(255, 255, 255, 0.06);
+        --surface-strong: rgba(255, 255, 255, 0.1);
+        --surface-solid: #101821;
+        --surface-raised: #141f2b;
+        --text: #f8f1e5;
+        --muted: #b9c3ce;
+        --quiet: #7f8b98;
+        --line: rgba(248, 241, 229, 0.16);
+        --line-strong: rgba(248, 241, 229, 0.32);
+        --accent: #f0b85a;
+        --cyan: #5ecadd;
+        --green: #74d79b;
+        --red: #ff6b63;
+        --violet: #b7a6ff;
+        --paper: #fff2dc;
+        --paper-text: #16120c;
+        --charcoal: #26363d;
+        --teal: #2f6f7b;
+        --amber: #e6a51b;
+        --off-white: #f4f0e7;
+        --wordmark-surface: rgba(217, 210, 196, 0.9);
+        --wordmark-surface-soft: rgba(217, 210, 196, 0.9);
+        --slate: #7e8b8e;
+        --shadow: 0 28px 90px rgba(0, 0, 0, 0.46);
+        --shadow-soft: 0 18px 52px rgba(0, 0, 0, 0.32);
+        --radius: 8px;
+        --max: 1180px;
+        --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+
+      * {
+        box-sizing: border-box;
+        min-width: 0;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        min-width: 320px;
+        margin: 0;
+        overflow-x: hidden;
+        background:
+          linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px), var(--bg);
+        background-size: 64px 64px;
+        color: var(--text);
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        font-size: 16px;
+        line-height: 1.55;
+      }
+
+      body::selection {
+        background: var(--accent);
+        color: #111;
+      }
+
+      a {
+        color: var(--accent);
+        text-underline-offset: 0.22em;
+      }
+
+      button {
+        min-height: 44px;
+        font: inherit;
+        touch-action: manipulation;
+      }
+
+      code,
+      pre {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace, monospace;
+      }
+
+      pre,
+      code {
+        max-width: 100%;
+      }
+
+      .skip-link {
+        position: fixed;
+        top: 10px;
+        left: 10px;
+        z-index: 100;
+        padding: 10px 14px;
+        background: var(--accent);
+        color: #111;
+        transform: translateY(-140%);
+        transition: transform 180ms var(--ease);
+      }
+
+      .skip-link:focus {
+        transform: translateY(0);
+      }
+
+      .progress {
+        position: fixed;
+        top: 0;
+        left: 0;
+        z-index: 80;
+        width: 100%;
+        height: 4px;
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .progress span {
+        display: block;
+        width: 0%;
+        height: 100%;
+        background: linear-gradient(90deg, var(--accent), var(--green), var(--cyan));
+        transform-origin: left;
+      }
+
+      .rail {
+        position: fixed;
+        left: 20px;
+        top: 50%;
+        z-index: 60;
+        display: grid;
+        gap: 12px;
+        transform: translateY(-50%);
+      }
+
+      .rail span {
+        width: 8px;
+        height: 28px;
+        border: 1px solid rgba(255, 255, 255, 0.26);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        transition:
+          height 220ms var(--ease),
+          background 220ms var(--ease),
+          border-color 220ms var(--ease);
+      }
+
+      .rail span.active {
+        height: 52px;
+        border-color: var(--accent);
+        background: var(--accent);
+        box-shadow: 0 0 0 6px rgba(240, 184, 90, 0.12);
+      }
+
+      .wrap {
+        width: min(var(--max), calc(100% - 40px));
+        margin: 0 auto;
+      }
+
+      .eyebrow {
+        margin: 0 0 14px;
+        color: var(--accent);
+        font-size: 0.78rem;
+        font-weight: 800;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1,
+      h2,
+      h3 {
+        letter-spacing: 0;
+        text-wrap: balance;
+        overflow-wrap: anywhere;
+      }
+
+      h1 {
+        max-width: 12ch;
+        font-size: 5.6rem;
+        line-height: 0.9;
+      }
+
+      h2 {
+        font-size: 3.55rem;
+        line-height: 0.95;
+      }
+
+      h3 {
+        font-size: 1.35rem;
+        line-height: 1.15;
+      }
+
+      .lead {
+        max-width: 680px;
+        color: var(--muted);
+        font-size: 1.16rem;
+        line-height: 1.65;
+      }
+
+      .wordmark {
+        display: inline-flex;
+        align-items: baseline;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        font-weight: 650;
+        line-height: 1;
+        letter-spacing: -0.045em;
+        font-kerning: normal;
+        text-rendering: geometricPrecision;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        white-space: nowrap;
+      }
+
+      .wordmark__ralph {
+        color: var(--charcoal);
+      }
+
+      .wordmark__gate {
+        color: var(--amber);
+        margin-inline: 0.035em;
+        font-weight: 700;
+        transform: translateY(-0.015em);
+      }
+
+      .wordmark__works {
+        color: var(--teal);
+      }
+
+      .wordmark--display {
+        padding: 0.1em 0.16em 0.22em;
+        border: 1px solid rgba(217, 210, 196, 0.42);
+        border-radius: 0.16em;
+        background: var(--wordmark-surface);
+        box-shadow: 0 28px 80px rgba(0, 0, 0, 0.36);
+        font-size: 1em;
+      }
+
+      .wordmark--inline {
+        padding: 0.075em 0.15em 0.16em;
+        border: 1px solid rgba(217, 210, 196, 0.32);
+        border-radius: 0.22em;
+        background: var(--wordmark-surface-soft);
+        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
+        font-size: 0.95em;
+        vertical-align: -0.05em;
+      }
+
+      .title-page {
+        position: relative;
+        min-height: 100svh;
+        display: grid;
+        align-items: center;
+        padding: 96px 0 44px;
+        overflow: hidden;
+        background:
+          linear-gradient(135deg, rgba(240, 184, 90, 0.2), transparent 32%),
+          linear-gradient(315deg, rgba(116, 215, 155, 0.12), transparent 34%), #07090d;
+      }
+
+      .title-page::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+        background-size: 56px 56px;
+        mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+        pointer-events: none;
+      }
+
+      .title-grid {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.75fr);
+        gap: 48px;
+        align-items: end;
+      }
+
+      .title-page h1 {
+        max-width: none;
+        font-size: 7.2rem;
+        line-height: 0.86;
+        overflow-wrap: anywhere;
+      }
+
+      .title-deck {
+        max-width: 760px;
+        margin-top: 28px;
+        color: var(--muted);
+        font-size: 1.35rem;
+        line-height: 1.5;
+      }
+
+      .title-panel {
+        min-height: 360px;
+        display: grid;
+        align-content: space-between;
+        gap: 24px;
+        padding: 26px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent), rgba(12, 18, 25, 0.86);
+        box-shadow: var(--shadow);
+      }
+
+      .title-panel strong {
+        display: block;
+        color: var(--accent);
+        font-size: 1.05rem;
+      }
+
+      .title-panel p {
+        margin-top: 10px;
+        color: var(--muted);
+      }
+
+      .title-command {
+        display: block;
+        margin-top: 24px;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #090d12;
+        color: var(--text);
+        overflow-wrap: anywhere;
+        white-space: normal;
+      }
+
+      .title-meta {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
+        gap: 10px;
+      }
+
+      .title-meta span {
+        min-height: 64px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        color: var(--muted);
+        font-size: 0.84rem;
+        font-weight: 800;
+        text-align: center;
+      }
+
+      .hero {
+        position: relative;
+        min-height: 100svh;
+        display: grid;
+        align-items: center;
+        padding: 96px 0 44px;
+        overflow: hidden;
+        background:
+          linear-gradient(135deg, rgba(240, 184, 90, 0.16), transparent 30%),
+          linear-gradient(315deg, rgba(94, 202, 221, 0.11), transparent 42%),
+          linear-gradient(180deg, rgba(7, 9, 13, 0.32), #07090d 86%);
+      }
+
+      .hero::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+        background-size: 48px 48px;
+        mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+        pointer-events: none;
+      }
+
+      .hero-grid {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+        gap: 48px;
+        align-items: center;
+      }
+
+      .hero-copy {
+        display: grid;
+        gap: 26px;
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .button,
+      .copy-button,
+      .mode-button {
+        display: inline-grid;
+        min-height: 46px;
+        place-items: center;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--text);
+        padding: 0 16px;
+        cursor: pointer;
+        font-weight: 800;
+        text-decoration: none;
+        transition:
+          transform 180ms var(--ease),
+          background 180ms var(--ease),
+          border-color 180ms var(--ease),
+          box-shadow 180ms var(--ease);
+      }
+
+      .button.primary,
+      .copy-button.primary,
+      .mode-button.active {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #15110a;
+      }
+
+      .button:hover,
+      .copy-button:hover,
+      .mode-button:hover {
+        transform: translateY(-2px);
+        border-color: rgba(240, 184, 90, 0.78);
+        background: rgba(240, 184, 90, 0.12);
+        box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+      }
+
+      .button.primary:hover,
+      .copy-button.primary:hover,
+      .mode-button.active:hover {
+        background: #f4c674;
+      }
+
+      .button:focus-visible,
+      .copy-button:focus-visible,
+      .mode-button:focus-visible {
+        outline: 3px solid #fff;
+        outline-offset: 3px;
+      }
+
+      .hero-system {
+        display: grid;
+        gap: 16px;
+      }
+
+      .console,
+      .control-panel,
+      .focus-visual,
+      .metric,
+      .shot,
+      .artifact,
+      .truth-card,
+      .mode-panel,
+      .final-command {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent), rgba(12, 18, 25, 0.84);
+        box-shadow: var(--shadow-soft);
+      }
+
+      .console {
+        overflow: hidden;
+      }
+
+      .console-top {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 40px;
+        padding: 0 14px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.035);
+      }
+
+      .console-top i {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--quiet);
+      }
+
+      .console-top i:nth-child(1) {
+        background: var(--red);
+      }
+
+      .console-top i:nth-child(2) {
+        background: var(--accent);
+      }
+
+      .console-top i:nth-child(3) {
+        background: var(--green);
+      }
+
+      .console pre {
+        margin: 0;
+        padding: 24px;
+        overflow-x: auto;
+        scrollbar-gutter: stable;
+        color: var(--text);
+        line-height: 1.75;
+      }
+
+      .dim {
+        color: var(--quiet);
+      }
+
+      .accent {
+        color: var(--accent);
+      }
+
+      .ok {
+        color: var(--green);
+      }
+
+      .warn {
+        color: #ffaaa4;
+      }
+
+      .hero-metrics {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 12px;
+      }
+
+      .metric {
+        min-height: 128px;
+        padding: 18px;
+      }
+
+      .metric b {
+        display: block;
+        color: var(--accent);
+        font-size: 2rem;
+        line-height: 1;
+      }
+
+      .metric span {
+        display: block;
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      .pi-section {
+        min-height: 100svh;
+        display: grid;
+        align-items: center;
+        padding: 96px 0;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        background:
+          radial-gradient(circle at 22% 22%, rgba(94, 202, 221, 0.15), transparent 30%),
+          radial-gradient(circle at 78% 78%, rgba(240, 184, 90, 0.13), transparent 34%), #080c12;
+      }
+
+      .pi-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
+        gap: 48px;
+        align-items: center;
+      }
+
+      .pi-copy {
+        display: grid;
+        gap: 24px;
+      }
+
+      .pi-copy h2 {
+        max-width: 10ch;
+        font-size: 4.2rem;
+        line-height: 0.9;
+      }
+
+      .pi-values {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .pi-value {
+        min-height: 124px;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.055);
+      }
+
+      .pi-value b {
+        display: block;
+        color: var(--accent);
+        font-size: 1rem;
+      }
+
+      .pi-value span {
+        display: block;
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 0.92rem;
+        line-height: 1.45;
+      }
+
+      .pi-visual {
+        min-height: 560px;
+        display: grid;
+        align-content: center;
+        gap: 20px;
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent),
+          linear-gradient(135deg, rgba(94, 202, 221, 0.12), transparent 52%), rgba(12, 18, 25, 0.84);
+        box-shadow: var(--shadow-soft);
+        overflow: hidden;
+      }
+
+      .pi-core {
+        width: min(100%, 460px);
+        min-height: 188px;
+        margin: 0 auto;
+        display: grid;
+        place-items: center;
+        gap: 10px;
+        padding: 28px;
+        border: 1px solid rgba(240, 184, 90, 0.44);
+        border-radius: var(--radius);
+        background: rgba(240, 184, 90, 0.12);
+        text-align: center;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.3);
+      }
+
+      .pi-core b {
+        color: var(--accent);
+        font-size: 3.4rem;
+        line-height: 0.9;
+      }
+
+      .pi-core strong {
+        color: var(--text);
+        font-size: 1.08rem;
+      }
+
+      .pi-core span {
+        max-width: 34ch;
+        color: var(--muted);
+      }
+
+      .model-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .model-card {
+        min-height: 104px;
+        display: grid;
+        align-content: space-between;
+        gap: 14px;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(8, 12, 18, 0.72);
+      }
+
+      .model-card b {
+        color: var(--text);
+        font-size: 0.95rem;
+      }
+
+      .model-card span {
+        color: var(--muted);
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace, monospace;
+        font-size: 0.82rem;
+        overflow-wrap: anywhere;
+      }
+
+      .model-card.featured {
+        border-color: rgba(94, 202, 221, 0.55);
+        background: rgba(94, 202, 221, 0.12);
+      }
+
+      .takeaway {
+        min-height: 100svh;
+        display: grid;
+        align-items: center;
+        padding: 96px 0;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        background:
+          radial-gradient(circle at 18% 24%, rgba(240, 184, 90, 0.16), transparent 32%),
+          radial-gradient(circle at 84% 72%, rgba(94, 202, 221, 0.12), transparent 30%), #080c12;
+      }
+
+      .takeaway-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.14fr);
+        gap: 48px;
+        align-items: center;
+      }
+
+      .takeaway h2 {
+        max-width: 11ch;
+        font-size: 4.35rem;
+        line-height: 0.9;
+      }
+
+      .takeaway-copy {
+        display: grid;
+        gap: 24px;
+      }
+
+      .takeaway-proof {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(156px, 1fr));
+        gap: 12px;
+        margin-top: 8px;
+      }
+
+      .proof-chip {
+        min-height: 116px;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.055);
+      }
+
+      .proof-chip b {
+        display: block;
+        margin-bottom: 10px;
+        color: var(--accent);
+      }
+
+      .proof-chip span {
+        color: var(--muted);
+        font-size: 0.92rem;
+        overflow-wrap: anywhere;
+      }
+
+      .takeaway-visual {
+        position: relative;
+        min-height: 0;
+        overflow: hidden;
+        padding: 28px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent), rgba(12, 18, 25, 0.86);
+        box-shadow: var(--shadow);
+      }
+
+      .takeaway-visual::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+        background-size: 34px 34px;
+        pointer-events: none;
+      }
+
+      .balance-board {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        grid-template-areas:
+          "autonomy control"
+          "core core"
+          "rails rails";
+        gap: 14px;
+      }
+
+      .balance-panel {
+        min-height: 196px;
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.06);
+        display: grid;
+        align-content: start;
+      }
+
+      .balance-panel b {
+        display: block;
+        margin-bottom: 22px;
+        font-size: 1.28rem;
+      }
+
+      .balance-panel span {
+        display: block;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+
+      .balance-panel.autonomy {
+        grid-area: autonomy;
+        border-color: rgba(94, 202, 221, 0.52);
+      }
+
+      .balance-panel.autonomy b {
+        color: var(--cyan);
+      }
+
+      .balance-panel.control {
+        grid-area: control;
+        border-color: rgba(240, 184, 90, 0.58);
+      }
+
+      .balance-panel.control b {
+        color: var(--accent);
+      }
+
+      .safe-core {
+        grid-area: core;
+        display: grid;
+        min-height: 86px;
+        place-items: center;
+        border: 1px solid rgba(116, 215, 155, 0.72);
+        border-radius: var(--radius);
+        background: rgba(116, 215, 155, 0.12);
+        color: var(--green);
+        text-align: center;
+        box-shadow: 0 0 70px rgba(116, 215, 155, 0.16);
+      }
+
+      .safe-core b {
+        display: block;
+        max-width: none;
+        line-height: 1.12;
+      }
+
+      .guardrail-strip {
+        grid-area: rails;
+        position: relative;
+        right: auto;
+        bottom: auto;
+        left: auto;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+        gap: 8px;
+      }
+
+      .guardrail-strip span {
+        min-height: 44px;
+        display: grid;
+        place-items: center;
+        padding: 8px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.055);
+        color: var(--muted);
+        font-size: 0.82rem;
+        font-weight: 800;
+        text-align: center;
+        overflow-wrap: anywhere;
+      }
+
+      .scene {
+        min-height: 100svh;
+        display: grid;
+        align-items: center;
+        padding: 86px 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .scene:nth-child(even) {
+        background: rgba(255, 255, 255, 0.018);
+      }
+
+      .scene-inner {
+        display: grid;
+        grid-template-columns: minmax(0, 0.76fr) minmax(0, 1.24fr);
+        gap: 48px;
+        align-items: center;
+      }
+
+      .scene-copy {
+        display: grid;
+        gap: 20px;
+      }
+
+      .scene-number {
+        display: inline-grid;
+        width: 52px;
+        height: 52px;
+        place-items: center;
+        border: 1px solid var(--line-strong);
+        border-radius: 50%;
+        color: var(--accent);
+        font-weight: 900;
+      }
+
+      .focus-visual {
+        position: relative;
+        min-height: 560px;
+        overflow: hidden;
+        padding: 28px;
+      }
+
+      .focus-visual::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+        background-size: 34px 34px;
+        pointer-events: none;
+      }
+
+      .visual-title {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        min-height: 44px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        flex-wrap: wrap;
+        margin-bottom: 28px;
+        padding-bottom: 16px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .visual-title b {
+        color: var(--text);
+      }
+
+      .status-pill {
+        display: inline-grid;
+        min-height: 32px;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 0 12px;
+        color: var(--muted);
+        font-size: 0.82rem;
+        font-weight: 800;
+      }
+
+      .loop-visual,
+      .map-visual,
+      .route-visual,
+      .checkpoint-visual,
+      .evidence-visual,
+      .review-visual {
+        position: relative;
+        z-index: 1;
+        min-height: 440px;
+      }
+
+      .loop-visual {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(178px, 230px);
+        gap: 18px;
+        align-items: stretch;
+      }
+
+      .work-list {
+        display: grid;
+        gap: 12px;
+        align-content: center;
+      }
+
+      .work-row {
+        display: grid;
+        grid-template-columns: 44px minmax(0, 1fr) minmax(0, auto);
+        gap: 12px;
+        align-items: center;
+        min-height: 68px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.055);
+      }
+
+      .work-row b {
+        color: var(--accent);
+      }
+
+      .work-row span {
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+
+      .work-row code {
+        justify-self: end;
+        overflow-wrap: anywhere;
+      }
+
+      .loop-ring {
+        display: grid;
+        place-items: center;
+        align-self: center;
+        aspect-ratio: 1;
+        border: 9px solid rgba(240, 184, 90, 0.22);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        color: var(--accent);
+        text-align: center;
+        font-weight: 900;
+        animation: spin-soft 8s linear infinite;
+      }
+
+      .loop-ring span {
+        display: block;
+        max-width: 120px;
+        animation: spin-text 8s linear infinite;
+      }
+
+      @keyframes spin-soft {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @keyframes spin-text {
+        to {
+          transform: rotate(-360deg);
+        }
+      }
+
+      .map-visual {
+        display: grid;
+        place-items: center;
+      }
+
+      .ambiguity-board {
+        position: relative;
+        width: min(100%, 640px);
+        min-height: 390px;
+      }
+
+      .task-chip {
+        position: absolute;
+        width: min(210px, calc(50% - 18px));
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.075);
+        box-shadow: var(--shadow-soft);
+      }
+
+      .task-chip b {
+        display: block;
+        margin-bottom: 8px;
+      }
+
+      .task-chip span {
+        color: var(--muted);
+      }
+
+      .task-chip:nth-child(1) {
+        top: 18px;
+        left: 48px;
+      }
+
+      .task-chip:nth-child(2) {
+        top: 88px;
+        right: 38px;
+        border-color: rgba(255, 107, 99, 0.52);
+      }
+
+      .task-chip:nth-child(3) {
+        left: 16px;
+        bottom: 76px;
+      }
+
+      .task-chip:nth-child(4) {
+        right: 72px;
+        bottom: 22px;
+      }
+
+      .missing-map {
+        position: absolute;
+        top: 158px;
+        left: 50%;
+        display: grid;
+        width: 230px;
+        min-height: 92px;
+        place-items: center;
+        border: 1px solid rgba(255, 107, 99, 0.62);
+        border-radius: var(--radius);
+        background: rgba(255, 107, 99, 0.16);
+        color: #ffb5af;
+        font-weight: 900;
+        transform: translateX(-50%);
+      }
+
+      .route-visual {
+        display: grid;
+        align-content: center;
+      }
+
+      .route-track {
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .route-track::before {
+        display: none;
+      }
+
+      .route-step {
+        position: relative;
+        z-index: 1;
+        min-height: 188px;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #0b1118;
+      }
+
+      .route-step b {
+        display: inline-grid;
+        width: 44px;
+        height: 44px;
+        place-items: center;
+        margin-bottom: 34px;
+        border-radius: 50%;
+        background: var(--accent);
+        color: #15110a;
+      }
+
+      .route-step h3 {
+        font-size: 1.05rem;
+        overflow-wrap: anywhere;
+      }
+
+      .route-step p {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 0.9rem;
+        overflow-wrap: anywhere;
+      }
+
+      .checkpoint-visual {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(138px, 180px) minmax(0, 1fr);
+        gap: 18px;
+        align-items: center;
+      }
+
+      .doc-stack,
+      .build-stack {
+        display: grid;
+        gap: 12px;
+      }
+
+      .paper-card {
+        min-height: 112px;
+        padding: 18px;
+        border-radius: var(--radius);
+        background: var(--paper);
+        color: var(--paper-text);
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.26);
+      }
+
+      .paper-card b {
+        display: block;
+        margin-bottom: 10px;
+        color: #95423d;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+      }
+
+      .paper-card span {
+        color: #514438;
+        overflow-wrap: anywhere;
+      }
+
+      .decision-node {
+        display: grid;
+        min-height: 180px;
+        place-items: center;
+        border: 1px solid rgba(240, 184, 90, 0.64);
+        border-radius: var(--radius);
+        background: rgba(240, 184, 90, 0.14);
+        color: var(--accent);
+        text-align: center;
+        font-weight: 900;
+      }
+
+      .build-card {
+        min-height: 112px;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.06);
+      }
+
+      .build-card b {
+        display: block;
+        color: var(--green);
+      }
+
+      .build-card span {
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+
+      .evidence-visual {
+        display: grid;
+        grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+        gap: 18px;
+        align-items: stretch;
+      }
+
+      .screenshot-mock,
+      .file-tree {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #090d12;
+        overflow: hidden;
+      }
+
+      .mock-top {
+        display: flex;
+        height: 36px;
+        align-items: center;
+        gap: 7px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .mock-top i {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--quiet);
+      }
+
+      .screenshot-body {
+        display: grid;
+        min-height: 370px;
+        place-items: center;
+        padding: 24px;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      .screenshot-body strong {
+        display: block;
+        margin-bottom: 10px;
+        color: var(--text);
+      }
+
+      .file-tree {
+        padding: 22px;
+        color: var(--muted);
+        line-height: 1.9;
+        overflow-x: auto;
+        scrollbar-gutter: stable;
+      }
+
+      .file-tree b {
+        color: var(--text);
+      }
+
+      .review-visual {
+        display: grid;
+        align-content: center;
+        gap: 22px;
+      }
+
+      .review-flow {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(92px, 120px) minmax(0, 1fr);
+        gap: 18px;
+        align-items: center;
+      }
+
+      .review-node {
+        min-height: 170px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.065);
+        text-align: center;
+        font-weight: 900;
+      }
+
+      .flow-arrows {
+        display: grid;
+        gap: 18px;
+        color: var(--muted);
+        text-align: center;
+        font-weight: 900;
+      }
+
+      .review-verdicts {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 12px;
+      }
+
+      .verdict {
+        min-height: 88px;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.055);
+      }
+
+      .verdict.bad {
+        border-color: rgba(255, 107, 99, 0.62);
+        color: #ffb5af;
+      }
+
+      .verdict.good {
+        border-color: rgba(116, 215, 155, 0.62);
+        color: var(--green);
+      }
+
+      .panel-section {
+        padding: 92px 0;
+        border-bottom: 1px solid var(--line);
+        background: var(--bg-2);
+      }
+
+      .section-heading {
+        display: grid;
+        grid-template-columns: minmax(0, 0.92fr) minmax(0, 0.72fr);
+        gap: 36px;
+        align-items: end;
+        margin-bottom: 36px;
+      }
+
+      .section-heading p {
+        color: var(--muted);
+      }
+
+      .shots-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+      }
+
+      .shot {
+        min-height: 290px;
+        overflow: hidden;
+      }
+
+      .shot.featured {
+        grid-column: span 2;
+        grid-row: span 2;
+      }
+
+      .shot .screenshot-body {
+        min-height: 210px;
+      }
+
+      .shot.featured .screenshot-body {
+        min-height: 608px;
+      }
+
+      .shot h3,
+      .artifact h3,
+      .truth-card h3 {
+        margin: 18px 18px 8px;
+      }
+
+      .shot p,
+      .artifact p,
+      .truth-card p {
+        margin: 0 18px 18px;
+        color: var(--muted);
+      }
+
+      .artifact-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 14px;
+      }
+
+      .artifact {
+        min-height: 248px;
+        padding: 20px;
+        background: var(--paper);
+        color: var(--paper-text);
+        box-shadow: var(--shadow-soft);
+        transition:
+          transform 180ms var(--ease),
+          box-shadow 180ms var(--ease);
+      }
+
+      .artifact:hover {
+        transform: translateY(-4px);
+        box-shadow: var(--shadow);
+      }
+
+      .artifact b {
+        display: block;
+        margin-bottom: 46px;
+        color: #95423d;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+      }
+
+      .artifact h3,
+      .artifact p {
+        margin-left: 0;
+        margin-right: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .artifact code {
+        display: block;
+        margin-top: 18px;
+        color: #245b6b;
+        overflow-wrap: anywhere;
+        font-size: 0.78rem;
+      }
+
+      .config-slide {
+        min-height: 100svh;
+        display: grid;
+        align-items: center;
+        padding: 92px 0;
+        border-bottom: 1px solid var(--line);
+        background: linear-gradient(90deg, rgba(94, 202, 221, 0.1), transparent 40%), #080d13;
+      }
+
+      .config-slide.gates {
+        background: linear-gradient(90deg, rgba(240, 184, 90, 0.13), transparent 42%), #080d13;
+      }
+
+      .config-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 0.78fr) minmax(0, 1.22fr);
+        gap: 44px;
+        align-items: center;
+      }
+
+      .config-copy {
+        display: grid;
+        gap: 22px;
+      }
+
+      .config-note-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+        gap: 12px;
+        margin-top: 8px;
+      }
+
+      .config-note {
+        min-height: 132px;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.055);
+      }
+
+      .config-note b {
+        display: block;
+        margin-bottom: 10px;
+        color: var(--accent);
+      }
+
+      .config-note span {
+        color: var(--muted);
+        font-size: 0.92rem;
+        overflow-wrap: anywhere;
+      }
+
+      .json-window {
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #090d12;
+        box-shadow: var(--shadow);
+      }
+
+      .json-window pre {
+        margin: 0;
+        padding: 22px;
+        overflow-x: auto;
+        scrollbar-gutter: stable;
+        color: var(--text);
+        font-size: 0.84rem;
+        line-height: 1.58;
+      }
+
+      .json-window code {
+        color: inherit;
+      }
+
+      .command-section {
+        padding: 110px 0;
+        background: linear-gradient(90deg, rgba(240, 184, 90, 0.16), transparent 44%), #07090d;
+      }
+
+      .command-grid,
+      .mode-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 0.78fr) minmax(0, 1.22fr);
+        gap: 44px;
+        align-items: center;
+      }
+
+      .mode-panel {
+        min-height: 430px;
+        padding: 28px;
+      }
+
+      .mode-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 26px;
+      }
+
+      .mode-flow {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 12px;
+        margin-top: 28px;
+      }
+
+      .mode-chip {
+        min-height: 118px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--muted);
+        padding: 12px;
+        text-align: center;
+        font-weight: 800;
+        overflow-wrap: anywhere;
+      }
+
+      .mode-chip.hot {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #15110a;
+      }
+
+      .truth-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 14px;
+      }
+
+      .truth-card {
+        min-height: 230px;
+      }
+
+      .final {
+        min-height: 92svh;
+        display: grid;
+        align-items: center;
+        padding: 96px 0;
+        background: linear-gradient(180deg, transparent, rgba(240, 184, 90, 0.12)), #07090d;
+      }
+
+      .final-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+        gap: 44px;
+        align-items: center;
+      }
+
+      .final-command {
+        padding: 22px;
+      }
+
+      .final-command code {
+        display: block;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        overflow-wrap: anywhere;
+        white-space: normal;
+      }
+
+      .final-command code.primary-command {
+        margin: 14px 0;
+        border-color: rgba(240, 184, 90, 0.78);
+        color: var(--accent);
+        font-size: 1.35rem;
+      }
+
+      .reveal {
+        opacity: 0;
+        transform: translateY(22px);
+        transition:
+          opacity 320ms var(--ease),
+          transform 320ms var(--ease);
+      }
+
+      .reveal.in-view {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      @media (max-width: 1120px) {
+        h1 {
+          font-size: 4.1rem;
+        }
+
+        .title-page h1 {
+          font-size: 5.2rem;
+        }
+
+        h2 {
+          font-size: 2.85rem;
+        }
+
+        .title-grid,
+        .hero-grid,
+        .pi-grid,
+        .takeaway-grid,
+        .scene-inner,
+        .section-heading,
+        .config-grid,
+        .command-grid,
+        .mode-grid,
+        .final-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .route-track,
+        .artifact-grid,
+        .truth-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+
+        .rail {
+          display: none;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .wrap {
+          width: min(100% - 32px, var(--max));
+        }
+
+        .title-page,
+        .hero,
+        .pi-section,
+        .takeaway,
+        .scene,
+        .panel-section,
+        .config-slide,
+        .command-section,
+        .final {
+          min-height: auto;
+          padding: 72px 0;
+        }
+
+        h1 {
+          font-size: 3rem;
+        }
+
+        .title-page h1 {
+          font-size: 3.55rem;
+        }
+
+        .title-deck {
+          font-size: 1.12rem;
+        }
+
+        h2 {
+          font-size: 2.25rem;
+        }
+
+        .title-meta,
+        .hero-metrics,
+        .pi-values,
+        .model-grid,
+        .takeaway-proof,
+        .balance-board,
+        .guardrail-strip,
+        .config-note-grid,
+        .loop-visual,
+        .checkpoint-visual,
+        .evidence-visual,
+        .review-flow,
+        .review-verdicts,
+        .shots-grid,
+        .route-track,
+        .artifact-grid,
+        .truth-grid,
+        .mode-flow {
+          grid-template-columns: 1fr;
+        }
+
+        .focus-visual {
+          min-height: auto;
+          padding: 20px;
+        }
+
+        .takeaway h2 {
+          max-width: none;
+          font-size: 2.45rem;
+        }
+
+        .pi-copy h2 {
+          max-width: none;
+          font-size: 2.45rem;
+        }
+
+        .pi-visual {
+          min-height: auto;
+          padding: 20px;
+        }
+
+        .pi-core {
+          min-height: auto;
+        }
+
+        .pi-core b {
+          font-size: 2.7rem;
+        }
+
+        .takeaway-visual {
+          min-height: auto;
+          padding: 20px;
+        }
+
+        .balance-board {
+          min-height: auto;
+          grid-template-columns: 1fr;
+          grid-template-areas:
+            "autonomy"
+            "core"
+            "control"
+            "rails";
+        }
+
+        .balance-panel {
+          min-height: auto;
+        }
+
+        .loop-visual,
+        .map-visual,
+        .route-visual,
+        .checkpoint-visual,
+        .evidence-visual,
+        .review-visual {
+          min-height: auto;
+        }
+
+        .ambiguity-board {
+          min-height: auto;
+          display: grid;
+          gap: 12px;
+        }
+
+        .task-chip,
+        .missing-map {
+          position: static;
+          width: auto;
+          transform: none;
+        }
+
+        .route-track::before {
+          display: none;
+        }
+
+        .route-step {
+          min-height: 190px;
+        }
+
+        .route-step b {
+          margin-bottom: 34px;
+        }
+
+        .shot.featured {
+          grid-column: auto;
+          grid-row: auto;
+        }
+
+        .json-window pre {
+          padding: 18px;
+          font-size: 0.78rem;
+        }
+
+        .final-command code.primary-command {
+          font-size: 1.05rem;
+        }
+
+        .shot.featured .screenshot-body,
+        .shot .screenshot-body,
+        .screenshot-body {
+          min-height: 260px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          animation-duration: 0.001ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.001ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="progress" aria-hidden="true">
+      <span id="progressBar"></span>
+    </div>
+    <div class="rail" aria-hidden="true">
+      <span class="active"></span>
+      <span></span>
+      <span></span>
+      <span></span>
+      <span></span>
+      <span></span>
+      <span></span>
+      <span></span>
+      <span></span>
+      <span></span>
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
+
+    <header class="title-page" id="title" data-rail>
+      <div class="wrap title-grid">
+        <div class="reveal">
+          <p class="eyebrow">Pi dev-cycle pipeline</p>
+          <h1>
+            <span class="wordmark wordmark--display" aria-label="ralph-works">
+              <span class="wordmark__ralph">ralph</span>
+              <span class="wordmark__gate" aria-hidden="true">-</span>
+              <span class="wordmark__works">works</span>
+            </span>
+          </h1>
+          <p class="title-deck">
+            A safer architecture for long agent runs: high autonomy inside each phase, clear developer control at the
+            boundaries.
+          </p>
+        </div>
+        <aside class="title-panel reveal" aria-label="ralph-works overview">
+          <div>
+            <strong>Start with one command.</strong>
+            <p>
+              <span class="wordmark wordmark--inline" aria-label="ralph-works">
+                <span class="wordmark__ralph">ralph</span>
+                <span class="wordmark__gate" aria-hidden="true">-</span>
+                <span class="wordmark__works">works</span>
+              </span>
+              turns a feature request into a structured run with planning, red-team pressure, hardening, implementation,
+              and review.
+            </p>
+            <code class="title-command">/ralph-works start "add refresh-token revocation"</code>
+          </div>
+          <div class="title-meta" aria-hidden="true">
+            <span>spec</span>
+            <span>gates</span>
+            <span>review</span>
+          </div>
+        </aside>
+      </div>
+    </header>
+
+    <section class="hero" id="top" data-rail>
+      <div class="wrap hero-grid">
+        <div class="hero-copy reveal">
+          <div>
+            <p class="eyebrow">
+              <span class="wordmark wordmark--inline" aria-label="ralph-works">
+                <span class="wordmark__ralph">ralph</span>
+                <span class="wordmark__gate" aria-hidden="true">-</span>
+                <span class="wordmark__works">works</span>
+              </span>
+              for Pi engineers
+            </p>
+            <h2>Long agent runs need visible control.</h2>
+          </div>
+          <p class="lead">
+            Standard Ralph gives an agent persistence.
+            <span class="wordmark wordmark--inline" aria-label="ralph-works">
+              <span class="wordmark__ralph">ralph</span>
+              <span class="wordmark__gate" aria-hidden="true">-</span>
+              <span class="wordmark__works">works</span>
+            </span>
+            turns that persistence into an inspectable development run: spec, red team, harden, optional HTML, TDD, and
+            review.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#try">Run the command</a>
+            <a class="button" href="#why-pi">Why Pi</a>
+            <a class="button" href="#walkthrough">Walk the run</a>
+            <a
+              class="button"
+              href="https://github.com/pydn/ralph-works"
+              rel="noreferrer"
+              target="_blank"
+              >View repo</a
+            >
+            <a
+              class="button"
+              href="https://github.com/pydn/ralph-works#readme"
+              rel="noreferrer"
+              target="_blank"
+              >Read implementation notes</a
+            >
+          </div>
+        </div>
+
+        <div class="hero-system reveal" aria-label="ralph-works launch preview">
+          <section class="console" aria-label="Primary terminal command">
+            <div class="console-top"><i></i><i></i><i></i></div>
+            <pre><span class="dim">$</span> <span class="accent" id="heroCommand">/ralph-works start "add refresh-token revocation"</span>
+<span class="dim">phase</span>  Generate Spec
+<span class="dim">phase</span>  Red Team Audit
+<span class="dim">phase</span>  Harden Spec
+<span class="warn">WAIT</span>   Review planning artifacts before TDD</pre>
+          </section>
+          <div class="hero-metrics" aria-label="Pipeline facts">
+            <div class="metric">
+              <b>6</b>
+              <span>named phases replace an unstructured loop</span>
+            </div>
+            <div class="metric">
+              <b>1</b>
+              <span>default human checkpoint before implementation</span>
+            </div>
+            <div class="metric">
+              <b>LGTM</b>
+              <span>review ends the run or sends it back</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <main id="main">
+      <section class="pi-section" id="why-pi" data-rail>
+        <div class="wrap pi-grid">
+          <div class="pi-copy reveal">
+            <div>
+              <p class="eyebrow">Why Pi</p>
+              <h2>The substrate matters.</h2>
+            </div>
+            <p class="lead">
+              <span class="wordmark wordmark--inline" aria-label="ralph-works">
+                <span class="wordmark__ralph">ralph</span>
+                <span class="wordmark__gate" aria-hidden="true">-</span>
+                <span class="wordmark__works">works</span>
+              </span>
+              is built on Pi because the agent platform matches the way this workflow needs to evolve: actively
+              maintained, quickly adopted by developers, lightweight, customizable, open source, and model agnostic.
+            </p>
+            <div class="pi-values" aria-label="Reasons for choosing Pi">
+              <div class="pi-value">
+                <b>Maintained</b>
+                <span>A live platform gives the extension room to keep improving with the dev community.</span>
+              </div>
+              <div class="pi-value">
+                <b>Lightweight</b>
+                <span>The workflow can stay close to the repo instead of becoming a heavy orchestration layer.</span>
+              </div>
+              <div class="pi-value">
+                <b>Customizable</b>
+                <span>Commands, gates, skills, checkpoints, and artifacts can be shaped around the project.</span>
+              </div>
+              <div class="pi-value">
+                <b>Open source</b>
+                <span>The control surface is inspectable, forkable, and easy to adapt for different teams.</span>
+              </div>
+            </div>
+          </div>
+          <figure class="pi-visual reveal" aria-label="Pi model agnostic architecture">
+            <div class="visual-title">
+              <b>model-agnostic control plane</b>
+              <span class="status-pill">most important</span>
+            </div>
+            <div class="pi-core">
+              <b>Pi</b>
+              <strong>Route each phase to the model that fits.</strong>
+              <span
+                >Planning, implementation, and review can use different model strengths without rewriting the
+                loop.</span
+              >
+            </div>
+            <div class="model-grid">
+              <div class="model-card">
+                <b>Planning</b>
+                <span>opus-4.7 xhigh</span>
+              </div>
+              <div class="model-card featured">
+                <b>Implementation</b>
+                <span>qwen3.6-27b-mtp</span>
+              </div>
+              <div class="model-card">
+                <b>Review</b>
+                <span>gpt-5.5 xhigh</span>
+              </div>
+              <div class="model-card">
+                <b>Future phases</b>
+                <span>local, frontier, or specialist models</span>
+              </div>
+            </div>
+          </figure>
+        </div>
+      </section>
+
+      <section class="takeaway" id="key-takeaway" data-rail>
+        <div class="wrap takeaway-grid">
+          <div class="takeaway-copy reveal">
+            <div>
+              <p class="eyebrow">Key takeaway</p>
+              <h2>Autonomy and control do not have to conflict.</h2>
+            </div>
+            <p class="lead">
+              <span class="wordmark wordmark--inline" aria-label="ralph-works">
+                <span class="wordmark__ralph">ralph</span>
+                <span class="wordmark__gate" aria-hidden="true">-</span>
+                <span class="wordmark__works">works</span>
+              </span>
+              is built around maximizing both in a safe way. The agent gets room to work inside each phase; the
+              developer gets visible boundaries, artifacts, checkpoints, and review paths.
+            </p>
+            <div class="takeaway-proof" aria-label="Why the architecture is safe">
+              <div class="proof-chip">
+                <b>Autonomy</b>
+                <span>Ralph can plan, attack, harden, implement, and review.</span>
+              </div>
+              <div class="proof-chip">
+                <b>Control</b>
+                <span>The route, gates, artifacts, and handoffs stay explicit.</span>
+              </div>
+              <div class="proof-chip">
+                <b>Safety</b>
+                <span>Defaults pause before TDD; review can route work back.</span>
+              </div>
+            </div>
+          </div>
+          <figure class="takeaway-visual reveal" aria-label="Agent autonomy and developer control architecture">
+            <div class="balance-board">
+              <div class="balance-panel autonomy">
+                <b>Agent autonomy</b>
+                <span>Explore the task, revise the plan, write tests, implement, and remediate review findings.</span>
+              </div>
+              <div class="safe-core"><b>safe architecture</b></div>
+              <div class="balance-panel control">
+                <b>Developer control</b>
+                <span
+                  >Choose the route, inspect evidence, approve handoffs, configure gates, and keep the final say.</span
+                >
+              </div>
+              <div class="guardrail-strip" aria-hidden="true">
+                <span>spec</span>
+                <span>red team</span>
+                <span>harden</span>
+                <span>checkpoint</span>
+                <span>review loop</span>
+              </div>
+            </div>
+          </figure>
+        </div>
+      </section>
+
+      <section id="walkthrough" aria-label="ralph-works visual walkthrough">
+        <article class="scene" data-rail>
+          <div class="wrap scene-inner">
+            <div class="scene-copy reveal">
+              <span class="scene-number">01</span>
+              <p class="eyebrow">Persistence</p>
+              <h2>The loop is the primitive.</h2>
+              <p class="lead">
+                Standard Ralph is useful because it keeps an agent moving through work, completion, reflection, and
+                saved state. That persistence is the foundation.
+              </p>
+            </div>
+            <figure class="focus-visual reveal" aria-label="Standard Ralph loop visual">
+              <div class="visual-title">
+                <b>standard Ralph loop</b>
+                <span class="status-pill">persistent</span>
+              </div>
+              <div class="loop-visual">
+                <div class="work-list">
+                  <div class="work-row"><b>01</b><span>Work a checklist item</span><code>active</code></div>
+                  <div class="work-row"><b>02</b><span>Call completion tool</span><code>done</code></div>
+                  <div class="work-row"><b>03</b><span>Reflect on remaining work</span><code>next</code></div>
+                  <div class="work-row"><b>04</b><span>Resume from state</span><code>again</code></div>
+                </div>
+                <div class="loop-ring"><span>keep going</span></div>
+              </div>
+            </figure>
+          </div>
+        </article>
+
+        <article class="scene" data-rail>
+          <div class="wrap scene-inner">
+            <div class="scene-copy reveal">
+              <span class="scene-number">02</span>
+              <p class="eyebrow">Problem</p>
+              <h2>The weak point is the missing map.</h2>
+              <p class="lead">
+                If everything is another iteration, planning, threat modeling, implementation, and review can blur into
+                one long turn. The agent keeps moving, but the operator has less to inspect.
+              </p>
+            </div>
+            <figure class="focus-visual reveal" aria-label="Unstructured work visual">
+              <div class="visual-title">
+                <b>single running conversation</b>
+                <span class="status-pill">unclear boundary</span>
+              </div>
+              <div class="map-visual">
+                <div class="ambiguity-board">
+                  <div class="task-chip"><b>Planning</b><span>architecture and scope</span></div>
+                  <div class="task-chip"><b>Security</b><span>risks appear late</span></div>
+                  <div class="task-chip"><b>Tests</b><span>gates happen after code</span></div>
+                  <div class="task-chip"><b>Review</b><span>finish line is implied</span></div>
+                  <div class="missing-map">missing map</div>
+                </div>
+              </div>
+            </figure>
+          </div>
+        </article>
+
+        <article class="scene" data-rail>
+          <div class="wrap scene-inner">
+            <div class="scene-copy reveal">
+              <span class="scene-number">03</span>
+              <p class="eyebrow">Route</p>
+              <h2>
+                <span class="wordmark wordmark--inline" aria-label="ralph-works">
+                  <span class="wordmark__ralph">ralph</span>
+                  <span class="wordmark__gate" aria-hidden="true">-</span>
+                  <span class="wordmark__works">works</span>
+                </span>
+                gives the run named phases.
+              </h2>
+              <p class="lead">
+                The work becomes legible: spec, red team, harden, optional HTML, TDD implementation, and review. Each
+                phase has a job and an expected output.
+              </p>
+            </div>
+            <figure class="focus-visual reveal" aria-label="ralph-works phase route">
+              <div class="visual-title">
+                <b>visible development route</b>
+                <span class="status-pill">6 phases</span>
+              </div>
+              <div class="route-visual">
+                <div class="route-track">
+                  <article class="route-step">
+                    <b>01</b>
+                    <h3>Spec</h3>
+                    <p>Define the plan and tradeoffs.</p>
+                  </article>
+                  <article class="route-step">
+                    <b>02</b>
+                    <h3>Red team</h3>
+                    <p>Attack the plan before code.</p>
+                  </article>
+                  <article class="route-step">
+                    <b>03</b>
+                    <h3>Harden</h3>
+                    <p>Fold findings back into the spec.</p>
+                  </article>
+                  <article class="route-step">
+                    <b>04</b>
+                    <h3>HTML</h3>
+                    <p>Render a reviewable artifact.</p>
+                  </article>
+                  <article class="route-step">
+                    <b>05</b>
+                    <h3>TDD</h3>
+                    <p>Implement against the hardened route.</p>
+                  </article>
+                  <article class="route-step">
+                    <b>06</b>
+                    <h3>Review</h3>
+                    <p>Loop until LGTM.</p>
+                  </article>
+                </div>
+              </div>
+            </figure>
+          </div>
+        </article>
+
+        <article class="scene" data-rail>
+          <div class="wrap scene-inner">
+            <div class="scene-copy reveal">
+              <span class="scene-number">04</span>
+              <p class="eyebrow">Control surface</p>
+              <h2>The default checkpoint is the handoff.</h2>
+              <p class="lead">
+                Ralph drafts, attacks, and hardens the plan. Then it stops. The engineer can continue, render HTML
+                first, or use
+                <code>--yolo</code> to skip human review stages and run straight through the entire loop without
+                checking in.
+              </p>
+            </div>
+            <figure class="focus-visual reveal" aria-label="Human checkpoint visual">
+              <div class="visual-title">
+                <b>planning -> checkpoint -> implementation</b>
+                <span class="status-pill">developer control</span>
+              </div>
+              <div class="checkpoint-visual">
+                <div class="doc-stack">
+                  <div class="paper-card"><b>Spec</b><span>Architecture and scope</span></div>
+                  <div class="paper-card"><b>Red team</b><span>Severity-tagged risks</span></div>
+                  <div class="paper-card"><b>Harden</b><span>Mitigated plan</span></div>
+                </div>
+                <div class="decision-node">human checkpoint</div>
+                <div class="build-stack">
+                  <div class="build-card"><b>/ralph-works continue</b><span>Start TDD</span></div>
+                  <div class="build-card"><b>--render-html</b><span>Show the plan first</span></div>
+                  <div class="build-card"><b>--yolo</b><span>Skip human check-ins</span></div>
+                </div>
+              </div>
+            </figure>
+          </div>
+        </article>
+
+        <article class="scene" data-rail>
+          <div class="wrap scene-inner">
+            <div class="scene-copy reveal">
+              <span class="scene-number">05</span>
+              <p class="eyebrow">Evidence</p>
+              <h2>The run leaves material engineers can inspect.</h2>
+              <p class="lead">
+                The persuasive part is not only the terminal. It is the growing evidence trail: spec, red-team findings,
+                hardened changelog, optional HTML, and live status.
+              </p>
+            </div>
+            <figure class="focus-visual reveal" aria-label="Artifact evidence visual">
+              <div class="visual-title">
+                <b>screenshots and files</b>
+                <span class="status-pill">inspectable</span>
+              </div>
+              <div class="evidence-visual">
+                <div class="screenshot-mock">
+                  <div class="mock-top"><i></i><i></i><i></i></div>
+                  <div class="screenshot-body">
+                    <div>
+                      <strong>Screenshot placeholder</strong>
+                      live phase widget, command prompt, or checkpoint screen
+                    </div>
+                  </div>
+                </div>
+                <pre class="file-tree"><b>docs/</b>
+  specs/
+    refresh-token-revocation.md
+    harden-changelog.md
+    refresh-token-revocation-final.html
+  security/
+    redteam-findings.md
+<b>.ralph/</b>
+  model-plan.json
+  gate-config.json</pre>
+              </div>
+            </figure>
+          </div>
+        </article>
+
+        <article class="scene" data-rail>
+          <div class="wrap scene-inner">
+            <div class="scene-copy reveal">
+              <span class="scene-number">06</span>
+              <p class="eyebrow">Review loop</p>
+              <h2>Tests passing is not the only finish line.</h2>
+              <p class="lead">
+                Review can send critical findings back to implementation. LGTM completes the run. The last phase is
+                iterative by design.
+              </p>
+            </div>
+            <figure class="focus-visual reveal" aria-label="Review loop visual">
+              <div class="visual-title">
+                <b>TDD implementation and review</b>
+                <span class="status-pill">loop until LGTM</span>
+              </div>
+              <div class="review-visual">
+                <div class="review-flow">
+                  <div class="review-node">TDD Implement</div>
+                  <div class="flow-arrows"><span>LGTM -></span><span>&lt;- CRITICAL</span></div>
+                  <div class="review-node">Ralph Review</div>
+                </div>
+                <div class="review-verdicts">
+                  <div class="verdict bad"><b>CRITICAL</b><br />Back to implementation with context preserved.</div>
+                  <div class="verdict good"><b>LGTM</b><br />Pipeline complete with review evidence.</div>
+                </div>
+              </div>
+            </figure>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel-section" id="screenshots" data-rail>
+        <div class="wrap">
+          <div class="section-heading reveal">
+            <div>
+              <p class="eyebrow">Product proof</p>
+              <h2>What readers should see before they try it.</h2>
+            </div>
+            <p>
+              Drop real screenshots into these slots when available. Keep them focused on product evidence, not
+              decorative imagery.
+            </p>
+          </div>
+          <div class="shots-grid reveal">
+            <article class="shot featured">
+              <div class="mock-top"><i></i><i></i><i></i></div>
+              <div class="screenshot-body">
+                <div><strong>Screenshot placeholder</strong>/ralph-works start launches a run</div>
+              </div>
+              <h3>Start</h3>
+              <p>Show the feature prompt, selected phases, and initial status.</p>
+            </article>
+            <article class="shot">
+              <div class="mock-top"><i></i><i></i><i></i></div>
+              <div class="screenshot-body">
+                <div><strong>Screenshot placeholder</strong>planning checkpoint</div>
+              </div>
+              <h3>Checkpoint</h3>
+              <p>The key control moment before implementation begins.</p>
+            </article>
+            <article class="shot">
+              <div class="mock-top"><i></i><i></i><i></i></div>
+              <div class="screenshot-body">
+                <div><strong>Screenshot placeholder</strong>live TUI widget</div>
+              </div>
+              <h3>Status</h3>
+              <p>Make the long-running workflow observable while it streams.</p>
+            </article>
+            <article class="shot">
+              <div class="mock-top"><i></i><i></i><i></i></div>
+              <div class="screenshot-body">
+                <div><strong>Screenshot placeholder</strong>review verdict</div>
+              </div>
+              <h3>Finish</h3>
+              <p>Close with LGTM or a critical issue routed back to TDD.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel-section" id="artifacts">
+        <div class="wrap">
+          <div class="section-heading reveal">
+            <div>
+              <p class="eyebrow">Evidence trail</p>
+              <h2>The output is bigger than a passing test run.</h2>
+            </div>
+            <p>
+              <span class="wordmark wordmark--inline" aria-label="ralph-works">
+                <span class="wordmark__ralph">ralph</span>
+                <span class="wordmark__gate" aria-hidden="true">-</span>
+                <span class="wordmark__works">works</span>
+              </span>
+              gives engineers concrete artifacts at the moments they normally need review material.
+            </p>
+          </div>
+          <div class="artifact-grid reveal">
+            <article class="artifact">
+              <b>Spec</b>
+              <h3>Engineering plan</h3>
+              <p>Architecture, scope, risks, and implementation shape.</p>
+              <code>docs/specs/*.md</code>
+            </article>
+            <article class="artifact">
+              <b>Red team</b>
+              <h3>Findings</h3>
+              <p>Attack paths, severity, and mitigations before code.</p>
+              <code>docs/security/*.md</code>
+            </article>
+            <article class="artifact">
+              <b>Harden</b>
+              <h3>Changelog</h3>
+              <p>What changed after adversarial review and why.</p>
+              <code>harden-changelog.md</code>
+            </article>
+            <article class="artifact">
+              <b>Render</b>
+              <h3>HTML spec</h3>
+              <p>Optional polished output for easier planning review.</p>
+              <code>--render-html</code>
+            </article>
+            <article class="artifact">
+              <b>State</b>
+              <h3>Run summary</h3>
+              <p>Phase status survives reloads and context changes.</p>
+              <code>.ralph/</code>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="config-slide" id="model-plan" data-rail>
+        <div class="wrap config-grid">
+          <div class="config-copy reveal">
+            <p class="eyebrow">Model plan JSON</p>
+            <h2>The model choice becomes part of the architecture.</h2>
+            <p class="lead">
+              <code>.ralph/model-plan.json</code> lets a team declare which model should carry the run, or which phases
+              deserve a different reasoning level. It is intentionally trusted only when the operator opts in.
+            </p>
+            <div class="config-note-grid" aria-label="Model plan significance">
+              <div class="config-note">
+                <b>Explicit</b>
+                <span>Model routing is visible in the repo instead of hidden in a prompt.</span>
+              </div>
+              <div class="config-note">
+                <b>Phase-aware</b>
+                <span>Planning, implementation, and review can each use a purpose-fit model.</span>
+              </div>
+              <div class="config-note">
+                <b>Trusted</b>
+                <span>Workspace config is ignored unless started with <code>--trust-model-plan</code>.</span>
+              </div>
+            </div>
+          </div>
+          <figure class="json-window reveal" aria-label="Example .ralph/model-plan.json">
+            <div class="mock-top"><i></i><i></i><i></i></div>
+            <pre><code>{
+  "version": "1.0",
+  "default": {
+    "provider": "anthropic",
+    "model": "opus-4.7",
+    "thinkingLevel": "xhigh"
+  },
+  "phases": {
+    "spec": {
+      "provider": "anthropic",
+      "model": "opus-4.7",
+      "thinkingLevel": "xhigh"
+    },
+    "redteam": {
+      "provider": "anthropic",
+      "model": "opus-4.7",
+      "thinkingLevel": "xhigh"
+    },
+    "harden": {
+      "provider": "anthropic",
+      "model": "opus-4.7",
+      "thinkingLevel": "xhigh"
+    },
+    "implement": {
+      "provider": "qwen",
+      "model": "qwen3.6-27b-mtp"
+    },
+    "review": {
+      "provider": "openai",
+      "model": "gpt-5.5",
+      "thinkingLevel": "xhigh"
+    }
+  },
+  "restoreOriginalOnComplete": true,
+  "strict": true
+}</code></pre>
+          </figure>
+        </div>
+      </section>
+
+      <section class="config-slide gates" id="gate-config" data-rail>
+        <div class="wrap config-grid">
+          <div class="config-copy reveal">
+            <p class="eyebrow">Gates JSON</p>
+            <h2>The pass/fail policy is explicit, not guessed.</h2>
+            <p class="lead">
+              <code>.ralph/gate-config.json</code> tells
+              <span class="wordmark wordmark--inline" aria-label="ralph-works">
+                <span class="wordmark__ralph">ralph</span>
+                <span class="wordmark__gate" aria-hidden="true">-</span>
+                <span class="wordmark__works">works</span>
+              </span>
+              which checks it is allowed to run. If the file is absent, the agent must use the repository's documented
+              test commands manually.
+            </p>
+            <div class="config-note-grid" aria-label="Gate config significance">
+              <div class="config-note">
+                <b>Opt-in</b>
+                <span>Ralph-managed gates run only when this file exists.</span>
+              </div>
+              <div class="config-note">
+                <b>Safe</b>
+                <span>Commands are whitelist-checked and shell metacharacters are rejected.</span>
+              </div>
+              <div class="config-note">
+                <b>Useful</b>
+                <span>Passing implementation gates can hand the run into review.</span>
+              </div>
+            </div>
+          </div>
+          <figure class="json-window reveal" aria-label="Example .ralph/gate-config.json">
+            <div class="mock-top"><i></i><i></i><i></i></div>
+            <pre><code>{
+  "version": "1.0",
+  "name": "typescript-service",
+  "language": "typescript",
+  "gates": [
+    {
+      "name": "Type Check",
+      "command": "npx tsc --noEmit",
+      "timeoutMs": 60000
+    },
+    {
+      "name": "Unit Tests",
+      "command": "npx vitest run",
+      "timeoutMs": 300000
+    },
+    {
+      "name": "Lint",
+      "command": "npx eslint . --ext .ts,.tsx",
+      "timeoutMs": 60000
+    }
+  ]
+}</code></pre>
+          </figure>
+        </div>
+      </section>
+
+      <section class="command-section" id="try">
+        <div class="wrap command-grid">
+          <div class="reveal">
+            <p class="eyebrow">The first real test</p>
+            <h2>Run it on a feature where process matters.</h2>
+            <p class="lead">
+              Refresh-token revocation is narrow, security-sensitive, and naturally exercises spec writing, red-team
+              review, tests, and final review.
+            </p>
+          </div>
+          <section class="console reveal" aria-label="Example ralph-works terminal sequence">
+            <div class="console-top"><i></i><i></i><i></i></div>
+            <pre><span class="dim">$</span> <span class="accent">/ralph-works start "add refresh-token revocation"</span>
+<span class="dim">ralph-works</span> Generate Spec
+<span class="dim">ralph-works</span> Red Team Audit
+<span class="dim">ralph-works</span> Harden Spec
+<span class="warn">WAIT</span>        Review artifacts before TDD
+
+<span class="dim">$</span> <span class="accent">/ralph-works continue --render-html</span>
+<span class="dim">ralph-works</span> Render HTML
+<span class="dim">ralph-works</span> TDD Implement
+<span class="dim">ralph-works</span> Review Loop
+<span class="ok">LGTM</span>        pipeline complete</pre>
+          </section>
+        </div>
+      </section>
+
+      <section class="panel-section" id="modes">
+        <div class="wrap mode-grid">
+          <div class="reveal">
+            <p class="eyebrow">Operating mode</p>
+            <h2>The operator chooses the handoff.</h2>
+            <p class="lead">
+              Default mode pauses before TDD. Yolo mode skips every human checkpoint and sends the agent straight
+              through the full loop without asking for review.
+            </p>
+            <div class="mode-buttons" role="group" aria-label="Select operating mode">
+              <button class="mode-button active" type="button" data-mode="checkpoint">Default checkpoint</button>
+              <button class="mode-button" type="button" data-mode="yolo">Yolo mode</button>
+            </div>
+          </div>
+          <article class="mode-panel reveal" aria-live="polite">
+            <p class="eyebrow" id="modeLabel">Default mode</p>
+            <h3 id="modeTitle">Pause before implementation.</h3>
+            <p class="lead" id="modeBody">
+              Ralph generates, attacks, and hardens the plan, then waits for the engineer to approve the implementation
+              handoff.
+            </p>
+            <div class="mode-flow" id="modeFlow" aria-hidden="true">
+              <div class="mode-chip">spec</div>
+              <div class="mode-chip">red team</div>
+              <div class="mode-chip hot">human checkpoint</div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel-section" id="truth">
+        <div class="wrap">
+          <div class="section-heading reveal">
+            <div>
+              <p class="eyebrow">Operating truth</p>
+              <h2>Adoption is easier when the limits are visible.</h2>
+            </div>
+            <p>
+              The page should sell the improvement without hiding the engineering constraints that matter in real
+              projects.
+            </p>
+          </div>
+          <div class="truth-grid reveal">
+            <article class="truth-card">
+              <h3>Skills are required</h3>
+              <p><code>/ralph-works start</code> validates selected phase skill files before launch.</p>
+            </article>
+            <article class="truth-card">
+              <h3>HTML is opt-in</h3>
+              <p>
+                Rendering runs only with <code>--render-html</code>, <code>html</code>, or an explicit render phase.
+              </p>
+            </article>
+            <article class="truth-card">
+              <h3>Gates are explicit</h3>
+              <p>
+                Ralph-managed gates come from
+                <code>.ralph/gate-config.json</code>; the extension does not guess.
+              </p>
+            </article>
+            <article class="truth-card">
+              <h3>Use a worktree</h3>
+              <p>Implementation belongs in an isolated worktree so the primary checkout stays available.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="final" id="start">
+        <div class="wrap final-grid">
+          <div class="reveal">
+            <p class="eyebrow">Close with action</p>
+            <h2>
+              Standard Ralph keeps going.
+              <span class="wordmark wordmark--inline" aria-label="ralph-works">
+                <span class="wordmark__ralph">ralph</span>
+                <span class="wordmark__gate" aria-hidden="true">-</span>
+                <span class="wordmark__works">works</span>
+              </span>
+              knows where it is going.
+            </h2>
+            <p class="lead">
+              Install the extension, reload Pi, and start with one bounded feature. The page should leave the reader
+              with a single command.
+            </p>
+          </div>
+          <div class="final-command reveal">
+            <code>ln -s $(pwd) ~/.pi/agent/extensions/ralph-works</code>
+            <code>/reload</code>
+            <code class="primary-command" id="finalCommand">/ralph-works start "add refresh-token revocation"</code>
+            <button class="copy-button primary" type="button" data-copy="#finalCommand">Copy first run</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      (() => {
+        const progressBar = document.getElementById("progressBar");
+        const railDots = [...document.querySelectorAll(".rail span")];
+        const railSections = [...document.querySelectorAll("[data-rail]")];
+        const revealItems = [...document.querySelectorAll(".reveal")];
+        const copyButtons = [...document.querySelectorAll("[data-copy]")];
+        const modeButtons = [...document.querySelectorAll("[data-mode]")];
+        const modeLabel = document.getElementById("modeLabel");
+        const modeTitle = document.getElementById("modeTitle");
+        const modeBody = document.getElementById("modeBody");
+        const modeFlow = document.getElementById("modeFlow");
+
+        const modes = {
+          checkpoint: {
+            label: "Default mode",
+            title: "Pause before implementation.",
+            body: "Ralph generates, attacks, and hardens the plan, then waits for the engineer to approve the implementation handoff.",
+            chips: ["spec", "red team", "human checkpoint"],
+            hot: 2,
+          },
+          yolo: {
+            label: "Yolo mode",
+            title: "Run the whole loop without human check-ins.",
+            body: "Use --yolo only when you want Ralph to skip human review stages entirely: spec, red team, harden, implementation, and review proceed straight through without stopping for approval.",
+            chips: ["spec -> red team", "harden -> TDD", "review -> complete"],
+            hot: 1,
+          },
+        };
+
+        function updateProgress() {
+          const scrollTop = window.scrollY || document.documentElement.scrollTop;
+          const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+          const pct = maxScroll > 0 ? Math.min(100, Math.max(0, (scrollTop / maxScroll) * 100)) : 0;
+          progressBar.style.width = `${pct}%`;
+        }
+
+        const railObserver = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((entry) => {
+              if (!entry.isIntersecting) return;
+              const idx = railSections.indexOf(entry.target);
+              railDots.forEach((dot, dotIdx) => dot.classList.toggle("active", dotIdx === idx));
+            });
+          },
+          { threshold: 0.42 },
+        );
+
+        const revealObserver = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((entry) => {
+              if (entry.isIntersecting) entry.target.classList.add("in-view");
+            });
+          },
+          { threshold: 0.18 },
+        );
+
+        function setMode(modeName) {
+          const mode = modes[modeName];
+          if (!mode) return;
+          modeButtons.forEach((button) => button.classList.toggle("active", button.dataset.mode === modeName));
+          modeLabel.textContent = mode.label;
+          modeTitle.textContent = mode.title;
+          modeBody.textContent = mode.body;
+          modeFlow.replaceChildren(
+            ...mode.chips.map((chip, idx) => {
+              const node = document.createElement("div");
+              node.className = `mode-chip${idx === mode.hot ? " hot" : ""}`;
+              node.textContent = chip;
+              return node;
+            }),
+          );
+        }
+
+        async function copyText(text) {
+          if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            return;
+          }
+
+          const field = document.createElement("textarea");
+          field.value = text;
+          field.setAttribute("readonly", "");
+          field.style.position = "fixed";
+          field.style.left = "-9999px";
+          document.body.append(field);
+          field.select();
+          document.execCommand("copy");
+          field.remove();
+        }
+
+        copyButtons.forEach((button) => {
+          button.addEventListener("click", async () => {
+            const target = document.querySelector(button.dataset.copy || "");
+            const text = target ? target.textContent.trim() : "";
+            if (!text) return;
+            await copyText(text);
+            const oldLabel = button.textContent;
+            button.textContent = "Copied";
+            window.setTimeout(() => {
+              button.textContent = oldLabel;
+            }, 1400);
+          });
+        });
+
+        modeButtons.forEach((button) => {
+          button.addEventListener("click", () => setMode(button.dataset.mode));
+        });
+
+        railSections.forEach((section) => railObserver.observe(section));
+        revealItems.forEach((item) => revealObserver.observe(item));
+        updateProgress();
+        window.addEventListener("scroll", updateProgress, { passive: true });
+      })();
+    </script>
+  </body>
+</html>

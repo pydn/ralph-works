@@ -2,7 +2,6 @@
 .venv/
 __pycache__/
 .ralph/
-docs/
 node_modules
 node_modules/
 package-lock.json
