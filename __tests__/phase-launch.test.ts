@@ -535,9 +535,9 @@ describe("next-phase launch", () => {
     const widgetLines = ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[];
     const widgetText = widgetLines.join("\n");
     expect(stripAnsi(widgetText.replace(/<\/?[^>]+>/g, ""))).toContain("ralph-works · RUNNING · soft-ui");
-    expect(widgetLines[0]).toContain("\u001b[38;2;38;54;61mralph\u001b[39m");
+    expect(widgetLines[0]).toContain("\u001b[38;2;244;240;231mralph\u001b[39m");
     expect(widgetLines[0]).toContain("\u001b[38;2;230;165;27m-\u001b[39m");
-    expect(widgetLines[0]).toContain("\u001b[38;2;47;111;123mworks\u001b[39m");
+    expect(widgetLines[0]).toContain("\u001b[38;2;95;166;179mworks\u001b[39m");
     expect(styled).toEqual(expect.arrayContaining([{ tone: "accent", text: "RUNNING" }]));
     expect(styled).toEqual(expect.arrayContaining([{ tone: "success", text: "✓" }]));
     expect(styled).toEqual(expect.arrayContaining([{ tone: "accent", text: "▶" }]));
