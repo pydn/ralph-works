@@ -2,6 +2,7 @@ import type { ExtensionContext, ThemeColor } from "@earendil-works/pi-coding-age
 import {
   GATE_PHASES,
   IMPLEMENT_CHECKPOINT_WAIT_REASON,
+  UI_WIDGET_PRODUCT_LABEL,
   UI_WIDGET_ID,
   UI_WIDGET_MAX_LINES,
   VALIDATION_FAILED_PHASE_STATUS,
@@ -78,7 +79,7 @@ function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; a
     return {
       label: "VALIDATION FAILED",
       tone: "error",
-      actions: ["/ralph continue reruns validation", "/ralph cancel abandons this run"],
+      actions: ["/ralph-works continue reruns validation", "/ralph-works cancel abandons this run"],
     };
   }
 
@@ -87,13 +88,13 @@ function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; a
       return {
         label: "WAITING FOR IMPLEMENT REVIEW",
         tone: "warning",
-        actions: ["/ralph continue approves TDD implementation"],
+        actions: ["/ralph-works continue approves TDD implementation"],
       };
     }
     return {
       label: "WAITING FOR USER INPUT",
       tone: "warning",
-      actions: ["Reply to the prompt in chat", "/ralph continue relaunches this phase"],
+      actions: ["Reply to the prompt in chat", "/ralph-works continue relaunches this phase"],
     };
   }
 
@@ -101,16 +102,16 @@ function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; a
     case "completed":
       return { label: "COMPLETE", tone: "success", actions: ["Review the .ralph summary or start another run"] };
     case "paused":
-      return { label: "PAUSED", tone: "warning", actions: ["/ralph resume continues the pipeline"] };
+      return { label: "PAUSED", tone: "warning", actions: ["/ralph-works resume continues the pipeline"] };
     case "failed":
     case "halted":
       return {
         label: "BLOCKED",
         tone: "error",
-        actions: ["Fix the blocker, then run /ralph resume", "/ralph cancel abandons this run"],
+        actions: ["Fix the blocker, then run /ralph-works resume", "/ralph-works cancel abandons this run"],
       };
     case "cancelled":
-      return { label: "CANCELLED", tone: "muted", actions: ["/ralph start <feature> begins a new run"] };
+      return { label: "CANCELLED", tone: "muted", actions: ["/ralph-works start <feature> begins a new run"] };
     default:
       break;
   }
@@ -122,7 +123,7 @@ function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; a
     return { label: "VALIDATING", tone: "accent", actions: ["Validating phase output before transition"] };
   }
   if (st.phaseStatus === "corrupted") {
-    return { label: "STATE ERROR", tone: "error", actions: ["/ralph cancel resets the pipeline state"] };
+    return { label: "STATE ERROR", tone: "error", actions: ["/ralph-works cancel resets the pipeline state"] };
   }
 
   return {
@@ -164,7 +165,7 @@ function buildWidgetLines(ctx: ExtensionContext, st: PipelineState): string[] {
   ].filter(Boolean);
 
   const headerLine = [
-    styleUiText(ctx, "customMessageLabel", "Ralph"),
+    styleUiText(ctx, "customMessageLabel", UI_WIDGET_PRODUCT_LABEL),
     styleUiText(ctx, "muted", " · "),
     styleUiText(ctx, widgetState.tone, widgetState.label),
     styleUiText(ctx, "muted", " · "),

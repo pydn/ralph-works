@@ -51,7 +51,7 @@ export function runLintGates(wd: string, targetPaths?: string[]): GateResult[] {
           pass: true,
           skipped: true,
           output:
-            "No .ralph/gate-config.json found. Ralph gates are opt-in; run the project's documented test commands manually.",
+            "No .ralph/gate-config.json found. ralph-works gates are opt-in; run the project's documented test commands manually.",
         },
       ];
     }
@@ -98,5 +98,5 @@ export function formatGateResults(results: GateResult[]): string {
     .map((r) => (r.pass && !r.skipped ? "" : `\`\`\`\n${r.name} output:\n${r.output}\n\`\`\``))
     .filter(Boolean)
     .join("\n\n");
-  return `## Ralph Gate Results\n\n| Gate | Status | Command | Source |\n|------|--------|---------|--------|\n${rows.join("\n")}\n\n${details}`;
+  return `## ralph-works Gate Results\n\n| Gate | Status | Command | Source |\n|------|--------|---------|--------|\n${rows.join("\n")}\n\n${details}`;
 }

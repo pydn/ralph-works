@@ -1,5 +1,5 @@
 /**
- * Ralph Pipeline — Steer Message Helpers
+ * ralph-works Pipeline — Steer Message Helpers
  *
  * Pure functions for constructing and gating steer messages sent to the agent
  * during session reload / compaction recovery. Extracted from index.ts for
@@ -151,7 +151,7 @@ export function buildReorientationPrompt(state: {
     (idx + 1) +
     ": " +
     phaseName +
-    '\nYou are in a Ralph pipeline for feature "' +
+    '\nYou are in a ralph-works pipeline for feature "' +
     state.feature +
     '".' +
     "\nConversation context was refreshed. State is preserved in JSONL." +

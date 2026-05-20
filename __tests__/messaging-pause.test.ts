@@ -66,7 +66,7 @@ describe("pipeline message delivery after pause", () => {
     const { pi, sendUserMessages } = makeFakePi(branch);
     const ctx = makeContext(branch, idleState);
 
-    sendPipelineUserMessage(pi as any, ctx as any, "queued Ralph follow-up", { deliverAs: "followUp" });
+    sendPipelineUserMessage(pi as any, ctx as any, "queued ralph-works follow-up", { deliverAs: "followUp" });
     pushState(branch, "paused");
     idleState.idle = true;
 

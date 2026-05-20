@@ -132,10 +132,10 @@ export function buildWorkDirPolicyWarning(state: PipelineState): string | null {
   const phaseKey = state.currentPhase ?? state.phases?.[state.currentPhaseIndex ?? 0] ?? "unknown";
   const expected = formatExpectedArtifactPaths(getExpectedArtifactPaths(phaseKey, state));
   return [
-    `Ralph workDir is the primary checkout: ${state.workDir}`,
+    `ralph-works workDir is the primary checkout: ${state.workDir}`,
     "This repository policy requires implementation and phase artifacts to be written from a dedicated git worktree.",
     expected,
-    "Remediation: create or select the dedicated worktree, then call the registered `ralph_set_workdir` tool with that worktree root or run `/ralph set-workdir <path>` before completing the phase.",
+    "Remediation: create or select the dedicated worktree, then call the registered `ralph_set_workdir` tool with that worktree root or run `/ralph-works set-workdir <path>` before completing the phase.",
   ].join("\n");
 }
 
@@ -162,7 +162,7 @@ export function formatPostHookFailure(phaseKey: string, state: PipelineState, re
 
   lines.push(
     "",
-    "Remediation: if the agent created or switched to a dedicated worktree, call the registered `ralph_set_workdir` tool with that worktree root, or run `/ralph set-workdir <path>`, then retry phase completion. Do not copy artifacts between checkouts unless the operator explicitly confirms that move.",
+    "Remediation: if the agent created or switched to a dedicated worktree, call the registered `ralph_set_workdir` tool with that worktree root, or run `/ralph-works set-workdir <path>`, then retry phase completion. Do not copy artifacts between checkouts unless the operator explicitly confirms that move.",
   );
   return lines.join("\n");
 }
@@ -185,5 +185,5 @@ export function resolvePipelineWorkDir(currentWorkDir: string, candidate: string
     };
   }
 
-  return { ok: true, workDir: resolved, message: `Ralph workDir updated to ${resolved}` };
+  return { ok: true, workDir: resolved, message: `ralph-works workDir updated to ${resolved}` };
 }

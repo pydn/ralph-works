@@ -8,7 +8,7 @@ You were interrupted mid-phase. The phase-specific instructions are below — fo
 
 ---
 
-# Ralph Pipeline — Phase: Red Team Audit
+# ralph-works Pipeline — Phase: Red Team Audit
 
 Some skill content here.`;
 

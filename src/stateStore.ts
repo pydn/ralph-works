@@ -3,7 +3,7 @@ import { CUSTOM_TYPE } from "./config";
 import type { PipelineState } from "./domain";
 
 /**
- * Return the latest Ralph state by walking the whole branch root-to-tip.
+ * Return the latest ralph-works state by walking the whole branch root-to-tip.
  * Pi sessions can contain multiple custom entries after reloads and compaction;
  * the last matching entry is the controller's source of truth.
  */

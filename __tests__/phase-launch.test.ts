@@ -149,8 +149,8 @@ describe("next-phase launch", () => {
     expect(sendMessages).toHaveLength(0);
     expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("→ Phase"), "info");
     const widgetText = ctx.ui.setWidget.mock.calls.map((call) => (call[1] as string[]).join("\n")).join("\n");
-    expect(widgetText).not.toContain("/ralph status shows details");
-    expect(widgetText).not.toContain("/ralph pause pauses safely");
+    expect(widgetText).not.toContain("/ralph-works status shows details");
+    expect(widgetText).not.toContain("/ralph-works pause pauses safely");
 
     const latestState = branch[branch.length - 1]?.data as { currentPhase?: string; phaseStatus?: string };
     expect(latestState.currentPhase).toBe("redteam");
@@ -385,7 +385,7 @@ describe("next-phase launch", () => {
     expect(ctx.ui.setWidget).toHaveBeenLastCalledWith(
       "ralph-loop",
       expect.arrayContaining([
-        expect.stringContaining("Ralph · WAITING FOR USER INPUT"),
+        expect.stringContaining("ralph-works · WAITING FOR USER INPUT"),
         expect.stringContaining("WAITING FOR USER INPUT"),
         expect.stringContaining("▶ 1/2 Generate Spec"),
         expect.stringContaining("Reply to the prompt"),
@@ -476,7 +476,7 @@ describe("next-phase launch", () => {
     expect(ctx.ui.setWidget).toHaveBeenLastCalledWith(
       "ralph-loop",
       expect.arrayContaining([
-        expect.stringContaining("Ralph · RUNNING"),
+        expect.stringContaining("ralph-works · RUNNING"),
         expect.stringContaining("RUNNING"),
         expect.stringContaining("Run configured gates"),
       ]),
@@ -484,8 +484,8 @@ describe("next-phase launch", () => {
     );
     const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
     expect((ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).length).toBeLessThanOrEqual(4);
-    expect(widgetText).not.toContain("/ralph pause pauses safely");
-    expect(widgetText).not.toContain("/ralph status shows details");
+    expect(widgetText).not.toContain("/ralph-works pause pauses safely");
+    expect(widgetText).not.toContain("/ralph-works status shows details");
     expect(widgetText).not.toContain("Status: running");
     expect(widgetText).not.toContain("Started:");
     expect(widgetText).not.toContain("Prompt: none");
@@ -533,8 +533,8 @@ describe("next-phase launch", () => {
 
     const widgetLines = ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[];
     const widgetText = widgetLines.join("\n");
-    expect(stripAnsi(widgetText.replace(/<\/?[^>]+>/g, ""))).toContain("Ralph · RUNNING · soft-ui");
-    expect(styled).toEqual(expect.arrayContaining([{ tone: "customMessageLabel", text: "Ralph" }]));
+    expect(stripAnsi(widgetText.replace(/<\/?[^>]+>/g, ""))).toContain("ralph-works · RUNNING · soft-ui");
+    expect(styled).toEqual(expect.arrayContaining([{ tone: "customMessageLabel", text: "ralph-works" }]));
     expect(styled).toEqual(expect.arrayContaining([{ tone: "accent", text: "RUNNING" }]));
     expect(styled).toEqual(expect.arrayContaining([{ tone: "success", text: "✓" }]));
     expect(styled).toEqual(expect.arrayContaining([{ tone: "accent", text: "▶" }]));

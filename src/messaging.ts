@@ -33,7 +33,7 @@ function markPendingSteer(pi: ExtensionAPI, ctx: ExtensionContext, state: Pipeli
   const latest = getState(ctx) ?? state;
   if (latest.pipelineStatus !== "running") return false;
   if (shouldCoalesceSteer(latest, steerKey)) {
-    ctx.ui.notify("Skipped duplicate pending Ralph phase steer.", "info");
+    ctx.ui.notify("Skipped duplicate pending ralph-works phase steer.", "info");
     return false;
   }
   saveState(pi, { ...latest, pendingSteerKey: steerKey, pendingSteerSentAt: Date.now() });
@@ -51,7 +51,7 @@ function isContextIdle(ctx: ExtensionContext): boolean {
   return typeof maybeCtx.isIdle === "function" ? maybeCtx.isIdle() : false;
 }
 
-/** Ralph-origin messages should not launch new work after the pipeline is paused/cancelled/failed. */
+/** ralph-works-origin messages should not launch new work after the pipeline is paused/cancelled/failed. */
 function canDeliverPipelineMessage(ctx: ExtensionContext): boolean {
   const latest = getState(ctx);
   return Boolean(latest && latest.pipelineStatus === "running");

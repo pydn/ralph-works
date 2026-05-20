@@ -5,7 +5,7 @@ import { DEFAULT_PHASES, PHASE_META } from "./stateMachine";
 
 /**
  * Atomically write a per-phase completion marker and append to the attempt log.
- * Marker files are the crash-recovery signal used by `/ralph resume`.
+ * Marker files are the crash-recovery signal used by `/ralph-works resume`.
  */
 export function writePhaseCompletionMarker(phaseKey: string, workDir: string): void {
   const ralphDir = path.join(workDir, ".ralph");
@@ -123,7 +123,7 @@ export function removePipelineLock(feature: string, wd: string): void {
   } catch {}
 }
 
-/** Remove every Ralph pipeline lock in a work directory. */
+/** Remove every ralph-works pipeline lock in a work directory. */
 export function removePipelineLocks(wd: string): void {
   const ralphDir = path.join(wd, ".ralph");
   try {

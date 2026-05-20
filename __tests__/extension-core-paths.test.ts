@@ -143,7 +143,7 @@ afterEach(() => {
   }
 });
 
-describe("/ralph start command", () => {
+describe("/ralph-works start command", () => {
   it("opts users out of HTML rendering for default starts", async () => {
     const workDir = makeTempDir("ralph-default-no-render-");
     const skillBase = makeTempDir("ralph-default-no-render-skills-");
@@ -159,7 +159,7 @@ describe("/ralph start command", () => {
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    await commands.get("ralph")?.("start feature-a", makeFakeContext(branch, workDir));
+    await commands.get("ralph-works")?.("start feature-a", makeFakeContext(branch, workDir));
 
     const state = latestState<{ promptText?: string; phases?: string[]; currentPhase?: string }>(branch);
     expect(state.phases).toEqual(["spec", "redteam", "harden", "implement", "review"]);
@@ -186,7 +186,7 @@ describe("/ralph start command", () => {
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    await commands.get("ralph")?.("start feature-a --render-html", makeFakeContext(branch, workDir));
+    await commands.get("ralph-works")?.("start feature-a --render-html", makeFakeContext(branch, workDir));
 
     const state = latestState<{ promptText?: string; phases?: string[]; currentPhase?: string }>(branch);
     expect(state.phases).toEqual(["spec", "redteam", "harden", "render", "implement", "review"]);
@@ -211,7 +211,7 @@ describe("/ralph start command", () => {
     const { pi, commands } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    await commands.get("ralph")?.("start feature-a html", makeFakeContext(branch, workDir));
+    await commands.get("ralph-works")?.("start feature-a html", makeFakeContext(branch, workDir));
 
     const state = latestState<{ phases?: string[]; currentPhase?: string }>(branch);
     expect(state.phases).toEqual(["spec", "redteam", "harden", "render", "implement", "review"]);
@@ -230,7 +230,7 @@ describe("/ralph start command", () => {
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    await commands.get("ralph")?.("start feature-a implement", makeFakeContext(branch, workDir));
+    await commands.get("ralph-works")?.("start feature-a implement", makeFakeContext(branch, workDir));
 
     expect(sendUserMessages).toHaveLength(1);
     expect(String(sendUserMessages[0]?.content)).toContain("registered `ralph_gate_check` tool");
@@ -254,7 +254,7 @@ describe("/ralph start command", () => {
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    await commands.get("ralph")?.("start feature-a --yolo", makeFakeContext(branch, workDir));
+    await commands.get("ralph-works")?.("start feature-a --yolo", makeFakeContext(branch, workDir));
 
     const state = latestState<{ yoloMode?: boolean; phases?: string[]; promptText?: string }>(branch);
     expect(state.yoloMode).toBe(true);
@@ -263,7 +263,7 @@ describe("/ralph start command", () => {
     expect(sendUserMessages).toHaveLength(1);
   });
 
-  it("rejects the removed /ralph <feature> shorthand instead of starting a pipeline", async () => {
+  it("rejects the removed /ralph-works <feature> shorthand instead of starting a pipeline", async () => {
     const workDir = makeTempDir("ralph-no-shorthand-");
     const branch: FakeEntry[] = [];
     const { default: registerExtension } = await import("../index");
@@ -271,23 +271,26 @@ describe("/ralph start command", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir);
-    await commands.get("ralph")?.("feature-a --yolo", ctx);
+    await commands.get("ralph-works")?.("feature-a --yolo", ctx);
 
     expect(branch).toHaveLength(0);
     expect(sendUserMessages).toHaveLength(0);
     expect(fs.existsSync(path.join(workDir, ".ralph", "pipeline-lock-feature-a"))).toBe(false);
-    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Unknown /ralph command: feature-a"), "error");
-    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Usage: /ralph start <feature>"), "error");
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Unknown /ralph-works command: feature-a"),
+      "error",
+    );
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Usage: /ralph-works start <feature>"), "error");
   });
 
-  it("only advertises valid top-level /ralph subcommands in argument completions", async () => {
+  it("only advertises valid top-level /ralph-works subcommands in argument completions", async () => {
     const branch: FakeEntry[] = [];
     const { default: registerExtension } = await import("../index");
     const { pi, completions } = makeFakePi(branch);
     registerExtension(pi as any);
 
     const values = completions
-      .get("ralph")?.("")
+      .get("ralph-works")?.("")
       .map((item) => item.value);
 
     expect(values).toEqual([
@@ -319,7 +322,7 @@ describe("/ralph start command", () => {
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    const ralph = commands.get("ralph");
+    const ralph = commands.get("ralph-works");
     expect(ralph).toBeTypeOf("function");
     await ralph?.("start feature-a requirements.md spec,redteam", makeFakeContext(branch, workDir));
 
@@ -342,7 +345,7 @@ describe("/ralph start command", () => {
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    await commands.get("ralph")?.(
+    await commands.get("ralph-works")?.(
       'start hello-world "Write a hello world script in python"',
       makeFakeContext(branch, workDir),
     );
@@ -366,7 +369,7 @@ describe("/ralph start command", () => {
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    await commands.get("ralph")?.(
+    await commands.get("ralph-works")?.(
       'start feature-a "Detailed prompt with spaces" spec,redteam --yolo',
       makeFakeContext(branch, workDir),
     );
@@ -397,7 +400,10 @@ describe("/ralph start command", () => {
       const { pi, commands, sendUserMessages } = makeFakePi(branch);
       registerExtension(pi as any);
 
-      await commands.get("ralph")?.(`start feature-a ${promptFile.fileName} spec`, makeFakeContext(branch, workDir));
+      await commands.get("ralph-works")?.(
+        `start feature-a ${promptFile.fileName} spec`,
+        makeFakeContext(branch, workDir),
+      );
 
       const state = latestState<{ promptText?: string; phases?: string[] }>(branch);
       expect(state.promptText).toBe(promptFile.content);
@@ -425,7 +431,7 @@ describe("/ralph start command", () => {
     registerExtension(outsidePi.pi as any);
 
     const outsidePath = path.join(outsideDir, "requirements.md");
-    await outsidePi.commands.get("ralph")?.(
+    await outsidePi.commands.get("ralph-works")?.(
       `start feature-a ${outsidePath} spec`,
       makeFakeContext(outsideBranch, workDir),
     );
@@ -443,7 +449,10 @@ describe("/ralph start command", () => {
     const sensitivePi = makeFakePi(sensitiveBranch);
     freshRegisterExtension(sensitivePi.pi as any);
 
-    await sensitivePi.commands.get("ralph")?.("start feature-b .env spec", makeFakeContext(sensitiveBranch, workDir));
+    await sensitivePi.commands.get("ralph-works")?.(
+      "start feature-b .env spec",
+      makeFakeContext(sensitiveBranch, workDir),
+    );
 
     const sensitiveState = latestState<{ promptText?: string }>(sensitiveBranch);
     expect(sensitiveState.promptText).toBe(".env");
@@ -462,13 +471,13 @@ describe("/ralph start command", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir);
-    await commands.get("ralph")?.("start feature-a spec,redteam", ctx);
+    await commands.get("ralph-works")?.("start feature-a spec,redteam", ctx);
 
     expect(branch).toHaveLength(0);
     expect(sendUserMessages).toHaveLength(0);
     expect(fs.existsSync(path.join(workDir, ".ralph", "pipeline-lock-feature-a"))).toBe(false);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
-      expect.stringContaining("Missing Ralph phase skill prerequisites"),
+      expect.stringContaining("Missing ralph-works phase skill prerequisites"),
       "error",
     );
     expect(ctx.ui.notify).toHaveBeenCalledWith(
@@ -486,7 +495,7 @@ describe("/ralph start command", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir);
-    await commands.get("ralph")?.("start feature-a review", ctx);
+    await commands.get("ralph-works")?.("start feature-a review", ctx);
 
     expect(branch).toHaveLength(0);
     expect(sendUserMessages).toHaveLength(0);
@@ -503,7 +512,7 @@ describe("/ralph start command", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir);
-    await commands.get("ralph")?.("start another-feature", ctx);
+    await commands.get("ralph-works")?.("start another-feature", ctx);
 
     expect(sendUserMessages).toHaveLength(0);
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("already running"), "error");
@@ -523,7 +532,7 @@ describe("/ralph start command", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir);
-    await commands.get("ralph")?.("status", ctx);
+    await commands.get("ralph-works")?.("status", ctx);
 
     const notification = String(ctx.ui.notify.mock.calls[0]?.[0]);
     expect(notification).toContain(`WorkDir: ${workDir}`);
@@ -581,8 +590,8 @@ describe("/ralph start command", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir);
-    await commands.get("ralph")?.("cancel", ctx);
-    await commands.get("ralph")?.("start feature-b spec", ctx);
+    await commands.get("ralph-works")?.("cancel", ctx);
+    await commands.get("ralph-works")?.("start feature-b spec", ctx);
 
     expect(fs.existsSync(path.join(workDir, ".ralph", "pipeline-lock-feature-a"))).toBe(false);
     expect(sendUserMessages).toHaveLength(1);
@@ -614,10 +623,10 @@ describe("/ralph start command", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir);
-    await commands.get("ralph")?.("cancel", ctx);
-    await commands.get("ralph")?.("start feature-a spec", ctx);
-    await commands.get("ralph")?.("cancel", ctx);
-    await commands.get("ralph")?.("start feature-a spec", ctx);
+    await commands.get("ralph-works")?.("cancel", ctx);
+    await commands.get("ralph-works")?.("start feature-a spec", ctx);
+    await commands.get("ralph-works")?.("cancel", ctx);
+    await commands.get("ralph-works")?.("start feature-a spec", ctx);
 
     expect(sendUserMessages).toHaveLength(2);
     expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("already running"), "error");
@@ -733,7 +742,7 @@ describe("extension event guards", () => {
     ctx.abort = vi.fn();
     ctx.signal = new AbortController().signal;
 
-    await commands.get("ralph")?.("pause", ctx);
+    await commands.get("ralph-works")?.("pause", ctx);
 
     const state = latestState<{
       pipelineStatus?: string;
@@ -769,7 +778,7 @@ describe("extension event guards", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir);
-    await commands.get("ralph")?.("pause", ctx);
+    await commands.get("ralph-works")?.("pause", ctx);
 
     expect(ctx.ui.notify).toHaveBeenCalledWith(
       expect.stringContaining("current assistant turn may continue"),
@@ -797,7 +806,7 @@ describe("extension event guards", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir);
-    await commands.get("ralph")?.("resume", ctx);
+    await commands.get("ralph-works")?.("resume", ctx);
 
     const state = latestState<{
       pipelineStatus?: string;
@@ -915,13 +924,13 @@ describe("gate tool and auto-gate paths", () => {
     };
 
     expect(result.details?.allPass).toBe(true);
-    expect(result.content?.[0]?.text).toContain("No Ralph Gates Configured");
-    expect(result.content?.[0]?.text).toContain("No configured Ralph gates were run");
+    expect(result.content?.[0]?.text).toContain("No ralph-works Gates Configured");
+    expect(result.content?.[0]?.text).toContain("No configured ralph-works gates were run");
     expect(
       latestState<{ readyToAdvancePhase?: string; turnWriteCount?: number }>(branch).readyToAdvancePhase,
     ).toBeUndefined();
     expect(latestState<{ readyToAdvancePhase?: string; turnWriteCount?: number }>(branch).turnWriteCount).toBe(0);
-    expect(ctx.ui.setStatus).toHaveBeenCalledWith("ralph-loop", "No Ralph gates configured");
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith("ralph-loop", "No ralph-works gates configured");
   });
 
   it("manual ralph_gate_check reports nonzero gate commands as failures", async () => {
@@ -1013,7 +1022,10 @@ describe("review decision and completion paths", () => {
       expect.stringContaining("Review the completed planning phases"),
       "warning",
     );
-    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/ralph continue --render-html"), "warning");
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("/ralph-works continue --render-html"),
+      "warning",
+    );
   });
 
   it("auto-compacts before the pre-implementation checkpoint when enabled", async () => {
@@ -1106,7 +1118,10 @@ describe("review decision and completion paths", () => {
       ctx,
     );
 
-    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.not.stringContaining("/ralph continue --render-html"), "warning");
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.not.stringContaining("/ralph-works continue --render-html"),
+      "warning",
+    );
   });
 
   it("lets yolo mode proceed directly from planning into implementation", async () => {
@@ -1245,7 +1260,7 @@ describe("review decision and completion paths", () => {
     expect(state.readyToAdvancePhase).toBeUndefined();
     expect(sendUserMessages).toHaveLength(1);
     expect(sendUserMessages[0]?.options).toBeUndefined();
-    expect(String(sendUserMessages[0]?.content)).toContain("Phase: Ralph Review Loop");
+    expect(String(sendUserMessages[0]?.content)).toContain("Phase: ralph-works Review Loop");
   });
 
   it("puts implement into validation_failed and does not queue generic TDD reminders after gate validation fails", async () => {
@@ -1308,11 +1323,11 @@ describe("review decision and completion paths", () => {
 
     expect(sendUserMessages).toHaveLength(1);
     const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
-    expect(widgetText).toContain("Ralph · VALIDATION FAILED · feature-a");
-    expect(widgetText).toContain("/ralph continue reruns validation");
+    expect(widgetText).toContain("ralph-works · VALIDATION FAILED · feature-a");
+    expect(widgetText).toContain("/ralph-works continue reruns validation");
   });
 
-  it("reruns post-hook validation from validation_failed on /ralph continue", async () => {
+  it("reruns post-hook validation from validation_failed on /ralph-works continue", async () => {
     const workDir = makeTempDir("ralph-continue-validation-failed-");
     fs.mkdirSync(path.join(workDir, ".ralph"), { recursive: true });
     fs.writeFileSync(
@@ -1342,7 +1357,7 @@ describe("review decision and completion paths", () => {
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    await commands.get("ralph")?.("continue", makeFakeContext(branch, workDir, { idle: true }));
+    await commands.get("ralph-works")?.("continue", makeFakeContext(branch, workDir, { idle: true }));
 
     const state = latestState<{ currentPhase?: string; phaseStatus?: string; phaseAttempts?: number }>(branch);
     expect(state.currentPhase).toBe("implement");
@@ -1387,7 +1402,7 @@ describe("review decision and completion paths", () => {
     expect(state.phaseStatus).toBe("executing");
     expect(sendUserMessages).toHaveLength(1);
     expect(sendUserMessages[0]?.options?.deliverAs).toBe("steer");
-    expect(String(sendUserMessages[0]?.content)).toContain("Ralph gates are not configured");
+    expect(String(sendUserMessages[0]?.content)).toContain("ralph-works gates are not configured");
     expect(String(sendUserMessages[0]?.content)).toContain("documented test commands manually");
     expect(ctx.ui.setWorkingMessage).not.toHaveBeenCalledWith("Waiting for user input");
   });
@@ -1424,8 +1439,8 @@ describe("review decision and completion paths", () => {
     expect(state.phaseStatus).toBe("post_hook");
     expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("ralph-loop", undefined);
     const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
-    expect(widgetText).toContain("Ralph · COMPLETE");
-    expect(widgetText).toContain("✓ 2/2 Ralph Review Loop");
+    expect(widgetText).toContain("ralph-works · COMPLETE");
+    expect(widgetText).toContain("✓ 2/2 ralph-works Review Loop");
     expect(widgetText).toContain("[✓ ✓]");
     expect(ctx.ui.setWorkingMessage).not.toHaveBeenCalledWith("Waiting for user input");
   });
@@ -1517,8 +1532,8 @@ describe("review decision and completion paths", () => {
     expect(state.phaseStatus).toBe("post_hook");
     expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("ralph-loop", undefined);
     const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
-    expect(widgetText).toContain("Ralph · COMPLETE");
-    expect(widgetText).toContain("✓ 2/2 Ralph Review Loop");
+    expect(widgetText).toContain("ralph-works · COMPLETE");
+    expect(widgetText).toContain("✓ 2/2 ralph-works Review Loop");
     expect(widgetText).toContain("[✓ ✓]");
   });
 

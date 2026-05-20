@@ -104,14 +104,14 @@ export interface PipelineState {
   pendingSteerKey?: string;
   pendingSteerSentAt?: number;
   waitingReason?: string;
-  /** Original phaseStatus captured when `/ralph pause` records pipelineStatus: paused. */
+  /** Original phaseStatus captured when `/ralph-works pause` records pipelineStatus: paused. */
   pausedFromPhaseStatus?: string;
   yoloMode?: boolean;
   /** Set after the operator approves moving from planning into implementation. */
   implementCheckpointApproved?: boolean;
   /** Set by passing gates so agent_end can advance implement deterministically. */
   readyToAdvancePhase?: string;
-  /** Latest full validation failure details for /ralph status and persisted history. */
+  /** Latest full validation failure details for /ralph-works status and persisted history. */
   lastValidationFailure?: string;
   modelPlan?: RalphModelPlan;
   originalModel?: RalphModelSelector;

@@ -103,7 +103,7 @@ describe("multi-model slash command integration", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir);
-    await commands.get("ralph")?.(
+    await commands.get("ralph-works")?.(
       "start feature-a spec --model anthropic/claude-sonnet-4-5:high --models spec=anthropic/claude-opus-4-5:xhigh",
       ctx,
     );
@@ -151,7 +151,7 @@ describe("multi-model slash command integration", () => {
     registerExtension(pi as any);
     const ctx = makeFakeContext(branch, workDir);
 
-    await commands.get("ralph")?.("start feature-a implement --model local/tiny", ctx);
+    await commands.get("ralph-works")?.("start feature-a implement --model local/tiny", ctx);
 
     expect(sendUserMessages).toHaveLength(0);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
@@ -160,7 +160,7 @@ describe("multi-model slash command integration", () => {
     );
   });
 
-  it("records plan-update history when /ralph continue changes the model plan", async () => {
+  it("records plan-update history when /ralph-works continue changes the model plan", async () => {
     const workDir = makeTempDir("ralph-multi-model-continue-plan-");
     const skillBase = makeTempDir("ralph-multi-model-continue-plan-skills-");
     process.env.PI_SKILL_BASE = skillBase;
@@ -196,7 +196,7 @@ describe("multi-model slash command integration", () => {
     registerExtension(pi as any);
     const ctx = makeFakeContext(branch, workDir);
 
-    await commands.get("ralph")?.("continue --model anthropic/claude-opus-4-5:xhigh", ctx);
+    await commands.get("ralph-works")?.("continue --model anthropic/claude-opus-4-5:xhigh", ctx);
 
     const latestState = branch[branch.length - 1]?.data as any;
     expect(latestState.modelSwitchHistory.map((entry: any) => entry.event)).toContain("plan-update");
@@ -319,7 +319,7 @@ describe("multi-model slash command integration", () => {
     registerExtension(pi as any);
     const ctx = makeFakeContext(branch, workDir);
 
-    await commands.get("ralph")?.("start feature-a spec --model anthropic/claude-opus-4-5:xhigh", ctx);
+    await commands.get("ralph-works")?.("start feature-a spec --model anthropic/claude-opus-4-5:xhigh", ctx);
 
     expect(sendUserMessages).toHaveLength(0);
     expect(setModel).toHaveBeenCalledWith({ provider: "anthropic", id: "claude-opus-4-5", name: "Opus" });
@@ -329,7 +329,7 @@ describe("multi-model slash command integration", () => {
     expect(latestState.modelSwitchHistory.at(-1)).toMatchObject({ event: "restore", result: "success" });
   });
 
-  it("restores the original model on cancel only when Ralph still owns the active model", async () => {
+  it("restores the original model on cancel only when ralph-works still owns the active model", async () => {
     const workDir = makeTempDir("ralph-multi-model-restore-");
     const state = {
       feature: "feature-a",
@@ -359,7 +359,7 @@ describe("multi-model slash command integration", () => {
     const ctx = makeFakeContext(branch, workDir);
     ctx.model = { provider: "anthropic", id: "claude-opus-4-5", name: "Opus" };
 
-    await commands.get("ralph")?.("cancel", ctx);
+    await commands.get("ralph-works")?.("cancel", ctx);
 
     expect(setModel).toHaveBeenCalledWith({ provider: "openai", id: "gpt-5.2-codex", name: "GPT Codex" });
     expect(setThinkingLevel).toHaveBeenCalledWith("medium");
@@ -374,7 +374,7 @@ describe("multi-model slash command integration", () => {
     const changedCtx = makeFakeContext(changedBranch, workDir);
     changedCtx.model = { provider: "anthropic", id: "claude-sonnet-4-5", name: "Sonnet" };
 
-    await second.commands.get("ralph")?.("cancel", changedCtx);
+    await second.commands.get("ralph-works")?.("cancel", changedCtx);
 
     expect(second.setModel).not.toHaveBeenCalled();
     expect((changedBranch[changedBranch.length - 1]?.data as any).modelSwitchHistory.at(-1)).toMatchObject({
@@ -383,7 +383,7 @@ describe("multi-model slash command integration", () => {
     });
   });
 
-  it("shows full provider/model IDs in /ralph status", async () => {
+  it("shows full provider/model IDs in /ralph-works status", async () => {
     const workDir = makeTempDir("ralph-multi-model-status-");
     const branch: FakeEntry[] = [
       {
@@ -423,7 +423,7 @@ describe("multi-model slash command integration", () => {
     registerExtension(pi as any);
     const ctx = makeFakeContext(branch, workDir);
 
-    await commands.get("ralph")?.("status", ctx);
+    await commands.get("ralph-works")?.("status", ctx);
 
     const statusText = ctx.ui.notify.mock.calls[0]?.[0] as string;
     expect(statusText).toContain("Model plan: default anthropic/claude-sonnet-4-5:high");

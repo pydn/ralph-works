@@ -1,5 +1,5 @@
 /**
- * Ralph Pipeline — State Machine Pure Functions
+ * ralph-works Pipeline — State Machine Pure Functions
  *
  * Extracted from index.ts for testability. These functions have no dependency
  * on Pi SDK types and can be unit-tested in isolation with vitest.
@@ -29,7 +29,7 @@ export const PHASE_META: Record<string, PhaseMeta> = {
     desc: "Convert hardened markdown spec to polished HTML with Mermaid diagrams and typography",
   },
   implement: { name: "TDD Implement", desc: "Implement via Red-Green-Refactor cycle" },
-  review: { name: "Ralph Review Loop", desc: "Multi-pass PR review → remediate until LGTM" },
+  review: { name: "ralph-works Review Loop", desc: "Multi-pass PR review → remediate until LGTM" },
 };
 
 // ── Pure Functions ───────────────────────────────────────────
@@ -342,7 +342,7 @@ export function loadGateConfig(workDir: string, _fs?: FsLike): GateConfig | null
 }
 
 /**
- * Resolve gate definitions from explicit Ralph configuration only.
+ * Resolve gate definitions from explicit ralph-works configuration only.
  *
  * Missing config is a valid "no gates configured" state. Invalid explicit
  * config is reported as a gate-resolution error and never falls back to

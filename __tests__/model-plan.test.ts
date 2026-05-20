@@ -75,7 +75,7 @@ describe("model selector parsing", () => {
   });
 });
 
-describe("Ralph model flag parsing", () => {
+describe("ralph-works model flag parsing", () => {
   it("preserves prompt and phase args while extracting model flags", () => {
     const parsed = parseRalphFlags([
       "quoted prompt",

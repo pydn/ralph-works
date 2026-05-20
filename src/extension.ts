@@ -1,5 +1,5 @@
 /**
- * Ralph Loop Extension — Phase-state-machine pipeline inside pi.
+ * ralph-works Extension — Phase-state-machine pipeline inside pi.
  *
  * Deterministic state machine with pre-hook → execution → post-hook lifecycle.
  * Single-skill injection, structured review decisions, crash recovery.
@@ -26,6 +26,8 @@ import {
   MAX_PHASE_ATTEMPTS,
   RENDER_PHASE,
   SKILL_BASE,
+  USER_COMMAND,
+  USER_COMMAND_NAME,
   UI_WIDGET_ID,
   VALIDATION_FAILED_PHASE_STATUS,
   WAITING_FOR_USER_PHASE_STATUS,
@@ -120,7 +122,7 @@ function extractMessageText(content: unknown): string {
   return textParts.join("\n").trim();
 }
 
-/** Only non-terminal persisted states should prevent a fresh `/ralph start`. */
+/** Only non-terminal persisted states should prevent a fresh `/ralph-works start`. */
 function blocksNewPipelineStart(state: PipelineState | null): boolean {
   if (!state) return false;
   return !["completed", "cancelled", "failed", "halted"].includes(state.pipelineStatus ?? "running");
@@ -138,8 +140,7 @@ const RALPH_TOP_LEVEL_COMMANDS = [
   "clear-context",
 ];
 
-const RALPH_USAGE =
-  "Usage: /ralph start <feature> [--render-html|html] [--yolo] | status | cancel | gate | set-workdir <path> | continue [--render-html|html] [--yolo] | resume | pause | clear-context [--auto]";
+const RALPH_USAGE = `Usage: ${USER_COMMAND} start <feature> [--render-html|html] [--yolo] | status | cancel | gate | set-workdir <path> | continue [--render-html|html] [--yolo] | resume | pause | clear-context [--auto]`;
 
 /** Auto phase-boundary compaction is enabled unless a persisted state explicitly opts out. */
 function isAutoClearContextEnabled(state: PipelineState): boolean {
@@ -197,15 +198,15 @@ function requestCurrentAgentAbort(ctx: ExtensionContext): "requested" | "idle" |
 
 function formatPauseNotice(abortStatus: ReturnType<typeof requestCurrentAgentAbort>): string {
   if (abortStatus === "requested") {
-    return "Pipeline paused; current assistant turn abort requested. Ralph will not launch additional phase work until /ralph resume.";
+    return "Pipeline paused; current assistant turn abort requested. ralph-works will not launch additional phase work until /ralph-works resume.";
   }
   if (abortStatus === "idle") {
-    return "Pipeline paused. Ralph will not launch additional phase work until /ralph resume.";
+    return "Pipeline paused. ralph-works will not launch additional phase work until /ralph-works resume.";
   }
   if (abortStatus === "failed") {
-    return "Pipeline paused, but aborting the current assistant turn failed; the current assistant turn may continue. Ralph will not launch additional phase work until /ralph resume.";
+    return "Pipeline paused, but aborting the current assistant turn failed; the current assistant turn may continue. ralph-works will not launch additional phase work until /ralph-works resume.";
   }
-  return "Pipeline paused. This Pi build cannot abort the current assistant turn, so the current assistant turn may continue; Ralph will not launch additional phase work until /ralph resume.";
+  return "Pipeline paused. This Pi build cannot abort the current assistant turn, so the current assistant turn may continue; ralph-works will not launch additional phase work until /ralph-works resume.";
 }
 
 function restorePausedNonLaunchingState(state: PipelineState): PipelineState | undefined {
@@ -245,9 +246,9 @@ function enterImplementCheckpoint(pi: ExtensionAPI, ctx: ExtensionContext, st: P
   refreshWidget(ctx, checkpointState);
   const renderOption = st.phases?.includes(RENDER_PHASE)
     ? ""
-    : " Or run /ralph continue --render-html (or /ralph continue html) to render the spec to HTML first.";
+    : " Or run /ralph-works continue --render-html (or /ralph-works continue html) to render the spec to HTML first.";
   ctx.ui.notify(
-    `Review the completed planning phases before TDD implementation. Run /ralph continue to approve.${renderOption} Start with --yolo to run straight through next time.`,
+    `Review the completed planning phases before TDD implementation. Run /ralph-works continue to approve.${renderOption} Start with --yolo to run straight through next time.`,
     "warning",
   );
 }
@@ -314,7 +315,7 @@ function appendModelEventState(state: PipelineState, event: ReturnType<typeof cr
 }
 
 const PROVIDER_DRIFT_BLOCK_MODEL = "__ralph_model_drift_blocked__";
-const PROVIDER_DRIFT_BLOCK_MESSAGE = "Ralph blocked this provider request because the active model drifted.";
+const PROVIDER_DRIFT_BLOCK_MESSAGE = "ralph-works blocked this provider request because the active model drifted.";
 
 function buildBlockedProviderPayload(payload: unknown): unknown {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -478,7 +479,7 @@ async function restoreOriginalModelForTerminal(
         state,
         createModelSwitchEvent("skipped-restore", state.originalModel, "skipped", {
           phaseKey: state.currentPhase,
-          reason: "active model no longer matches last Ralph-applied model",
+          reason: "active model no longer matches last ralph-works-applied model",
           nonce: state.lastAppliedModel.nonce,
         }),
       );
@@ -558,7 +559,7 @@ async function completePipeline(
   };
   saveState(pi, completedState);
   refreshWidget(ctx, completedState);
-  ctx.ui.notify(message ?? `✅ Ralph loop complete for "${state.feature}"`, "info");
+  ctx.ui.notify(message ?? `✅ ralph-works loop complete for "${state.feature}"`, "info");
   ctx.ui.setStatus(UI_WIDGET_ID, undefined);
   writeDevCycleSummary(completedState);
   writeMetrics(completedState);
@@ -579,7 +580,10 @@ async function launchPhase(
   const workDirWarning = buildWorkDirPolicyWarning(state);
   if (workDirWarning) ctx.ui.notify(workDirWarning, "warning");
   if (!runPreHook(pk, state)) {
-    const failureMessage = [`Pre-hook failed for phase "${pk}". Fix prerequisites and /ralph resume.`, workDirWarning]
+    const failureMessage = [
+      `Pre-hook failed for phase "${pk}". Fix prerequisites and /ralph-works resume.`,
+      workDirWarning,
+    ]
       .filter(Boolean)
       .join("\n\n");
     ctx.ui.notify(failureMessage, "error");
@@ -714,7 +718,7 @@ async function handleReviewDecision(
   const status = params.status as "LGTM" | "CRITICAL";
   const iter = state.reviewIterations ?? 0;
   if (status === "LGTM") {
-    await completePipeline(pi, ctx, state, `✅ Ralph review LGTM. Loop complete for "${state.feature}"`);
+    await completePipeline(pi, ctx, state, `✅ ralph-works review LGTM. Loop complete for "${state.feature}"`);
   } else if (status === "CRITICAL") {
     const maxIters = state.maxIterations ?? 10;
     if (iter >= maxIters) {
@@ -761,12 +765,12 @@ function hasRunConfiguredGates(results: GateResult[]): boolean {
 function buildImplementGateReminder(workDir: string): string {
   const resolution = resolveGateConfiguration(workDir);
   if (resolution.errors.length > 0) {
-    return `Ralph gate configuration is invalid at ${resolution.source}. Fix the gate config or run the repository's documented test commands manually before completing implementation. Errors:\n${resolution.errors.map((error) => `- ${error}`).join("\n")}`;
+    return `ralph-works gate configuration is invalid at ${resolution.source}. Fix the gate config or run the repository's documented test commands manually before completing implementation. Errors:\n${resolution.errors.map((error) => `- ${error}`).join("\n")}`;
   }
   if (resolution.gates.length > 0) {
-    return `Implementation is still in the TDD phase. Configured Ralph gates are available; call the registered \`ralph_gate_check\` tool now if implementation is complete. Do not run \`ralph_gate_check\` in \`bash\`; it is a Pi extension tool, not a shell command. If the tool is not visible, continue with documented project commands and let the completion post-hook or operator run \`/ralph gate\`.`;
+    return `Implementation is still in the TDD phase. Configured ralph-works gates are available; call the registered \`ralph_gate_check\` tool now if implementation is complete. Do not run \`ralph_gate_check\` in \`bash\`; it is a Pi extension tool, not a shell command. If the tool is not visible, continue with documented project commands and let the completion post-hook or operator run \`/ralph-works gate\`.`;
   }
-  return `Implementation is still in the TDD phase. Ralph gates are not configured for this workDir, so do not assume default lint/typecheck/test commands. Run the repository's documented test commands manually, then end the final assistant message with \`${PHASE_COMPLETE_MARKER}\` when implementation is complete.`;
+  return `Implementation is still in the TDD phase. ralph-works gates are not configured for this workDir, so do not assume default lint/typecheck/test commands. Run the repository's documented test commands manually, then end the final assistant message with \`${PHASE_COMPLETE_MARKER}\` when implementation is complete.`;
 }
 
 /**
@@ -854,7 +858,7 @@ async function handleAgentEnd(
       pi,
       ctx,
       state,
-      `✅ Ralph review LGTM: no critical bugs found. Loop complete for "${state.feature}"`,
+      `✅ ralph-works review LGTM: no critical bugs found. Loop complete for "${state.feature}"`,
     );
     return;
   }
@@ -933,7 +937,10 @@ export default function (pi: ExtensionAPI) {
     if (state.phaseStatus !== WAITING_FOR_USER_PHASE_STATUS) return;
     if (event.text.trim().startsWith("/")) return;
     if (state.waitingReason === IMPLEMENT_CHECKPOINT_WAIT_REASON) {
-      ctx.ui.notify("TDD implementation is waiting for review approval. Run /ralph continue to launch it.", "warning");
+      ctx.ui.notify(
+        "TDD implementation is waiting for review approval. Run /ralph-works continue to launch it.",
+        "warning",
+      );
       setPipelineWaitingUi(ctx, state);
       refreshWidget(ctx, state);
       return;
@@ -949,7 +956,7 @@ export default function (pi: ExtensionAPI) {
     const state = getState(ctx);
     if (!state) return;
     const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
-    ctx.ui.notify(`Ralph loop: ${state.feature} (${phases.join(", ")})`, "info");
+    ctx.ui.notify(`ralph-works loop: ${state.feature} (${phases.join(", ")})`, "info");
     if (state.pipelineStatus !== "running") {
       refreshWidget(ctx, state);
       return;
@@ -963,7 +970,7 @@ export default function (pi: ExtensionAPI) {
     // Guard against corrupted phase index from aggressive compaction
     if (!validatePhaseIndex(currentIdx, phases)) {
       ctx.ui.notify(
-        `⛔ Pipeline state corrupted: currentPhaseIndex=${currentIdx} out of bounds. Run /ralph cancel to reset.`,
+        `⛔ Pipeline state corrupted: currentPhaseIndex=${currentIdx} out of bounds. Run /ralph-works cancel to reset.`,
         "error",
       );
       saveState(pi, { ...state, pipelineStatus: "failed", phaseStatus: "corrupted" });
@@ -1057,8 +1064,8 @@ ${phasePrompt}`,
   // ── Tool: ralph_set_workdir ─────────────────────────────
   pi.registerTool({
     name: "ralph_set_workdir",
-    label: "Ralph Set WorkDir",
-    description: "Update the active Ralph run root when work moves into a dedicated git worktree.",
+    label: "ralph-works Set WorkDir",
+    description: "Update the active ralph-works run root when work moves into a dedicated git worktree.",
     promptSnippet:
       "If you create or switch to a dedicated git worktree, call this with the worktree root before writing artifacts or completing the phase.",
     parameters: Type.Object({ workDir: Type.String() }),
@@ -1088,16 +1095,16 @@ ${phasePrompt}`,
   // ── Tool: ralph_gate_check ──────────────────────────────
   pi.registerTool({
     name: "ralph_gate_check",
-    label: "Ralph Gate Check",
-    description: "Run configured Ralph quality gates from .ralph/gate-config.json.",
-    promptSnippet: "Run configured Ralph gates after implementation/remediation",
+    label: "ralph-works Gate Check",
+    description: "Run configured ralph-works quality gates from .ralph/gate-config.json.",
+    promptSnippet: "Run configured ralph-works gates after implementation/remediation",
     parameters: Type.Object({ paths: Type.Optional(Type.Array(Type.String())) }),
     async execute(_id, params, _sig, onUpdate, ctx) {
       const state = getState(ctx);
       if (!state) return { content: [{ type: "text", text: "No active pipeline." }], details: {} };
       // Pi's callback type is generic, but this tool only streams text updates.
       const update = onUpdate as undefined | ((value: { content: Array<{ type: "text"; text: string }> }) => void);
-      update?.({ content: [{ type: "text", text: "🚧 Running configured Ralph gates..." }] });
+      update?.({ content: [{ type: "text", text: "🚧 Running configured ralph-works gates..." }] });
       const results = runLintGates(state.workDir, params.paths);
       const allPass = results.every((r) => r.pass);
       const ranConfiguredGates = hasRunConfiguredGates(results);
@@ -1110,7 +1117,7 @@ ${phasePrompt}`,
       });
       const failed = results.filter((r) => !r.pass);
       const heading = noConfiguredGates
-        ? "No Ralph Gates Configured"
+        ? "No ralph-works Gates Configured"
         : allPass
           ? "✅ All Gates Passed"
           : "❌ Gate Failures";
@@ -1129,7 +1136,7 @@ ${phasePrompt}`,
       }
       report.push(
         noConfiguredGates
-          ? "No configured Ralph gates were run. Run the repository's documented test commands manually."
+          ? "No configured ralph-works gates were run. Run the repository's documented test commands manually."
           : allPass
             ? "All configured gates passed. Proceed to next phase."
             : "Fix failures and re-run ralph_gate_check.",
@@ -1137,7 +1144,7 @@ ${phasePrompt}`,
       ctx.ui.setStatus(
         UI_WIDGET_ID,
         noConfiguredGates
-          ? "No Ralph gates configured"
+          ? "No ralph-works gates configured"
           : allPass
             ? `✅ Gates clear`
             : `❌ Gates: ${failed.map((f) => f.name).join(", ")}`,
@@ -1149,7 +1156,7 @@ ${phasePrompt}`,
   // ── Tool: ralph_review_decision ────────────────────────
   pi.registerTool({
     name: "ralph_review_decision",
-    label: "Ralph Review Decision",
+    label: "ralph-works Review Decision",
     description: "Submit final review verdict. Only call during review phase.",
     parameters: Type.Object({
       status: Type.Union([Type.Literal("LGTM"), Type.Literal("CRITICAL")]),
@@ -1174,8 +1181,8 @@ ${phasePrompt}`,
     },
   });
 
-  // ── Command: /ralph ────────────────────────────────────
-  pi.registerCommand("ralph", {
+  // ── Command: /ralph-works ────────────────────────────────────
+  pi.registerCommand(USER_COMMAND_NAME, {
     description: "Dev-cycle pipeline (start | status | cancel | gate | set-workdir | continue | resume | pause)",
     getArgumentCompletions: (prefix: string) => {
       const items = RALPH_TOP_LEVEL_COMMANDS.map((v) => ({ value: v, label: v }));
@@ -1187,13 +1194,13 @@ ${phasePrompt}`,
       switch (cmd) {
         case "start": {
           if (blocksNewPipelineStart(getState(ctx))) {
-            ctx.ui.notify("Pipeline already running. /ralph cancel first.", "error");
+            ctx.ui.notify("Pipeline already running. /ralph-works cancel first.", "error");
             return;
           }
           const feature = parts[1];
           if (!feature) {
             ctx.ui.notify(
-              "Usage: /ralph start <feature> [prompt] [phases] [--model provider/model[:thinking]] [--models phase=provider/model[:thinking],...] [--trust-model-plan] [--render-html|html] [--yolo]",
+              "Usage: /ralph-works start <feature> [prompt] [phases] [--model provider/model[:thinking]] [--models phase=provider/model[:thinking],...] [--trust-model-plan] [--render-html|html] [--yolo]",
               "error",
             );
             return;
@@ -1247,7 +1254,7 @@ ${phasePrompt}`,
           const promptText = promptArg ? resolvePromptInput(promptArg, ctx.cwd) : undefined;
           const lockCheck = checkPipelineLock(feature, ctx.cwd);
           if (lockCheck.locked && !lockCheck.stale) {
-            ctx.ui.notify("Pipeline already running — /ralph cancel first.", "error");
+            ctx.ui.notify("Pipeline already running — /ralph-works cancel first.", "error");
             return;
           }
           createPipelineLock(feature, ctx.cwd);
@@ -1288,7 +1295,7 @@ ${phasePrompt}`,
             return;
           }
           if (state.pipelineStatus === "cancelled") {
-            ctx.ui.notify("Pipeline was cancelled. Start a new pipeline with /ralph start.", "error");
+            ctx.ui.notify("Pipeline was cancelled. Start a new pipeline with /ralph-works start.", "error");
             return;
           }
 
@@ -1312,7 +1319,7 @@ ${phasePrompt}`,
           let targetIdx = state.currentPhaseIndex ?? 0;
           if (!validatePhaseIndex(targetIdx, phases)) {
             ctx.ui.notify(
-              `⛔ Pipeline state corrupted: currentPhaseIndex=${targetIdx} out of bounds. Run /ralph cancel to reset.`,
+              `⛔ Pipeline state corrupted: currentPhaseIndex=${targetIdx} out of bounds. Run /ralph-works cancel to reset.`,
               "error",
             );
             saveState(pi, { ...state, pipelineStatus: "failed", phaseStatus: "corrupted" });
@@ -1379,7 +1386,7 @@ ${phasePrompt}`,
               updated,
               createModelSwitchEvent("plan-update", resolvePhaseModelSelector(modelPlanResult.plan, pk), "success", {
                 phaseKey: pk,
-                reason: "/ralph continue model plan update",
+                reason: "/ralph-works continue model plan update",
               }),
             );
           }
@@ -1468,7 +1475,7 @@ ${phasePrompt}`,
           }
           const requestedWorkDir = parts[1];
           if (!requestedWorkDir) {
-            ctx.ui.notify("Usage: /ralph set-workdir <path>", "error");
+            ctx.ui.notify("Usage: /ralph-works set-workdir <path>", "error");
             return;
           }
           const resolution = resolvePipelineWorkDir(state.workDir, requestedWorkDir, ctx.cwd);
@@ -1493,7 +1500,7 @@ ${phasePrompt}`,
           const noConfiguredGates = results.every((r) => r.skipped);
           ctx.ui.notify(
             noConfiguredGates
-              ? "No Ralph gates configured"
+              ? "No ralph-works gates configured"
               : results.every((r) => r.pass)
                 ? "✅ All gates passed"
                 : `❌ Failed: ${results
@@ -1579,7 +1586,7 @@ ${phasePrompt}`,
           // Parse flags
           const flag = parts[1];
           if (flag && flag !== "--auto") {
-            ctx.ui.notify("Unknown flag. Usage: /ralph clear-context [--auto]", "error");
+            ctx.ui.notify("Unknown flag. Usage: /ralph-works clear-context [--auto]", "error");
             return;
           }
           const clearState = flag === "--auto" ? { ...cs, autoClearContext: true } : cs;
@@ -1660,7 +1667,10 @@ ${phasePrompt}`,
           break;
         }
         default: {
-          ctx.ui.notify(cmd ? `Unknown /ralph command: ${cmd}\n${RALPH_USAGE}` : RALPH_USAGE, cmd ? "error" : "info");
+          ctx.ui.notify(
+            cmd ? `Unknown /ralph-works command: ${cmd}\n${RALPH_USAGE}` : RALPH_USAGE,
+            cmd ? "error" : "info",
+          );
         }
       }
     },

@@ -1,4 +1,4 @@
-# Pi Ralph Extension
+# Pi ralph-works Extension
 
 Full dev-cycle pipeline for [Pi](https://github.com/earendil-works/pi-coding-agent). Phase orchestration runs as a single continuous agent workflow, so Pi does not spawn a subprocess or TTY per phase. Configured quality gates still run shell commands from the extension process.
 
@@ -9,7 +9,7 @@ Full dev-cycle pipeline for [Pi](https://github.com/earendil-works/pi-coding-age
 3. **Harden Spec** - Address critical findings, add security mitigations to the spec, and write a hardening changelog
 4. **Render Markdown -> HTML** - Convert the hardened Markdown spec to polished HTML with Mermaid diagrams and responsive typography
 5. **TDD Implementation** - Red-Green-Refactor with pre/post quality gates
-6. **Ralph Review Loop** - Multi-pass PR review (Logic + Security + Style) with remediation
+6. **ralph-works Review Loop** - Multi-pass PR review (Logic + Security + Style) with remediation
 
 ## Installation
 
@@ -28,7 +28,7 @@ cp -R index.ts src package.json package-lock.json README.md ~/.pi/agent/extensio
 
 ### Phase Skill Prerequisites
 
-`/ralph start` validates the required phase skill files before launching the selected pipeline. By default, the extension reads skills from `~/.pi/agent/skills/_global`; set `PI_SKILL_BASE` to override that location.
+`/ralph-works start` validates the required phase skill files before launching the selected pipeline. By default, the extension reads skills from `~/.pi/agent/skills/_global`; set `PI_SKILL_BASE` to override that location.
 
 Install these skills before running a full pipeline:
 
@@ -43,28 +43,28 @@ Reload Pi (`/reload`) after installing or updating the extension and skills.
 
 ## Commands
 
-| Command                                                             | Description                                                      |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `/ralph start <feature>`                                            | Start the default five-phase pipeline without HTML rendering     |
-| `/ralph start <feature> --render-html`                              | Start with Markdown-to-HTML rendering enabled                    |
-| `/ralph start <feature> html`                                       | Start with Markdown-to-HTML rendering enabled                    |
-| `/ralph start <feature> --yolo`                                     | Start without the pre-implementation human review checkpoint     |
-| `/ralph start <feature> spec,implement`                             | Run selected phases only                                         |
-| `/ralph start <feature> "reduce nesting depth"`                     | With inline prompt                                               |
-| `/ralph start <feature> .ralph/task.md`                             | Prompt from file                                                 |
-| `/ralph start <feature> "..." spec,redteam,harden,render,implement` | Prompt + specific phases                                         |
-| `/ralph status`                                                     | Show current pipeline state                                      |
-| `/ralph pause`                                                      | Pause the active pipeline                                        |
-| `/ralph continue`                                                   | Re-launch the current or queued phase without advancing it       |
-| `/ralph continue --render-html`                                     | Enable HTML rendering before TDD, then continue                  |
-| `/ralph continue html`                                              | Alias for enabling HTML rendering before TDD                     |
-| `/ralph continue --yolo`                                            | Continue and keep straight-through mode enabled for later phases |
-| `/ralph resume`                                                     | Resume the active pipeline at its current phase                  |
-| `/ralph resume <phase>`                                             | Resume at a specific phase                                       |
-| `/ralph gate [paths...]`                                            | Run standalone quality gates                                     |
-| `/ralph clear-context`                                              | Manually clear context and reorient the agent                    |
-| `/ralph clear-context --auto`                                       | Enable auto-clear at every phase boundary                        |
-| `/ralph cancel`                                                     | Abort pipeline                                                   |
+| Command                                                                   | Description                                                      |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `/ralph-works start <feature>`                                            | Start the default five-phase pipeline without HTML rendering     |
+| `/ralph-works start <feature> --render-html`                              | Start with Markdown-to-HTML rendering enabled                    |
+| `/ralph-works start <feature> html`                                       | Start with Markdown-to-HTML rendering enabled                    |
+| `/ralph-works start <feature> --yolo`                                     | Start without the pre-implementation human review checkpoint     |
+| `/ralph-works start <feature> spec,implement`                             | Run selected phases only                                         |
+| `/ralph-works start <feature> "reduce nesting depth"`                     | With inline prompt                                               |
+| `/ralph-works start <feature> .ralph/task.md`                             | Prompt from file                                                 |
+| `/ralph-works start <feature> "..." spec,redteam,harden,render,implement` | Prompt + specific phases                                         |
+| `/ralph-works status`                                                     | Show current pipeline state                                      |
+| `/ralph-works pause`                                                      | Pause the active pipeline                                        |
+| `/ralph-works continue`                                                   | Re-launch the current or queued phase without advancing it       |
+| `/ralph-works continue --render-html`                                     | Enable HTML rendering before TDD, then continue                  |
+| `/ralph-works continue html`                                              | Alias for enabling HTML rendering before TDD                     |
+| `/ralph-works continue --yolo`                                            | Continue and keep straight-through mode enabled for later phases |
+| `/ralph-works resume`                                                     | Resume the active pipeline at its current phase                  |
+| `/ralph-works resume <phase>`                                             | Resume at a specific phase                                       |
+| `/ralph-works gate [paths...]`                                            | Run standalone quality gates                                     |
+| `/ralph-works clear-context`                                              | Manually clear context and reorient the agent                    |
+| `/ralph-works clear-context --auto`                                       | Enable auto-clear at every phase boundary                        |
+| `/ralph-works cancel`                                                     | Abort pipeline                                                   |
 
 Valid phase names are `spec`, `redteam`, `harden`, `render`, `implement`, and `review`. The `render` phase is opt-in; default runs skip it unless `--render-html`, `html`, `render-html`, `with-html`, or an explicit phase list includes `render`.
 
@@ -76,17 +76,17 @@ Normal assistant turn completion does not advance the pipeline. For non-review p
 RALPH_PHASE_COMPLETE
 ```
 
-The controller then runs the phase post-hook and queues the next phase as a follow-up message. `implement` also advances at turn end after a passing configured `ralph_gate_check`, so a completed TDD pass can hand off to review even if the marker was omitted. By default, if earlier planning phases ran before `implement`, the controller pauses at a human review checkpoint before TDD starts; run `/ralph continue` to approve or start with `--yolo` to skip that checkpoint. The `review` phase ends through the `ralph_review_decision` tool instead of the completion marker.
+The controller then runs the phase post-hook and queues the next phase as a follow-up message. `implement` also advances at turn end after a passing configured `ralph_gate_check`, so a completed TDD pass can hand off to review even if the marker was omitted. By default, if earlier planning phases ran before `implement`, the controller pauses at a human review checkpoint before TDD starts; run `/ralph-works continue` to approve or start with `--yolo` to skip that checkpoint. The `review` phase ends through the `ralph_review_decision` tool instead of the completion marker.
 
 ## Quality Gates
 
-Ralph gates are opt-in. During TDD and review phases, the extension auto-runs configured quality gates after 3 consecutive code write/edit tool results only when `.ralph/gate-config.json` exists. Manual gate checks are also available through `/ralph gate [paths...]`.
+ralph-works gates are opt-in. During TDD and review phases, the extension auto-runs configured quality gates after 3 consecutive code write/edit tool results only when `.ralph/gate-config.json` exists. Manual gate checks are also available through `/ralph-works gate [paths...]`.
 
-When configured implementation gates pass, the controller can hand off from `implement` to `review` at turn end even if the assistant omitted the final completion marker. If no gates are configured, Ralph reports that state and expects the agent to run the repository's documented test commands manually before using the normal phase completion marker. A `CRITICAL` review decision backtracks to `implement`; `LGTM` completes the pipeline.
+When configured implementation gates pass, the controller can hand off from `implement` to `review` at turn end even if the assistant omitted the final completion marker. If no gates are configured, ralph-works reports that state and expects the agent to run the repository's documented test commands manually before using the normal phase completion marker. A `CRITICAL` review decision backtracks to `implement`; `LGTM` completes the pipeline.
 
 ### Gate Configuration
 
-Create `.ralph/gate-config.json` to enable Ralph-managed gates:
+Create `.ralph/gate-config.json` to enable gates managed by ralph-works:
 
 ```json
 {
@@ -105,8 +105,8 @@ Commands are validated against a whitelist of allowed tools and rejected if they
 ### Standalone Gate Check
 
 ```bash
-/ralph gate                          # Run gates for current project
-/ralph gate src/foo.ts               # Run gates and pass supported target path(s)
+/ralph-works gate                          # Run gates for current project
+/ralph-works gate src/foo.ts               # Run gates and pass supported target path(s)
 ```
 
 Target paths are appended only to direct gate commands that commonly accept file arguments: `tsc`, `eslint`, `ruff`, `flake8`, and `pylint`. Commands that start with wrappers such as `npx`, `npm`, `uv`, or `node` run exactly as configured.
@@ -122,8 +122,8 @@ During long pipelines the agent's context window can fill with stale conversatio
 ### Usage
 
 ```
-/ralph clear-context              # Clear once now
-/ralph clear-context --auto       # Enable auto-clear at every phase boundary
+/ralph-works clear-context              # Clear once now
+/ralph-works clear-context --auto       # Enable auto-clear at every phase boundary
 ```
 
 ### Auto-Clear Behavior
@@ -133,12 +133,12 @@ When `autoClearContext` is **enabled** (default), the extension auto-clears at e
 - Compacts conversation via `ctx.compact()` with instructions to preserve pipeline state
 - On completion, sends a steer message listing current phase, artifact paths, and reorientation context
 - Includes every phase boundary, including implement → review
-- Manual `/ralph clear-context` still enforces a cooldown to prevent rapid-fire operator-triggered compaction
+- Manual `/ralph-works clear-context` still enforces a cooldown to prevent rapid-fire operator-triggered compaction
 - Best-effort — failures are silently ignored so they never block the pipeline
 
 ### Status Check
 
-`/ralph status` shows clear-context metrics:
+`/ralph-works status` shows clear-context metrics:
 
 ```
 Context clears: 3

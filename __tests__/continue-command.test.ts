@@ -62,7 +62,7 @@ afterEach(() => {
   }
 });
 
-describe("/ralph continue", () => {
+describe("/ralph-works continue", () => {
   it("allows users to opt in to HTML rendering while continuing before render would run", async () => {
     const workDir = makeTempDir("ralph-continue-render-opt-in-");
     const skillBase = makeTempDir("ralph-continue-render-opt-in-skills-");
@@ -105,7 +105,7 @@ describe("/ralph continue", () => {
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    await commands.get("ralph")?.("continue --render-html", makeFakeContext(branch, workDir));
+    await commands.get("ralph-works")?.("continue --render-html", makeFakeContext(branch, workDir));
 
     expect(sendUserMessages).toHaveLength(1);
     expect(String(sendUserMessages[0]?.content)).toContain("Phase: Harden Spec");
@@ -158,7 +158,7 @@ describe("/ralph continue", () => {
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    const ralph = commands.get("ralph");
+    const ralph = commands.get("ralph-works");
     expect(ralph).toBeTypeOf("function");
 
     await ralph?.("continue", makeFakeContext(branch, workDir));
@@ -218,7 +218,7 @@ describe("/ralph continue", () => {
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    await commands.get("ralph")?.("continue", makeFakeContext(branch, workDir));
+    await commands.get("ralph-works")?.("continue", makeFakeContext(branch, workDir));
 
     expect(sendUserMessages).toHaveLength(1);
     expect(String(sendUserMessages[0]?.content)).toContain("Phase: TDD Implement");
@@ -276,7 +276,7 @@ describe("/ralph continue", () => {
     const { pi, commands, sendUserMessages } = makeFakePi(branch);
     registerExtension(pi as any);
 
-    await commands.get("ralph")?.("continue --render-html", makeFakeContext(branch, workDir));
+    await commands.get("ralph-works")?.("continue --render-html", makeFakeContext(branch, workDir));
 
     expect(sendUserMessages).toHaveLength(1);
     expect(String(sendUserMessages[0]?.content)).toContain("Phase: Render Markdown");
@@ -329,17 +329,17 @@ describe("/ralph continue", () => {
     registerExtension(pi as any);
     const ctx = makeFakeContext(branch, workDir);
 
-    await commands.get("ralph")?.("resume", ctx);
+    await commands.get("ralph-works")?.("resume", ctx);
 
     expect(sendUserMessages).toHaveLength(0);
     const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
-    expect(widgetText).toContain("Ralph · BLOCKED · feature-a");
-    expect(widgetText).toContain("Fix the blocker, then run /ralph resume");
+    expect(widgetText).toContain("ralph-works · BLOCKED · feature-a");
+    expect(widgetText).toContain("Fix the blocker, then run /ralph-works resume");
     expect(ctx.ui.setStatus).not.toHaveBeenCalledWith("ralph-loop", expect.stringContaining("Resuming |"));
   });
 });
 
-describe("/ralph clear-context", () => {
+describe("/ralph-works clear-context", () => {
   it("keeps auto context clearing enabled after clear-context --auto completes", async () => {
     const workDir = makeTempDir("ralph-clear-context-auto-");
     const branch: FakeEntry[] = [
@@ -369,7 +369,7 @@ describe("/ralph clear-context", () => {
     registerExtension(pi as any);
 
     const ctx = makeFakeContext(branch, workDir);
-    await commands.get("ralph")?.("clear-context --auto", ctx);
+    await commands.get("ralph-works")?.("clear-context --auto", ctx);
 
     expect(ctx.compact).toHaveBeenCalledTimes(1);
     const compactOptions = ctx.compact.mock.calls[0]?.[0] as { onComplete?: () => void };

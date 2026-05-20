@@ -117,7 +117,7 @@ export const PHASE_CONFIGS: Record<string, PhaseConfig> = {
     },
   },
   review: {
-    displayName: "Ralph Review Loop",
+    displayName: "ralph-works Review Loop",
     desc: "Multi-pass PR review → remediate until LGTM",
     skillPath: resolveSkillPath(
       path.join(SKILL_BASE, "pi-skills", "pr-reviewer", "SKILL.md"),
@@ -168,5 +168,5 @@ export function formatMissingPhaseSkillPrerequisites(
   missing: Array<{ phaseKey: string; displayName: string; paths: string[] }>,
 ): string {
   const rows = missing.map((item) => `- ${item.displayName} (${item.phaseKey}): ${item.paths.join(" or ")}`);
-  return `Missing Ralph phase skill prerequisites:\n${rows.join("\n")}`;
+  return `Missing ralph-works phase skill prerequisites:\n${rows.join("\n")}`;
 }

@@ -1,6 +1,6 @@
-# AGENTS.md — Pi Ralph Extension
+# AGENTS.md — Pi ralph-works Extension
 
-This is a **TypeScript extension for [Pi](https://github.com/earendil-works/pi-coding-agent)** implementing a full dev-cycle pipeline (Ralph loop). All phases run as a single continuous agent workflow with no subprocess spawning.
+This is a **TypeScript extension for [Pi](https://github.com/earendil-works/pi-coding-agent)** implementing a full dev-cycle pipeline (ralph-works loop). All phases run as a single continuous agent workflow with no subprocess spawning.
 
 ## Priority Tracker
 
@@ -17,11 +17,11 @@ Do not start a tracked item without checking whether another agent has already c
 ## Quick Start
 
 ```bash
-/ralph start <feature>                    # Full pipeline
-/ralph start <feature> spec,harden        # Selected phases only
-/ralph status                             # Show current state
-/ralph cancel                             # Abort pipeline
-/ralph gate [paths...]                    # Standalone gate check (no pipeline)
+/ralph-works start <feature>                    # Full pipeline
+/ralph-works start <feature> spec,harden        # Selected phases only
+/ralph-works status                             # Show current state
+/ralph-works cancel                             # Abort pipeline
+/ralph-works gate [paths...]                    # Standalone gate check (no pipeline)
 ```
 
 ## Architecture Overview
@@ -32,12 +32,12 @@ Do not start a tracked item without checking whether another agent has already c
 2. **Red Team Audit** → Adversarial security review with `[CRITICAL]`/`[WARNING]`/`[INFO]` tags
 3. **Harden Spec** → Patch markdown spec in-place, write changelog, convert to HTML for readability
 4. **TDD Implementation** → Red-Green-Refactor cycle with pre/post quality gates
-5. **Ralph Review Loop** → Multi-pass PR review (Logic + Security + Style) with remediation
+5. **ralph-works Review Loop** → Multi-pass PR review (Logic + Security + Style) with remediation
 
 ### Data Flow
 
 ```
-/ralph start <feature> [prompt] [phases]
+/ralph-works start <feature> [prompt] [phases]
     │
     ▼
 Command Handler → saveState() → Session JSONL (custom entries)
@@ -340,7 +340,7 @@ Skills are loaded from `~/.pi/agent/skills/_global/` via `before_agent_start`:
 - [ ] TypeScript compiles: `npx tsc --noEmit`
 - [ ] No lint violations: `npx eslint . --ext .ts,.tsx` (if configured)
 - [ ] Extension loads in Pi without errors after `/reload`
-- [ ] `/ralph start test-feature` starts pipeline with all 5 phases
+- [ ] `/ralph-works start test-feature` starts pipeline with all 5 phases
 - [ ] Phase detection works during streaming (`message_update`)
 - [ ] Anti-shortcut triggers when agent writes "Complete Summary" early
 - [ ] Auto-resume works on session reload with unfinished phases
