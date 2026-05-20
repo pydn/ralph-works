@@ -23,7 +23,7 @@ const YOLO_GRADIENT_COLORS: Array<[number, number, number]> = [
   [255, 82, 192],
 ];
 const RALPH_WORKS_WORDMARK_COLORS = {
-  blueCharcoal: [38, 54, 61],
+  teal: [47, 111, 123],
   amber: [230, 165, 27],
 } as const satisfies Record<string, [number, number, number]>;
 let yoloAnimationTimer: ReturnType<typeof setInterval> | undefined;
@@ -57,9 +57,9 @@ function formatTrueColorText(color: [number, number, number], text: string): str
 
 function formatRalphWorksWordmark(): string {
   return [
-    formatTrueColorText(RALPH_WORKS_WORDMARK_COLORS.blueCharcoal, "ralph"),
+    formatTrueColorText(RALPH_WORKS_WORDMARK_COLORS.teal, "ralph"),
     formatTrueColorText(RALPH_WORKS_WORDMARK_COLORS.amber, "-"),
-    formatTrueColorText(RALPH_WORKS_WORDMARK_COLORS.blueCharcoal, "works"),
+    formatTrueColorText(RALPH_WORKS_WORDMARK_COLORS.teal, "works"),
   ].join("");
 }
 
