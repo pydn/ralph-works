@@ -35,6 +35,7 @@ For detailed architecture (data flow, hook table, component reference): read `do
 ## Tool Usage Protocol
 
 ### Prefer Built-in Tools Over Bash for File Operations
+
 - Use `read` tool instead of `bash cat` or `bash head`
 - Use `write` or `edit` tool instead of `bash echo`, `bash tee`, `bash sed`
 - Use `ls` tool instead of `bash ls`

@@ -1,0 +1,27 @@
+{
+  "version": "1.0",
+  "name": "ralph-works",
+  "language": "typescript",
+  "gates": [
+    {
+      "name": "Type Check",
+      "command": "npm run typecheck",
+      "timeoutMs": 120000
+    },
+    {
+      "name": "Lint",
+      "command": "npm run lint",
+      "timeoutMs": 120000
+    },
+    {
+      "name": "Format Check",
+      "command": "npm run format:check",
+      "timeoutMs": 60000
+    },
+    {
+      "name": "Test Suite",
+      "command": "npm test",
+      "timeoutMs": 300000
+    }
+  ]
+}
