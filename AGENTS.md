@@ -193,4 +193,4 @@ Follow these rules **every time** you modify `.ts` files:
 
 **For detailed API patterns** (persisting state, steering LLM, registering tools/commands), **deployment instructions**, and **testing checklist**: read `docs/agent-reference.md` before implementing new features or deploying.
 
-Skills: loaded from `~/.pi/agent/skills/_global/`. Key skills: `generate-spec`, `red-team-audit`, `harden-spec`, `tdd-implement`, `pr-reviewer`, `markdown-to-html`.
+Skills: loaded from `~/.pi/agent/skills/_global/`. Key skills: `generate-spec`, `red-team-audit`, `harden-spec`, `tdd-implement`, `pr-reviewer`, `markdown-to-html`. For details on the skills used by this extension, see <https://github.com/pydn/ralph-works-skills>.
