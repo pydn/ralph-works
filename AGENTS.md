@@ -2,17 +2,19 @@
 
 This is a **TypeScript extension for [Pi](https://github.com/earendil-works/pi-coding-agent)** implementing a full dev-cycle pipeline (ralph-works loop). All phases run as a single continuous agent workflow with no subprocess spawning.
 
-## Priority Tracker
+## GitHub Issues Tracker
 
-Always reference `/workspace/prompts/ralph-extension-priority-action-plan.md` before starting work. Treat that file as the source of truth for backlog order, active ownership, and completion state.
+Always check the repository's GitHub Issues before starting work. Treat GitHub Issues as the source of truth for the feature update task list, backlog order, active ownership, acceptance criteria, and completion state.
 
-If you are taking a tracked item from that file:
+If you are taking a tracked item:
 
-- Mark it `[in progress]` in the same turn before making code changes so other agents know it is claimed.
-- When the work is complete, mark the task complete in the action plan in the same turn and remove the `[in progress]` marker.
-- If you stop before finishing, leave `[in progress]` in place and add a short note describing the handoff state or blocker.
+- Work from an open GitHub issue whenever the task is part of the tracked feature update list.
+- Before making code changes, claim the issue by commenting with your intent and planned branch/worktree name. Assign yourself as the issue owner if you have permission.
+- Do not start an issue that is already assigned or explicitly claimed by another agent unless the user asks you to take it over.
+- When the work is complete, update the issue with the implementation summary, verification performed, and any PR or commit links. Close the issue only when the acceptance criteria are fully complete and repo conventions allow it.
+- If you stop before finishing, leave a GitHub issue comment describing the handoff state or blocker.
 
-Do not start a tracked item without checking whether another agent has already claimed it.
+Do not use local markdown backlog files as the coordination source unless a GitHub issue explicitly links to them.
 
 ## Quick Start
 
@@ -113,8 +115,8 @@ Always do implementation work in a dedicated `git worktree`, never in the primar
 
 Required workflow:
 
-1. Check `/workspace/prompts/ralph-extension-priority-action-plan.md` and claim the item with `[in progress]`.
-2. Create or reuse a dedicated worktree for that item.
+1. Check GitHub Issues and claim the issue before making code changes.
+2. Create or reuse a dedicated worktree for that issue.
 3. Do all code edits, tests, and commits inside the worktree path, not the primary repo directory.
 
 Example commands:
@@ -131,7 +133,7 @@ Worktree rules:
 - One active task per worktree.
 - One branch per worktree.
 - Do not have two agents editing the same file from different worktrees at the same time.
-- Name the worktree and branch after the claimed action-plan item when possible.
+- Name the worktree and branch after the claimed GitHub issue number and short slug when possible.
 
 ## TypeScript-Specific Quality Gates
 
