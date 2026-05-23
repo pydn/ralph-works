@@ -33,6 +33,7 @@ function makeFakePi(branch: FakeEntry[]) {
 function makeFakeContext(branch: FakeEntry[], cwd: string) {
   return {
     cwd,
+    isIdle: () => true,
     sessionManager: {
       getBranch: () => branch,
     },
@@ -55,6 +56,42 @@ function makeTempDir(prefix: string): string {
 
 function stripAnsi(value: string): string {
   return value.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+function writeTaskLedger(workDir: string): void {
+  fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+  fs.writeFileSync(
+    path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+    `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Continue implementation
+- Status: pending
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/extension.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- Continue launches task selector.
+
+#### Test Plan
+- Exercise continue command.
+
+#### Notes
+- Ready.
+`,
+    "utf-8",
+  );
 }
 
 afterEach(() => {
@@ -90,7 +127,7 @@ describe("/ralph-works continue", () => {
         data: {
           feature: "feature-a",
           workDir,
-          phases: ["spec", "redteam", "harden", "implement", "review"],
+          phases: ["spec", "redteam", "harden", "tasks", "implement", "review"],
           maxIterations: 10,
           startedAt: Date.now(),
           currentPhase: "harden",
@@ -120,7 +157,7 @@ describe("/ralph-works continue", () => {
       phases?: string[];
       promptText?: string;
     };
-    expect(latestState.phases).toEqual(["spec", "redteam", "harden", "render", "implement", "review"]);
+    expect(latestState.phases).toEqual(["spec", "redteam", "harden", "tasks", "render", "implement", "review"]);
     expect(latestState.currentPhase).toBe("harden");
     expect(latestState.currentPhaseIndex).toBe(2);
     expect(latestState.promptText).toBeUndefined();
@@ -194,6 +231,7 @@ describe("/ralph-works continue", () => {
 
     fs.mkdirSync(path.join(skillBase, "tdd-implement"), { recursive: true });
     fs.writeFileSync(path.join(skillBase, "tdd-implement", "SKILL.md"), "# TDD Implement", "utf-8");
+    writeTaskLedger(workDir);
 
     const branch: FakeEntry[] = [
       {
@@ -202,11 +240,11 @@ describe("/ralph-works continue", () => {
         data: {
           feature: "feature-a",
           workDir,
-          phases: ["spec", "implement", "review"],
+          phases: ["spec", "harden", "tasks", "implement", "review"],
           maxIterations: 10,
           startedAt: Date.now(),
           currentPhase: "implement",
-          currentPhaseIndex: 1,
+          currentPhaseIndex: 3,
           phaseStatus: "waiting_for_user",
           waitingReason: "implement_checkpoint",
           pipelineStatus: "running",
@@ -225,14 +263,14 @@ describe("/ralph-works continue", () => {
     await commands.get("ralph-works")?.("continue", makeFakeContext(branch, workDir));
 
     expect(sendUserMessages).toHaveLength(1);
-    expect(String(sendUserMessages[0]?.content)).toContain("Phase: TDD Implement");
+    expect(String(sendUserMessages[0]?.content)).toContain("ralph-works Task Selector");
 
     const latestState = branch[branch.length - 1]?.data as {
       phaseStatus?: string;
       waitingReason?: string;
       implementCheckpointApproved?: boolean;
     };
-    expect(latestState.phaseStatus).toBe("executing");
+    expect(latestState.phaseStatus).toBe("selecting_task");
     expect(latestState.waitingReason).toBeUndefined();
     expect(latestState.implementCheckpointApproved).toBe(true);
   });
@@ -260,11 +298,11 @@ describe("/ralph-works continue", () => {
         data: {
           feature: "feature-a",
           workDir,
-          phases: ["spec", "redteam", "harden", "implement", "review"],
+          phases: ["spec", "redteam", "harden", "tasks", "implement", "review"],
           maxIterations: 10,
           startedAt: Date.now(),
           currentPhase: "implement",
-          currentPhaseIndex: 3,
+          currentPhaseIndex: 4,
           phaseStatus: "waiting_for_user",
           waitingReason: "implement_checkpoint",
           pipelineStatus: "running",
@@ -293,9 +331,9 @@ describe("/ralph-works continue", () => {
       waitingReason?: string;
       implementCheckpointApproved?: boolean;
     };
-    expect(latestState.phases).toEqual(["spec", "redteam", "harden", "render", "implement", "review"]);
+    expect(latestState.phases).toEqual(["spec", "redteam", "harden", "tasks", "render", "implement", "review"]);
     expect(latestState.currentPhase).toBe("render");
-    expect(latestState.currentPhaseIndex).toBe(3);
+    expect(latestState.currentPhaseIndex).toBe(4);
     expect(latestState.phaseStatus).toBe("executing");
     expect(latestState.waitingReason).toBeUndefined();
     expect(latestState.implementCheckpointApproved).toBe(true);

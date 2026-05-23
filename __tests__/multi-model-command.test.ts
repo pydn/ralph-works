@@ -142,6 +142,12 @@ describe("multi-model slash command integration", () => {
     const workDir = makeTempDir("ralph-multi-model-weak-");
     const skillBase = makeTempDir("ralph-multi-model-weak-skills-");
     process.env.PI_SKILL_BASE = skillBase;
+    fs.mkdirSync(path.join(skillBase, "generate-spec"), { recursive: true });
+    fs.writeFileSync(path.join(skillBase, "generate-spec", "SKILL.md"), "# Generate Spec", "utf-8");
+    fs.mkdirSync(path.join(skillBase, "harden-spec"), { recursive: true });
+    fs.writeFileSync(path.join(skillBase, "harden-spec", "SKILL.md"), "# Harden Spec", "utf-8");
+    fs.mkdirSync(path.join(skillBase, "tasks"), { recursive: true });
+    fs.writeFileSync(path.join(skillBase, "tasks", "SKILL.md"), "# Tasks", "utf-8");
     fs.mkdirSync(path.join(skillBase, "tdd-implement"), { recursive: true });
     fs.writeFileSync(path.join(skillBase, "tdd-implement", "SKILL.md"), "# TDD Implement", "utf-8");
 
@@ -151,7 +157,7 @@ describe("multi-model slash command integration", () => {
     registerExtension(pi as any);
     const ctx = makeFakeContext(branch, workDir);
 
-    await commands.get("ralph-works")?.("start feature-a implement --model local/tiny", ctx);
+    await commands.get("ralph-works")?.("start feature-a spec,harden,tasks,implement --model local/tiny", ctx);
 
     expect(sendUserMessages).toHaveLength(0);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
@@ -164,8 +170,43 @@ describe("multi-model slash command integration", () => {
     const workDir = makeTempDir("ralph-multi-model-continue-plan-");
     const skillBase = makeTempDir("ralph-multi-model-continue-plan-skills-");
     process.env.PI_SKILL_BASE = skillBase;
+    fs.mkdirSync(path.join(skillBase, "tasks"), { recursive: true });
+    fs.writeFileSync(path.join(skillBase, "tasks", "SKILL.md"), "# Tasks", "utf-8");
     fs.mkdirSync(path.join(skillBase, "tdd-implement"), { recursive: true });
     fs.writeFileSync(path.join(skillBase, "tdd-implement", "SKILL.md"), "# TDD Implement", "utf-8");
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+      `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Model plan task
+- Status: pending
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/extension.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- Plan update is recorded.
+
+#### Test Plan
+- Continue command records history.
+
+#### Notes
+- Ready.
+`,
+      "utf-8",
+    );
 
     const branch: FakeEntry[] = [
       {
@@ -174,11 +215,12 @@ describe("multi-model slash command integration", () => {
         data: {
           feature: "feature-a",
           workDir,
-          phases: ["implement"],
+          phases: ["spec", "harden", "tasks", "implement"],
           maxIterations: 10,
           startedAt: Date.now(),
           currentPhase: "implement",
-          currentPhaseIndex: 0,
+          currentPhaseIndex: 3,
+          taskFile: "docs/specs/todo_feature-a.md",
           phaseStatus: "waiting_for_user",
           pipelineStatus: "paused",
           yoloMode: false,

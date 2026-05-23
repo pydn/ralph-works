@@ -42,12 +42,14 @@ describe("parseRalphFlags", () => {
 });
 
 describe("PHASE_ORDER", () => {
-  it("contains all 6 phases in correct order (including render)", () => {
-    expect(PHASE_ORDER).toEqual(["spec", "redteam", "harden", "render", "implement", "review"]);
+  it("contains all 7 phases in correct order (including tasks and render)", () => {
+    expect(PHASE_ORDER).toEqual(["spec", "redteam", "harden", "tasks", "render", "implement", "review"]);
   });
 
-  it("has render at index 3 (between harden and implement)", () => {
-    expect(PHASE_ORDER[3]).toBe("render");
+  it("has tasks after harden and before optional render", () => {
+    expect(PHASE_ORDER[3]).toBe("tasks");
+    expect(PHASE_ORDER.indexOf("tasks")).toBeGreaterThan(PHASE_ORDER.indexOf("harden"));
+    expect(PHASE_ORDER.indexOf("tasks")).toBeLessThan(PHASE_ORDER.indexOf("implement"));
   });
 });
 
@@ -63,7 +65,7 @@ describe("PHASE_META", () => {
 
 describe("validatePhaseOrder", () => {
   it("returns valid for canonical full pipeline order", () => {
-    const result = validatePhaseOrder(["spec", "redteam", "harden", "implement", "review"]);
+    const result = validatePhaseOrder(["spec", "redteam", "harden", "tasks", "implement", "review"]);
     expect(result.valid).toBe(true);
   });
 
@@ -72,9 +74,10 @@ describe("validatePhaseOrder", () => {
     expect(result.valid).toBe(true);
   });
 
-  it("returns valid for subset of phases in correct order", () => {
+  it("rejects implement without tasks", () => {
     const result = validatePhaseOrder(["spec", "implement"]);
-    expect(result.valid).toBe(true);
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain("tasks");
   });
 
   it("rejects unknown phase names", () => {
@@ -106,8 +109,8 @@ describe("validatePhaseOrder", () => {
     expect(result.error).toContain("spec");
   });
 
-  it("returns valid for full 6-phase order including render", () => {
-    const result = validatePhaseOrder(["spec", "redteam", "harden", "render", "implement", "review"]);
+  it("returns valid for full 7-phase order including render", () => {
+    const result = validatePhaseOrder(["spec", "redteam", "harden", "tasks", "render", "implement", "review"]);
     expect(result.valid).toBe(true);
   });
 
@@ -176,13 +179,14 @@ describe("sanitizeErrorOutput", () => {
 });
 
 describe("DEFAULT_PHASES", () => {
-  it("opts users out of HTML rendering by default", () => {
-    expect(DEFAULT_PHASES).toEqual(["spec", "redteam", "harden", "implement", "review"]);
+  it("opts users out of HTML rendering by default while including task planning", () => {
+    expect(DEFAULT_PHASES).toEqual(["spec", "redteam", "harden", "tasks", "implement", "review"]);
     expect(DEFAULT_PHASES).not.toContain("render");
   });
 
   it("keeps render available as an explicit opt-in phase", () => {
     expect(PHASE_ORDER).toContain("render");
+    expect(PHASE_ORDER.indexOf("tasks")).toBeLessThan(PHASE_ORDER.indexOf("render"));
     expect(PHASE_ORDER.indexOf("render")).toBeLessThan(PHASE_ORDER.indexOf("implement"));
   });
 });

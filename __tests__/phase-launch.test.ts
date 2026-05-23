@@ -291,6 +291,43 @@ describe("next-phase launch", () => {
 
   it("auto-compacts at phase boundaries despite recent clears and before review", async () => {
     const workDir = makeTempDir("ralph-auto-compact-review-work-");
+    const skillBase = makeTempDir("ralph-auto-compact-review-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    fs.mkdirSync(path.join(skillBase, "pr-reviewer"), { recursive: true });
+    fs.writeFileSync(path.join(skillBase, "pr-reviewer", "SKILL.md"), "# PR Reviewer", "utf-8");
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+      `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Complete before review
+- Status: in_progress
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/extension.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- Review phase launches after the last task.
+
+#### Test Plan
+- Controller test verifies compaction at the review boundary.
+
+#### Notes
+- Ready.
+`,
+      "utf-8",
+    );
     const branch: FakeEntry[] = [
       {
         type: "custom",
@@ -298,11 +335,11 @@ describe("next-phase launch", () => {
         data: {
           feature: "feature-a",
           workDir,
-          phases: ["implement", "review"],
+          phases: ["tasks", "implement", "review"],
           maxIterations: 10,
           startedAt: Date.now(),
           currentPhase: "implement",
-          currentPhaseIndex: 0,
+          currentPhaseIndex: 1,
           phaseStatus: "executing",
           pipelineStatus: "running",
           reviewIterations: 0,
@@ -310,6 +347,20 @@ describe("next-phase launch", () => {
           turnWriteCount: 0,
           autoClearContext: true,
           lastContextClearAt: Date.now(),
+          selectedTask: {
+            id: "TASK-0001",
+            title: "Complete before review",
+            status: "in_progress",
+            priority: "P0",
+            source: "hardened_spec",
+            dependsOn: [],
+            filesHint: ["src/extension.ts"],
+            acceptanceCriteria: ["Review phase launches after the last task."],
+            testPlan: ["Controller test verifies compaction at the review boundary."],
+            createdAt: "2026-05-23T00:00:00.000Z",
+            updatedAt: "2026-05-23T00:00:00.000Z",
+          },
+          taskFile: "docs/specs/todo_feature-a.md",
         },
       },
     ];
@@ -324,7 +375,7 @@ describe("next-phase launch", () => {
         messages: [
           {
             role: "assistant",
-            content: [{ type: "text", text: `Implementation complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+            content: [{ type: "text", text: "Implementation complete.\n\nRALPH_TASK_COMPLETE" }],
           },
         ],
       },

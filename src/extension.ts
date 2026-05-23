@@ -8,6 +8,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import * as fs from "node:fs";
+import * as path from "node:path";
 import {
   appendModelSwitchHistoryEvent,
   checkPipelineLock,
@@ -32,7 +33,7 @@ import {
   VALIDATION_FAILED_PHASE_STATUS,
   WAITING_FOR_USER_PHASE_STATUS,
 } from "./config";
-import type { GateResult, ModelThinkingLevel, PipelineState, RalphModelPlan, RalphModelSelector } from "./domain";
+import type { ModelThinkingLevel, PipelineState, RalphModelPlan, RalphModelSelector } from "./domain";
 import { formatGateResults, runLintGates } from "./gates";
 import {
   sendDedupedPipelineUserMessage,
@@ -77,7 +78,9 @@ import {
   hasPhaseCompletionMarker,
   resolveGateConfiguration,
   PHASE_COMPLETE_MARKER,
+  sanitizeFeatureName,
 } from "./stateMachine";
+import { appendReviewTasks, parseTaskLedger, selectNextTask, updateTaskStatus } from "./taskLedger";
 import {
   enterImplementCheckpoint as buildImplementCheckpointState,
   enterPhaseExecution,
@@ -145,6 +148,74 @@ const RALPH_USAGE = `Usage: ${USER_COMMAND} start <feature> [--render-html|html]
 /** Auto phase-boundary compaction is enabled unless a persisted state explicitly opts out. */
 function isAutoClearContextEnabled(state: PipelineState): boolean {
   return state.autoClearContext !== false;
+}
+
+const TASK_COMPLETE_MARKER = "RALPH_TASK_COMPLETE";
+const TASK_BLOCKED_MARKER = "RALPH_TASK_BLOCKED";
+const TASK_PARTIALLY_VERIFIED_MARKER = "RALPH_TASK_PARTIALLY_VERIFIED";
+const TASK_NEEDS_FOLLOWUP_MARKER = "RALPH_TASK_NEEDS_FOLLOWUP";
+
+function finalNonEmptyLine(text: string): string {
+  return (
+    text
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .at(-1) ?? ""
+  );
+}
+
+function parseSelectedTaskMarker(text: string): string | null {
+  const line = finalNonEmptyLine(text);
+  const match = line.match(/^RALPH_SELECTED_TASK\s+(TASK-\d{4})$/);
+  return match?.[1] ?? null;
+}
+
+function hasNoTasksRemainMarker(text: string): boolean {
+  return finalNonEmptyLine(text) === "RALPH_NO_TASKS_REMAIN";
+}
+
+function parseTaskStatusMarker(text: string): "complete" | "blocked" | "partially_verified" | "needs_followup" | null {
+  const line = finalNonEmptyLine(text);
+  if (line === TASK_COMPLETE_MARKER) return "complete";
+  if (line === TASK_BLOCKED_MARKER) return "blocked";
+  if (line === TASK_PARTIALLY_VERIFIED_MARKER) return "partially_verified";
+  if (line === TASK_NEEDS_FOLLOWUP_MARKER) return "needs_followup";
+  return null;
+}
+
+function taskFileRelativePath(state: PipelineState): string {
+  return state.taskFile ?? `docs/specs/todo_${sanitizeFeatureName(state.feature)}.md`;
+}
+
+function taskFileAbsolutePath(state: PipelineState): string {
+  return path.join(state.workDir, taskFileRelativePath(state));
+}
+
+function buildTaskSelectorPrompt(state: PipelineState, ledgerContent: string): string {
+  return [
+    "# ralph-works Task Selector",
+    "",
+    "Select exactly one highest-priority pending, unblocked implementation task from the task ledger.",
+    "A task is eligible only when all `Depends On` tasks are complete.",
+    "Return only one final marker line:",
+    "",
+    "```text",
+    "RALPH_SELECTED_TASK TASK-0001",
+    "```",
+    "",
+    "If no pending unblocked task remains, return:",
+    "",
+    "```text",
+    "RALPH_NO_TASKS_REMAIN",
+    "```",
+    "",
+    `Task ledger: ${taskFileRelativePath(state)}`,
+    "",
+    "<task-ledger>",
+    ledgerContent,
+    "</task-ledger>",
+  ].join("\n");
 }
 
 /** Recognize a review turn that clearly ended LGTM even if the tool call was omitted. */
@@ -248,7 +319,7 @@ function enterImplementCheckpoint(pi: ExtensionAPI, ctx: ExtensionContext, st: P
     ? ""
     : " Or run /ralph-works continue --render-html (or /ralph-works continue html) to render the spec to HTML first.";
   ctx.ui.notify(
-    `Review the completed planning phases before TDD implementation. Run /ralph-works continue to approve.${renderOption} Start with --yolo to run straight through next time.`,
+    `Review the completed planning phases before task-loop implementation. Run /ralph-works continue to approve.${renderOption} Start with --yolo to run straight through next time.`,
     "warning",
   );
 }
@@ -565,6 +636,254 @@ async function completePipeline(
   writeMetrics(completedState);
 }
 
+async function completeImplementPhaseFromTaskLoop(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+): Promise<void> {
+  const clearedState: PipelineState = {
+    ...state,
+    selectedTask: undefined,
+    taskFile: taskFileRelativePath(state),
+    turnWriteCount: 0,
+    readyToAdvancePhase: undefined,
+  };
+  writePhaseCompletionMarker("implement", clearedState.workDir);
+  await advancePhase(pi, ctx, markPhaseValidated(clearedState));
+}
+
+async function launchTaskSelector(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+  options?: { asSteer?: boolean; asFollowUp?: boolean; prefixText?: string },
+): Promise<void> {
+  const taskPath = taskFileAbsolutePath(state);
+  if (!fs.existsSync(taskPath)) {
+    const message = `Task ledger not found at ${taskPath}. Run or resume the tasks phase before implementation.`;
+    const failedState: PipelineState = { ...state, phaseStatus: "pre_hook", lastValidationFailure: message };
+    saveState(pi, failedState);
+    refreshWidget(ctx, failedState);
+    ctx.ui.notify(message, "error");
+    return;
+  }
+
+  const ledgerContent = fs.readFileSync(taskPath, "utf-8");
+  const ledger = parseTaskLedger(ledgerContent);
+  if (!selectNextTask(ledger.tasks)) {
+    await completeImplementPhaseFromTaskLoop(pi, ctx, state);
+    return;
+  }
+
+  const selectingState: PipelineState = {
+    ...state,
+    phaseStatus: "selecting_task",
+    selectedTask: undefined,
+    taskFile: taskFileRelativePath(state),
+    turnWriteCount: 0,
+    readyToAdvancePhase: undefined,
+  };
+  saveState(pi, selectingState);
+  refreshWidget(ctx, selectingState);
+  const prompt = options?.prefixText
+    ? `${options.prefixText}\n\n${buildTaskSelectorPrompt(selectingState, ledgerContent)}`
+    : buildTaskSelectorPrompt(selectingState, ledgerContent);
+  sendPipelineUserMessage(pi, ctx, prompt, {
+    deliverAs: options?.asSteer ? "steer" : options?.asFollowUp ? "followUp" : undefined,
+  });
+}
+
+async function handleSelectedTaskMarker(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+  assistantText: string,
+): Promise<boolean> {
+  if (state.currentPhase !== "implement" || state.phaseStatus !== "selecting_task") return false;
+  const noTasksRemain = hasNoTasksRemainMarker(assistantText);
+  const taskId = parseSelectedTaskMarker(assistantText);
+  if (!noTasksRemain && !taskId) return false;
+
+  const taskPath = taskFileAbsolutePath(state);
+  if (!fs.existsSync(taskPath)) return false;
+  const content = fs.readFileSync(taskPath, "utf-8");
+  const ledger = parseTaskLedger(content);
+  if (noTasksRemain) {
+    const nextTask = selectNextTask(ledger.tasks);
+    if (nextTask) {
+      const selectingState: PipelineState = {
+        ...state,
+        phaseStatus: "selecting_task",
+        selectedTask: undefined,
+        taskFile: taskFileRelativePath(state),
+      };
+      saveState(pi, selectingState);
+      refreshWidget(ctx, selectingState);
+      sendPipelineUserMessage(
+        pi,
+        ctx,
+        `Cannot advance from implement: ${nextTask.id} is still eligible in ${taskFileRelativePath(state)}. Select the next task or mark it blocked with evidence.`,
+        { deliverAs: "steer" },
+      );
+      return true;
+    }
+    await completeImplementPhaseFromTaskLoop(pi, ctx, state);
+    return true;
+  }
+
+  const selectedTask = ledger.tasks.find((task) => task.id === taskId);
+  if (!selectedTask) {
+    sendPipelineUserMessage(pi, ctx, `Selected task ${taskId} was not found in ${taskFileRelativePath(state)}.`, {
+      deliverAs: "steer",
+    });
+    return true;
+  }
+  const expectedTask = selectNextTask(ledger.tasks);
+  if (!expectedTask) {
+    sendPipelineUserMessage(
+      pi,
+      ctx,
+      `Selected task ${taskId} is not eligible because no pending unblocked task remains in ${taskFileRelativePath(state)}. Return RALPH_NO_TASKS_REMAIN or reopen a task explicitly.`,
+      { deliverAs: "steer" },
+    );
+    return true;
+  }
+  if (expectedTask.id !== taskId) {
+    sendPipelineUserMessage(
+      pi,
+      ctx,
+      `Expected selector to choose ${expectedTask.id} from ${taskFileRelativePath(state)}, but got ${taskId}. Select the highest-priority eligible task.`,
+      { deliverAs: "steer" },
+    );
+    return true;
+  }
+
+  const updatedContent = updateTaskStatus(content, taskId, "in_progress");
+  fs.writeFileSync(taskPath, updatedContent, "utf-8");
+  const updatedLedger = parseTaskLedger(updatedContent);
+  const updatedTask = updatedLedger.tasks.find((task) => task.id === taskId) ?? {
+    ...selectedTask,
+    status: "in_progress" as const,
+  };
+  const selectedState: PipelineState = {
+    ...state,
+    selectedTask: updatedTask,
+    taskFile: taskFileRelativePath(state),
+    phaseStatus: "pre_hook",
+    taskSelectorAttempts: 0,
+  };
+  saveState(pi, selectedState);
+  await launchPhase(pi, ctx, selectedState, { asFollowUp: true });
+  return true;
+}
+
+async function continueTaskLoopAfterStatus(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+  status: "complete" | "blocked" | "partially_verified" | "needs_followup",
+): Promise<void> {
+  const task = state.selectedTask;
+  if (!task) return;
+  const taskPath = taskFileAbsolutePath(state);
+  if (!fs.existsSync(taskPath)) return;
+
+  if (status !== "blocked") {
+    const gateResults = runLintGates(state.workDir);
+    if (!gateResults.every((result) => result.pass)) {
+      sendPipelineUserMessage(pi, ctx, `${formatGateResults(gateResults)}\n\nFix failures before task completion.`, {
+        deliverAs: "steer",
+      });
+      saveState(pi, { ...state, turnWriteCount: 0, readyToAdvancePhase: undefined });
+      return;
+    }
+  }
+
+  const content = fs.readFileSync(taskPath, "utf-8");
+  const updatedContent = updateTaskStatus(content, task.id, status);
+  fs.writeFileSync(taskPath, updatedContent, "utf-8");
+  const updatedLedger = parseTaskLedger(updatedContent);
+  const nextTask = selectNextTask(updatedLedger.tasks);
+  const nextState: PipelineState = {
+    ...state,
+    selectedTask: undefined,
+    taskFile: taskFileRelativePath(state),
+    taskLoopIteration: (state.taskLoopIteration ?? 0) + 1,
+    lastTaskSignal: status,
+    lastTaskSignalAt: Date.now(),
+    turnWriteCount: 0,
+    readyToAdvancePhase: undefined,
+  };
+  saveState(pi, nextState);
+  refreshWidget(ctx, nextState);
+  if (!nextTask) {
+    await completeImplementPhaseFromTaskLoop(pi, ctx, nextState);
+    return;
+  }
+  await launchTaskSelectorAfterTaskCompaction(pi, ctx, nextState);
+}
+
+async function launchTaskSelectorAfterTaskCompaction(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+): Promise<void> {
+  if (!isAutoClearContextEnabled(state)) {
+    await launchTaskSelector(pi, ctx, state, { asFollowUp: true });
+    return;
+  }
+
+  const autoCheckState = {
+    ...state,
+    phaseStatus: "selecting_task",
+    lastContextClearAt: undefined,
+  } as PipelineState;
+  if (!canClearContext(autoCheckState).ok) {
+    await launchTaskSelector(pi, ctx, state, { asFollowUp: true });
+    return;
+  }
+
+  setPipelineCompactingUi(ctx, state);
+  ctx.compact({
+    customInstructions:
+      "Preserve Ralph implementation task loop state. Focus on selecting the next task from the task ledger.",
+    onComplete: () => {
+      try {
+        const latest = getState(ctx) ?? state;
+        if (!latest || latest.pipelineStatus !== "running") return;
+        const updated: PipelineState = {
+          ...latest,
+          contextClearCount: (latest.contextClearCount ?? 0) + 1,
+          lastContextClearAt: Date.now(),
+        };
+        saveState(pi, updated);
+        void launchTaskSelector(pi, ctx, updated, {
+          asFollowUp: true,
+          prefixText: "⛔ CONTEXT RESET — Select the next Ralph implementation task.",
+        });
+      } catch {
+        // Auto-clear is best-effort; the task ledger remains the source of truth.
+      }
+    },
+    onError: () => {
+      void launchTaskSelector(pi, ctx, state, { asFollowUp: true });
+    },
+  });
+}
+
+async function handleTaskStatusMarker(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: PipelineState,
+  assistantText: string,
+): Promise<boolean> {
+  if (state.currentPhase !== "implement" || state.phaseStatus !== "executing" || !state.selectedTask) return false;
+  const status = parseTaskStatusMarker(assistantText);
+  if (!status) return false;
+  await continueTaskLoopAfterStatus(pi, ctx, state, status);
+  return true;
+}
+
 /**
  * Validate prerequisites, persist executing state, refresh UI, then prompt the
  * agent for the current phase. This is the only normal phase-entry path.
@@ -595,6 +914,11 @@ async function launchPhase(
     };
     saveState(pi, failedState);
     refreshWidget(ctx, failedState);
+    return;
+  }
+
+  if (pk === "implement" && !state.selectedTask) {
+    await launchTaskSelector(pi, ctx, state, options);
     return;
   }
 
@@ -732,6 +1056,19 @@ async function handleReviewDecision(
       );
       return;
     }
+    const taskPath = taskFileAbsolutePath(state);
+    if (params.issues?.length && fs.existsSync(taskPath)) {
+      const now = new Date().toISOString();
+      const reviewTasks = params.issues.map((issue, index) => ({
+        title: issue,
+        priority: "P0" as const,
+        reviewFindingRef: `review-${iter + 1} issue-${index + 1}`,
+        acceptanceCriteria: [`${issue} is remediated.`],
+        testPlan: ["Add or update a regression test that fails before the remediation."],
+        filesHint: [],
+      }));
+      fs.writeFileSync(taskPath, appendReviewTasks(fs.readFileSync(taskPath, "utf-8"), reviewTasks, now), "utf-8");
+    }
     const phases = state.phases ?? DEFAULT_PHASES;
     const implIdx = phases.indexOf("implement");
     const u = enterPhasePreHook(
@@ -739,6 +1076,8 @@ async function handleReviewDecision(
         ...state,
         reviewIterations: iter + 1,
         implementCheckpointApproved: true,
+        selectedTask: undefined,
+        taskFile: taskFileRelativePath(state),
       },
       {
         phaseIndex: implIdx >= 0 ? implIdx : 3,
@@ -758,19 +1097,16 @@ async function handleReviewDecision(
   }
 }
 
-function hasRunConfiguredGates(results: GateResult[]): boolean {
-  return results.some((result) => Boolean(result.command) && !result.skipped);
-}
-
-function buildImplementGateReminder(workDir: string): string {
-  const resolution = resolveGateConfiguration(workDir);
+function buildImplementGateReminder(state: PipelineState): string {
+  const resolution = resolveGateConfiguration(state.workDir);
+  const taskLabel = state.selectedTask ? `selected task ${state.selectedTask.id}` : "selected task";
   if (resolution.errors.length > 0) {
-    return `ralph-works gate configuration is invalid at ${resolution.source}. Fix the gate config or run the repository's documented test commands manually before completing implementation. Errors:\n${resolution.errors.map((error) => `- ${error}`).join("\n")}`;
+    return `ralph-works gate configuration is invalid at ${resolution.source}. Fix the gate config or run the repository's documented test commands manually before completing ${taskLabel}. Errors:\n${resolution.errors.map((error) => `- ${error}`).join("\n")}`;
   }
   if (resolution.gates.length > 0) {
-    return `Implementation is still in the TDD phase. Configured ralph-works gates are available; call the registered \`ralph_gate_check\` tool now if implementation is complete. Do not run \`ralph_gate_check\` in \`bash\`; it is a Pi extension tool, not a shell command. If the tool is not visible, continue with documented project commands and let the completion post-hook or operator run \`/ralph-works gate\`.`;
+    return `The ${taskLabel} is still in the TDD loop. Configured ralph-works gates are available; call the registered \`ralph_gate_check\` tool now if the task is complete. Do not run \`ralph_gate_check\` in \`bash\`; it is a Pi extension tool, not a shell command. If the tool is not visible, continue with documented project commands and let the controller run configured gates before accepting \`RALPH_TASK_COMPLETE\`.`;
   }
-  return `Implementation is still in the TDD phase. ralph-works gates are not configured for this workDir, so do not assume default lint/typecheck/test commands. Run the repository's documented test commands manually, then end the final assistant message with \`${PHASE_COMPLETE_MARKER}\` when implementation is complete.`;
+  return `The ${taskLabel} is still in the TDD loop. ralph-works gates are not configured for this workDir, so do not assume default lint/typecheck/test commands. Run the repository's documented test commands manually, then end the final assistant message with \`RALPH_TASK_COMPLETE\` when the selected task is complete.`;
 }
 
 /**
@@ -817,7 +1153,7 @@ async function handlePhaseCompletion(
     );
     const retryInstruction =
       pk === "implement"
-        ? `Fix implementation validation failures. ${buildImplementGateReminder(state.workDir)}`
+        ? `Fix implementation validation failures. ${buildImplementGateReminder(state)}`
         : "Fix the expected phase artifacts under the persisted workDir, then retry phase completion.";
     sendPipelineUserMessage(pi, ctx, `⛔ Phase validation failed:\n\n${failureDetails}\n\n${retryInstruction}`, {
       deliverAs: "steer",
@@ -835,8 +1171,8 @@ async function handlePhaseCompletion(
 
 /**
  * Interpret the assistant's finished turn without treating every turn as a
- * phase boundary. Non-review phases advance only through explicit completion;
- * implement can also advance after a passing registered gate check.
+ * phase boundary. Non-review phases advance only through explicit completion.
+ * Implement task-loop turns must use a task-level completion marker.
  */
 async function handleAgentEnd(
   pi: ExtensionAPI,
@@ -853,6 +1189,25 @@ async function handleAgentEnd(
   const assistantText = extractMessageText(lastAssistantMessage?.content);
   const phases = state.phases?.length ? state.phases : DEFAULT_PHASES;
   const idx = state.currentPhaseIndex ?? 0;
+  if (await handleSelectedTaskMarker(pi, ctx, state, assistantText)) return;
+  if (await handleTaskStatusMarker(pi, ctx, state, assistantText)) return;
+  if (
+    state.currentPhase === "implement" &&
+    state.phaseStatus === "executing" &&
+    hasPhaseCompletionMarker(assistantText)
+  ) {
+    sendPipelineUserMessage(
+      pi,
+      ctx,
+      state.selectedTask
+        ? `Use RALPH_TASK_COMPLETE, RALPH_TASK_BLOCKED, RALPH_TASK_PARTIALLY_VERIFIED, or RALPH_TASK_NEEDS_FOLLOWUP for ${state.selectedTask.id}. The implement phase no longer accepts ${PHASE_COMPLETE_MARKER} while a task is active.`
+        : `The implement phase now requires Ralph to select a task before TDD starts. ${PHASE_COMPLETE_MARKER} is not accepted for broad implementation.`,
+      { deliverAs: "steer" },
+    );
+    saveState(pi, { ...state, turnWriteCount: 0, readyToAdvancePhase: undefined });
+    refreshWidget(ctx, state);
+    return;
+  }
   if (state.currentPhase === "review" && state.phaseStatus === "executing" && isLgtmReviewText(assistantText)) {
     await completePipeline(
       pi,
@@ -871,21 +1226,12 @@ async function handleAgentEnd(
     }
   }
 
-  if (
-    state.currentPhase === "implement" &&
-    state.phaseStatus === "executing" &&
-    state.readyToAdvancePhase === "implement"
-  ) {
-    await handlePhaseCompletion(pi, ctx);
-    return;
-  }
-
   if (state.currentPhase === "implement" && state.phaseStatus === "executing") {
     if (state.lastValidationFailure) {
       refreshWidget(ctx, state);
       return;
     }
-    sendDedupedPipelineUserMessage(pi, ctx, state, buildImplementGateReminder(state.workDir), {
+    sendDedupedPipelineUserMessage(pi, ctx, state, buildImplementGateReminder(state), {
       deliverAs: "steer",
       dedupeKey: `implement-gate:${idx}`,
     });
@@ -938,7 +1284,7 @@ export default function (pi: ExtensionAPI) {
     if (event.text.trim().startsWith("/")) return;
     if (state.waitingReason === IMPLEMENT_CHECKPOINT_WAIT_REASON) {
       ctx.ui.notify(
-        "TDD implementation is waiting for review approval. Run /ralph-works continue to launch it.",
+        "Task-loop implementation is waiting for review approval. Run /ralph-works continue to launch it.",
         "warning",
       );
       setPipelineWaitingUi(ctx, state);
@@ -1018,20 +1364,17 @@ ${phasePrompt}`,
     if (event.toolName === "write" || event.toolName === "edit") {
       const newCount = currentCount + 1;
       if (newCount >= GATE_THRESHOLD) {
-        // Passing gates mark implement as ready; agent_end performs the actual phase completion.
         const gateResolution = resolveGateConfiguration(state.workDir);
         saveState(pi, {
           ...state,
           turnWriteCount: 0,
-          readyToAdvancePhase: gateResolution.configured ? state.readyToAdvancePhase : undefined,
+          readyToAdvancePhase: undefined,
         });
         if (!gateResolution.configured) return;
         ctx.ui.notify("🚧 Auto-gate: running lint checks...", "info");
         const results = runLintGates(state.workDir);
         if (results.every((r) => r.pass)) {
           ctx.ui.notify("✅ All gates passed", "info");
-          if (state.currentPhase === "implement" && hasRunConfiguredGates(results))
-            saveState(pi, { ...state, turnWriteCount: 0, readyToAdvancePhase: "implement" });
         } else {
           ctx.ui.notify(
             `❌ Gate failure: ${results
@@ -1107,13 +1450,11 @@ ${phasePrompt}`,
       update?.({ content: [{ type: "text", text: "🚧 Running configured ralph-works gates..." }] });
       const results = runLintGates(state.workDir, params.paths);
       const allPass = results.every((r) => r.pass);
-      const ranConfiguredGates = hasRunConfiguredGates(results);
       const noConfiguredGates = results.every((r) => r.skipped);
       saveState(pi, {
         ...state,
         turnWriteCount: 0,
-        readyToAdvancePhase:
-          allPass && ranConfiguredGates && state.currentPhase === "implement" ? "implement" : undefined,
+        readyToAdvancePhase: undefined,
       });
       const failed = results.filter((r) => !r.pass);
       const heading = noConfiguredGates
@@ -1138,7 +1479,9 @@ ${phasePrompt}`,
         noConfiguredGates
           ? "No configured ralph-works gates were run. Run the repository's documented test commands manually."
           : allPass
-            ? "All configured gates passed. Proceed to next phase."
+            ? state.currentPhase === "implement"
+              ? "All configured gates passed. End the selected task with RALPH_TASK_COMPLETE when task work is ready."
+              : "All configured gates passed."
             : "Fix failures and re-run ralph_gate_check.",
       );
       ctx.ui.setStatus(

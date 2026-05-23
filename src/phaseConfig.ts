@@ -4,6 +4,7 @@ import { SKILL_BASE } from "./config";
 import type { PipelineState, PostHookResult } from "./domain";
 import { runLintGates } from "./gates";
 import { sanitizeFeatureName, validateHardenedSpecStatus } from "./stateMachine";
+import { parseTaskLedger } from "./taskLedger";
 
 export interface PhaseConfig {
   displayName: string;
@@ -73,6 +74,26 @@ export const PHASE_CONFIGS: Record<string, PhaseConfig> = {
       const status = validateHardenedSpecStatus(fs.readFileSync(sp, "utf-8"));
       if (!status.valid)
         return { pass: false, errors: [status.error ?? "Spec YAML front matter does not show status: hardened"] };
+      return { pass: true };
+    },
+  },
+  tasks: {
+    displayName: "Generate Tasks",
+    desc: "Create implementation task ledger from hardened spec",
+    skillPath: path.join(SKILL_BASE, "tasks", "SKILL.md"),
+    preHook: (pk, s) => {
+      if (!fs.existsSync(PHASE_CONFIGS[pk].skillPath)) return false;
+      const sp = path.join(s.workDir, "docs", "specs", `${s.feature}.md`);
+      if (!fs.existsSync(sp)) return false;
+      return validateHardenedSpecStatus(fs.readFileSync(sp, "utf-8")).valid;
+    },
+    postHook: (_pk, s) => {
+      const todoPath = path.join(s.workDir, "docs", "specs", `todo_${sanitizeFeatureName(s.feature)}.md`);
+      if (!fs.existsSync(todoPath)) return { pass: false, errors: [`Task ledger not found at ${todoPath}`] };
+      const ledger = parseTaskLedger(fs.readFileSync(todoPath, "utf-8"));
+      if (!ledger.tasks.length) return { pass: false, errors: ["Task ledger contains no tasks"] };
+      if (!ledger.tasks.some((task) => task.status === "pending"))
+        return { pass: false, errors: ["Task ledger contains no pending tasks"] };
       return { pass: true };
     },
   },

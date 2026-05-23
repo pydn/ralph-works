@@ -62,6 +62,41 @@ export interface ModelSwitchEvent {
   occurredAt: number;
 }
 
+export type RalphTaskStatus =
+  | "pending"
+  | "in_progress"
+  | "complete"
+  | "blocked"
+  | "partially_verified"
+  | "needs_followup";
+
+export type RalphTaskSource = "hardened_spec" | "review_critical" | "reopened_task" | "manual";
+
+export interface RalphImplementationTask {
+  id: string;
+  title: string;
+  priority: "P0" | "P1" | "P2" | "P3";
+  status: RalphTaskStatus;
+  source: RalphTaskSource;
+  acceptanceCriteria: string[];
+  testPlan: string[];
+  filesHint: string[];
+  dependsOn: string[];
+  reviewFindingRef?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface RalphReviewTaskInput {
+  title: string;
+  priority: RalphImplementationTask["priority"];
+  acceptanceCriteria: string[];
+  testPlan: string[];
+  filesHint: string[];
+  reviewFindingRef?: string;
+}
+
 export interface LastAppliedModel {
   phaseKey: string;
   provider: string;
@@ -118,6 +153,14 @@ export interface PipelineState {
   lastAppliedModel?: LastAppliedModel;
   modelSwitchHistory?: ModelSwitchEvent[];
   phaseModelNonce?: string;
+  /** Markdown implementation task ledger path, relative to workDir. */
+  taskFile?: string;
+  /** Current task selected from the task ledger for one scoped TDD invocation. */
+  selectedTask?: RalphImplementationTask;
+  taskLoopIteration?: number;
+  taskSelectorAttempts?: number;
+  lastTaskSignal?: "complete" | "blocked" | "partially_verified" | "needs_followup";
+  lastTaskSignalAt?: number;
 }
 
 export type PipelineDeliveryMode = "steer" | "followUp";
