@@ -104,7 +104,7 @@ function resolveWidgetState(st: PipelineState): { label: string; tone: UiTone; a
       return {
         label: "WAITING FOR IMPLEMENT REVIEW",
         tone: "warning",
-        actions: ["/ralph-works continue approves TDD implementation"],
+        actions: ["/ralph-works continue approves task-loop implementation"],
       };
     }
     return {

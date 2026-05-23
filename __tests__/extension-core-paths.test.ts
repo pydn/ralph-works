@@ -107,6 +107,7 @@ function seedDefaultPhaseSkills(skillBase: string): void {
   seedSkill(skillBase, "generate-spec");
   seedSkill(skillBase, "red-team-audit");
   seedSkill(skillBase, "harden-spec");
+  seedSkill(skillBase, "tasks");
   seedSkill(skillBase, "tdd-implement");
   seedSkill(skillBase, "pi-skills/pr-reviewer");
 }
@@ -155,6 +156,7 @@ describe("/ralph-works start command", () => {
     seedSkill(skillBase, "generate-spec");
     seedSkill(skillBase, "red-team-audit");
     seedSkill(skillBase, "harden-spec");
+    seedSkill(skillBase, "tasks");
     seedSkill(skillBase, "tdd-implement");
     seedSkill(skillBase, "pi-skills/pr-reviewer");
 
@@ -166,7 +168,7 @@ describe("/ralph-works start command", () => {
     await commands.get("ralph-works")?.("start feature-a", makeFakeContext(branch, workDir));
 
     const state = latestState<{ promptText?: string; phases?: string[]; currentPhase?: string }>(branch);
-    expect(state.phases).toEqual(["spec", "redteam", "harden", "implement", "review"]);
+    expect(state.phases).toEqual(["spec", "redteam", "harden", "tasks", "implement", "review"]);
     expect(state.phases).not.toContain("render");
     expect(state.currentPhase).toBe("spec");
     expect(state.promptText).toBeUndefined();
@@ -181,6 +183,7 @@ describe("/ralph-works start command", () => {
     seedSkill(skillBase, "generate-spec");
     seedSkill(skillBase, "red-team-audit");
     seedSkill(skillBase, "harden-spec");
+    seedSkill(skillBase, "tasks");
     seedSkill(skillBase, "markdown-to-html");
     seedSkill(skillBase, "tdd-implement");
     seedSkill(skillBase, "pi-skills/pr-reviewer");
@@ -193,7 +196,7 @@ describe("/ralph-works start command", () => {
     await commands.get("ralph-works")?.("start feature-a --render-html", makeFakeContext(branch, workDir));
 
     const state = latestState<{ promptText?: string; phases?: string[]; currentPhase?: string }>(branch);
-    expect(state.phases).toEqual(["spec", "redteam", "harden", "render", "implement", "review"]);
+    expect(state.phases).toEqual(["spec", "redteam", "harden", "tasks", "render", "implement", "review"]);
     expect(state.currentPhase).toBe("spec");
     expect(state.promptText).toBeUndefined();
     expect(sendUserMessages).toHaveLength(1);
@@ -206,6 +209,7 @@ describe("/ralph-works start command", () => {
     seedSkill(skillBase, "generate-spec");
     seedSkill(skillBase, "red-team-audit");
     seedSkill(skillBase, "harden-spec");
+    seedSkill(skillBase, "tasks");
     seedSkill(skillBase, "markdown-to-html");
     seedSkill(skillBase, "tdd-implement");
     seedSkill(skillBase, "pi-skills/pr-reviewer");
@@ -218,11 +222,11 @@ describe("/ralph-works start command", () => {
     await commands.get("ralph-works")?.("start feature-a html", makeFakeContext(branch, workDir));
 
     const state = latestState<{ phases?: string[]; currentPhase?: string }>(branch);
-    expect(state.phases).toEqual(["spec", "redteam", "harden", "render", "implement", "review"]);
+    expect(state.phases).toEqual(["spec", "redteam", "harden", "tasks", "render", "implement", "review"]);
     expect(state.currentPhase).toBe("spec");
   });
 
-  it("tells implement agents to call the registered gate tool instead of running a shell command", async () => {
+  it("starts direct implement runs and waits for an existing task ledger", async () => {
     const workDir = makeTempDir("ralph-implement-tool-prompt-");
     writePassingGateConfig(workDir);
     const skillBase = makeTempDir("ralph-implement-tool-prompt-skills-");
@@ -236,11 +240,11 @@ describe("/ralph-works start command", () => {
 
     await commands.get("ralph-works")?.("start feature-a implement", makeFakeContext(branch, workDir));
 
-    expect(sendUserMessages).toHaveLength(1);
-    expect(String(sendUserMessages[0]?.content)).toContain("registered `ralph_gate_check` tool");
-    expect(String(sendUserMessages[0]?.content)).toContain("do not run `ralph_gate_check` in bash");
-    expect(String(sendUserMessages[0]?.content)).toContain(".ralph/gate-config.json");
-    expect(String(sendUserMessages[0]?.content)).toContain("Passing Script: node pass-gate.js");
+    expect(sendUserMessages).toHaveLength(0);
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; lastValidationFailure?: string }>(branch);
+    expect(state.currentPhase).toBe("implement");
+    expect(state.phaseStatus).toBe("pre_hook");
+    expect(state.lastValidationFailure).toContain("Task ledger not found");
   });
 
   it("persists yolo mode from the start command", async () => {
@@ -250,6 +254,7 @@ describe("/ralph-works start command", () => {
     seedSkill(skillBase, "generate-spec");
     seedSkill(skillBase, "red-team-audit");
     seedSkill(skillBase, "harden-spec");
+    seedSkill(skillBase, "tasks");
     seedSkill(skillBase, "tdd-implement");
     seedSkill(skillBase, "pi-skills/pr-reviewer");
 
@@ -262,7 +267,7 @@ describe("/ralph-works start command", () => {
 
     const state = latestState<{ yoloMode?: boolean; phases?: string[]; promptText?: string }>(branch);
     expect(state.yoloMode).toBe(true);
-    expect(state.phases).toEqual(["spec", "redteam", "harden", "implement", "review"]);
+    expect(state.phases).toEqual(["spec", "redteam", "harden", "tasks", "implement", "review"]);
     expect(state.promptText).toBeUndefined();
     expect(sendUserMessages).toHaveLength(1);
   });
@@ -356,7 +361,7 @@ describe("/ralph-works start command", () => {
 
     const state = latestState<{ promptText?: string; phases?: string[] }>(branch);
     expect(state.promptText).toBe("Write a hello world script in python");
-    expect(state.phases).toEqual(["spec", "redteam", "harden", "implement", "review"]);
+    expect(state.phases).toEqual(["spec", "redteam", "harden", "tasks", "implement", "review"]);
     expect(sendUserMessages).toHaveLength(1);
     expect(String(sendUserMessages[0]?.content)).toContain("Write a hello world script in python");
   });
@@ -1128,25 +1133,53 @@ describe("review decision and completion paths", () => {
     );
   });
 
-  it("lets yolo mode proceed directly from planning into implementation", async () => {
+  it("lets yolo mode proceed from tasks into automatic task selection", async () => {
     const workDir = makeTempDir("ralph-yolo-implement-");
     const skillBase = makeTempDir("ralph-yolo-implement-skills-");
     process.env.PI_SKILL_BASE = skillBase;
     seedSkill(skillBase, "tdd-implement");
     fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
     fs.writeFileSync(
-      path.join(workDir, "docs", "specs", "feature-a.md"),
-      `# Feature A\n\n${"Spec body.\n".repeat(256)}`,
+      path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+      `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Yolo task
+- Status: pending
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/extension.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- Task selector launches.
+
+#### Test Plan
+- Complete tasks phase.
+
+#### Notes
+- Ready.
+`,
       "utf-8",
     );
 
     const branch: FakeEntry[] = [];
     pushState(branch, workDir, {
-      phases: ["spec", "implement", "review"],
-      currentPhase: "spec",
-      currentPhaseIndex: 0,
+      phases: ["spec", "tasks", "implement", "review"],
+      currentPhase: "tasks",
+      currentPhaseIndex: 1,
       phaseStatus: "executing",
       yoloMode: true,
+      taskFile: "docs/specs/todo_feature-a.md",
     });
 
     const { default: registerExtension } = await import("../index");
@@ -1158,7 +1191,7 @@ describe("review decision and completion paths", () => {
         messages: [
           {
             role: "assistant",
-            content: [{ type: "text", text: `Spec complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+            content: [{ type: "text", text: `Tasks complete.\n\n${PHASE_COMPLETE_MARKER}` }],
           },
         ],
       },
@@ -1172,12 +1205,12 @@ describe("review decision and completion paths", () => {
       waitingReason?: string;
     }>(branch);
     expect(state.currentPhase).toBe("implement");
-    expect(state.phaseStatus).toBe("executing");
+    expect(state.phaseStatus).toBe("selecting_task");
     expect(state.yoloMode).toBe(true);
     expect(state.waitingReason).toBeUndefined();
     expect(sendUserMessages).toHaveLength(1);
     expect(sendUserMessages[0]?.options).toBeUndefined();
-    expect(String(sendUserMessages[0]?.content)).toContain("Phase: TDD Implement");
+    expect(String(sendUserMessages[0]?.content)).toContain("ralph-works Task Selector");
   });
 
   it("launches review when the reviewer skill is installed at the global skill root", async () => {
@@ -1185,14 +1218,62 @@ describe("review decision and completion paths", () => {
     const skillBase = makeTempDir("ralph-review-root-skills-");
     process.env.PI_SKILL_BASE = skillBase;
     seedSkill(skillBase, "pr-reviewer");
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+      `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Add review launch
+- Status: in_progress
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/extension.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- Review launches after task completion.
+
+#### Test Plan
+- Controller test covers task completion.
+
+#### Notes
+- Ready.
+`,
+      "utf-8",
+    );
 
     const branch: FakeEntry[] = [];
     pushState(branch, workDir, {
-      phases: ["implement", "review"],
+      phases: ["tasks", "implement", "review"],
       currentPhase: "implement",
-      currentPhaseIndex: 0,
+      currentPhaseIndex: 1,
       phaseStatus: "executing",
       autoClearContext: false,
+      selectedTaskId: "TASK-0001",
+      selectedTask: {
+        id: "TASK-0001",
+        title: "Add review launch",
+        status: "in_progress",
+        priority: "P0",
+        source: "hardened_spec",
+        dependsOn: [],
+        filesHint: ["src/extension.ts"],
+        acceptanceCriteria: ["Review launches after task completion."],
+        testPlan: ["Controller test covers task completion."],
+        createdAt: "2026-05-23T00:00:00.000Z",
+        updatedAt: "2026-05-23T00:00:00.000Z",
+      },
+      taskFile: "docs/specs/todo_feature-a.md",
     });
 
     const { default: registerExtension } = await import("../index");
@@ -1204,9 +1285,24 @@ describe("review decision and completion paths", () => {
         messages: [
           {
             role: "assistant",
-            content: [{ type: "text", text: `Implementation complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+            content: [{ type: "text", text: "Implementation complete.\n\nRALPH_TASK_COMPLETE" }],
           },
         ],
+      },
+      makeFakeContext(branch, workDir, { idle: true }),
+    );
+
+    const selectorState = latestState<{ currentPhase?: string; pipelineStatus?: string; phaseStatus?: string }>(branch);
+    expect(selectorState.currentPhase).toBe("implement");
+    expect(selectorState.pipelineStatus).toBe("running");
+    expect(selectorState.phaseStatus).toBe("selecting_task");
+    expect(sendUserMessages).toHaveLength(1);
+    expect(sendUserMessages[0]?.options).toBeUndefined();
+    expect(String(sendUserMessages[0]?.content)).toContain("ralph-works Task Selector");
+
+    await handlers.get("agent_end")?.(
+      {
+        messages: [{ role: "assistant", content: [{ type: "text", text: "RALPH_NO_TASKS_REMAIN" }] }],
       },
       makeFakeContext(branch, workDir, { idle: true }),
     );
@@ -1215,25 +1311,73 @@ describe("review decision and completion paths", () => {
     expect(state.currentPhase).toBe("review");
     expect(state.pipelineStatus).toBe("running");
     expect(state.phaseStatus).toBe("executing");
-    expect(sendUserMessages).toHaveLength(1);
-    expect(sendUserMessages[0]?.options).toBeUndefined();
-    expect(String(sendUserMessages[0]?.content)).toContain("# pr-reviewer");
+    expect(sendUserMessages).toHaveLength(2);
+    expect(sendUserMessages[1]?.options).toBeUndefined();
+    expect(String(sendUserMessages[1]?.content)).toContain("# pr-reviewer");
   });
 
-  it("launches review after a passing TDD gate even when the implement marker is omitted", async () => {
+  it("keeps a selected task active after passing gates until the task marker is emitted", async () => {
     const workDir = makeTempDir("ralph-implement-gate-review-");
     writePassingGateConfig(workDir);
     const skillBase = makeTempDir("ralph-implement-gate-review-skills-");
     process.env.PI_SKILL_BASE = skillBase;
     seedSkill(skillBase, "pr-reviewer");
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+      `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Add task marker enforcement
+- Status: in_progress
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/extension.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- Passing gates do not bypass the task marker.
+
+#### Test Plan
+- Controller test covers gate-only completion.
+
+#### Notes
+- Ready.
+`,
+      "utf-8",
+    );
 
     const branch: FakeEntry[] = [];
     pushState(branch, workDir, {
-      phases: ["implement", "review"],
+      phases: ["tasks", "implement", "review"],
       currentPhase: "implement",
-      currentPhaseIndex: 0,
+      currentPhaseIndex: 1,
       phaseStatus: "executing",
       autoClearContext: false,
+      selectedTaskId: "TASK-0001",
+      selectedTask: {
+        id: "TASK-0001",
+        title: "Add task marker enforcement",
+        status: "in_progress",
+        priority: "P0",
+        source: "hardened_spec",
+        dependsOn: [],
+        filesHint: ["src/extension.ts"],
+        acceptanceCriteria: ["Passing gates do not bypass the task marker."],
+        testPlan: ["Controller test covers gate-only completion."],
+        createdAt: "2026-05-23T00:00:00.000Z",
+        updatedAt: "2026-05-23T00:00:00.000Z",
+      },
+      taskFile: "docs/specs/todo_feature-a.md",
     });
 
     const { default: registerExtension } = await import("../index");
@@ -1259,15 +1403,14 @@ describe("review decision and completion paths", () => {
     );
 
     const state = latestState<{ currentPhase?: string; phaseStatus?: string; readyToAdvancePhase?: string }>(branch);
-    expect(state.currentPhase).toBe("review");
+    expect(state.currentPhase).toBe("implement");
     expect(state.phaseStatus).toBe("executing");
     expect(state.readyToAdvancePhase).toBeUndefined();
     expect(sendUserMessages).toHaveLength(1);
-    expect(sendUserMessages[0]?.options).toBeUndefined();
-    expect(String(sendUserMessages[0]?.content)).toContain("Phase: ralph-works Review Loop");
+    expect(String(sendUserMessages[0]?.content)).toContain("RALPH_TASK_COMPLETE");
   });
 
-  it("puts implement into validation_failed and does not queue generic TDD reminders after gate validation fails", async () => {
+  it("keeps the selected task in progress when task completion gates fail", async () => {
     const workDir = makeTempDir("ralph-implement-invalid-gate-");
     fs.mkdirSync(path.join(workDir, ".ralph"), { recursive: true });
     fs.writeFileSync(
@@ -1279,13 +1422,61 @@ describe("review decision and completion paths", () => {
       }),
       "utf-8",
     );
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+      `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Enforce invalid gate handling
+- Status: in_progress
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/extension.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- Invalid gates prevent task completion.
+
+#### Test Plan
+- Controller test covers invalid gate config.
+
+#### Notes
+- Ready.
+`,
+      "utf-8",
+    );
     const branch: FakeEntry[] = [];
     pushState(branch, workDir, {
-      phases: ["implement", "review"],
+      phases: ["tasks", "implement", "review"],
       currentPhase: "implement",
-      currentPhaseIndex: 0,
+      currentPhaseIndex: 1,
       phaseStatus: "executing",
       phaseAttempts: 0,
+      selectedTaskId: "TASK-0001",
+      selectedTask: {
+        id: "TASK-0001",
+        title: "Enforce invalid gate handling",
+        status: "in_progress",
+        priority: "P0",
+        source: "hardened_spec",
+        dependsOn: [],
+        filesHint: ["src/extension.ts"],
+        acceptanceCriteria: ["Invalid gates prevent task completion."],
+        testPlan: ["Controller test covers invalid gate config."],
+        createdAt: "2026-05-23T00:00:00.000Z",
+        updatedAt: "2026-05-23T00:00:00.000Z",
+      },
+      taskFile: "docs/specs/todo_feature-a.md",
     });
 
     const { default: registerExtension } = await import("../index");
@@ -1298,7 +1489,7 @@ describe("review decision and completion paths", () => {
         messages: [
           {
             role: "assistant",
-            content: [{ type: "text", text: `Implementation complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+            content: [{ type: "text", text: "Implementation complete.\n\nRALPH_TASK_COMPLETE" }],
           },
         ],
       },
@@ -1307,28 +1498,14 @@ describe("review decision and completion paths", () => {
 
     const state = latestState<{ currentPhase?: string; phaseStatus?: string; phaseAttempts?: number }>(branch);
     expect(state.currentPhase).toBe("implement");
-    expect(state.phaseStatus).toBe("validation_failed");
-    expect(state.phaseAttempts).toBe(1);
+    expect(state.phaseStatus).toBe("executing");
+    expect(state.phaseAttempts).toBe(0);
     expect(sendUserMessages).toHaveLength(1);
     expect(String(sendUserMessages[0]?.content)).toContain("Gate Configuration");
     expect(String(sendUserMessages[0]?.content)).toContain("Unsafe gate command");
-
-    await handlers.get("agent_end")?.(
-      {
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "I am waiting for validation remediation." }],
-          },
-        ],
-      },
-      ctx,
-    );
-
-    expect(sendUserMessages).toHaveLength(1);
-    const widgetText = (ctx.ui.setWidget.mock.calls.at(-1)?.[1] as string[]).join("\n");
-    expect(stripAnsi(widgetText)).toContain("ralph-works · VALIDATION FAILED · feature-a");
-    expect(widgetText).toContain("/ralph-works continue reruns validation");
+    const ledger = fs.readFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), "utf-8");
+    expect(ledger).toContain("- Status: in_progress");
+    expect(ledger).toContain("- Completed: none");
   });
 
   it("reruns post-hook validation from validation_failed on /ralph-works continue", async () => {
@@ -1472,18 +1649,52 @@ describe("review decision and completion paths", () => {
     expect(latestState<{ currentPhase?: string }>(branch).currentPhase).toBe("implement");
   });
 
-  it("backtracks critical review decisions to implement and preserves issue context", async () => {
+  it("converts critical review decisions into ledger tasks and resumes the task selector", async () => {
     const workDir = makeTempDir("ralph-review-critical-");
     const skillBase = makeTempDir("ralph-review-skills-");
     process.env.PI_SKILL_BASE = skillBase;
     seedSkill(skillBase, "tdd-implement");
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+      `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Existing completed task
+- Status: complete
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/domain.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: 2026-05-23T00:01:00.000Z
+
+#### Acceptance Criteria
+- Existing behavior works.
+
+#### Test Plan
+- Existing test passes.
+
+#### Notes
+- Done.
+`,
+      "utf-8",
+    );
 
     const branch: FakeEntry[] = [];
     pushState(branch, workDir, {
-      phases: ["spec", "implement", "review"],
+      phases: ["tasks", "implement", "review"],
       currentPhase: "review",
       currentPhaseIndex: 2,
       reviewIterations: 0,
+      taskFile: "docs/specs/todo_feature-a.md",
     });
 
     const { default: registerExtension } = await import("../index");
@@ -1508,11 +1719,616 @@ describe("review decision and completion paths", () => {
     }>(branch);
     expect(state.currentPhase).toBe("implement");
     expect(state.currentPhaseIndex).toBe(1);
-    expect(state.phaseStatus).toBe("executing");
+    expect(state.phaseStatus).toBe("selecting_task");
     expect(state.reviewIterations).toBe(1);
     expect(sendUserMessages).toHaveLength(1);
-    expect(sendUserMessages[0]?.options?.deliverAs).toBe("steer");
+    expect(String(sendUserMessages[0]?.content)).toContain("ralph-works Task Selector");
     expect(String(sendUserMessages[0]?.content)).toContain("Missing auth boundary test");
+    const ledger = fs.readFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), "utf-8");
+    expect(ledger).toContain("### TASK-REVIEW-");
+    expect(ledger).toContain(": Missing auth boundary test");
+    expect(ledger).toContain("- Source: review_critical");
+    expect(ledger).toContain("- Review Finding Ref: review-1 issue-1");
+  });
+
+  it("accepts a selected task marker and launches scoped TDD with the task ID and ledger path", async () => {
+    const workDir = makeTempDir("ralph-selected-task-");
+    const skillBase = makeTempDir("ralph-selected-task-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "tdd-implement");
+
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+      `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Add selected task state
+- Status: pending
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/domain.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- PipelineState persists selectedTask.
+
+#### Test Plan
+- Unit test selected task serialization.
+
+#### Notes
+- Ready.
+`,
+      "utf-8",
+    );
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["tasks", "implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 1,
+      phaseStatus: "selecting_task",
+      taskFile: "docs/specs/todo_feature-a.md",
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await handlers.get("agent_end")?.(
+      {
+        messages: [{ role: "assistant", content: [{ type: "text", text: "RALPH_SELECTED_TASK TASK-0001" }] }],
+      },
+      makeFakeContext(branch, workDir, { idle: true }),
+    );
+
+    const state = latestState<{ selectedTaskId?: string; phaseStatus?: string }>(branch);
+    expect(state.selectedTaskId).toBe("TASK-0001");
+    expect(state.phaseStatus).toBe("executing");
+    expect(fs.readFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), "utf-8")).toContain(
+      "- Status: pending",
+    );
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("## Selected Task");
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("Task ID: TASK-0001");
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("Task ledger: docs/specs/todo_feature-a.md");
+  });
+
+  it("trusts the selector no-tasks marker and advances to review", async () => {
+    const workDir = makeTempDir("ralph-no-tasks-guard-");
+    const skillBase = makeTempDir("ralph-no-tasks-guard-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "pi-skills/pr-reviewer");
+
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+      `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Add selected task state
+- Status: pending
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/domain.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- PipelineState persists selectedTask.
+
+#### Test Plan
+- Unit test selected task serialization.
+
+#### Notes
+- Ready.
+`,
+      "utf-8",
+    );
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["tasks", "implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 1,
+      phaseStatus: "selecting_task",
+      taskFile: "docs/specs/todo_feature-a.md",
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await handlers.get("agent_end")?.(
+      {
+        messages: [{ role: "assistant", content: [{ type: "text", text: "RALPH_NO_TASKS_REMAIN" }] }],
+      },
+      makeFakeContext(branch, workDir, { idle: true }),
+    );
+
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTaskId?: string }>(branch);
+    expect(state.currentPhase).toBe("review");
+    expect(state.phaseStatus).toBe("executing");
+    expect(state.selectedTaskId).toBeUndefined();
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("Phase: ralph-works Review Loop");
+  });
+
+  it("accepts selector task choice without deterministic priority re-ranking", async () => {
+    const workDir = makeTempDir("ralph-selector-priority-");
+    const skillBase = makeTempDir("ralph-selector-priority-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "tdd-implement");
+
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+      `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Add controller state
+- Status: pending
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/domain.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- Controller state is persisted.
+
+#### Test Plan
+- Unit test state persistence.
+
+#### Notes
+- Ready.
+
+### TASK-0002: Add docs
+- Status: pending
+- Priority: P2
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: README.md
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- README describes the task loop.
+
+#### Test Plan
+- Documentation review.
+
+#### Notes
+- Later.
+`,
+      "utf-8",
+    );
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["tasks", "implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 1,
+      phaseStatus: "selecting_task",
+      taskFile: "docs/specs/todo_feature-a.md",
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await handlers.get("agent_end")?.(
+      {
+        messages: [{ role: "assistant", content: [{ type: "text", text: "RALPH_SELECTED_TASK TASK-0002" }] }],
+      },
+      makeFakeContext(branch, workDir, { idle: true }),
+    );
+
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTaskId?: string }>(branch);
+    expect(state.currentPhase).toBe("implement");
+    expect(state.phaseStatus).toBe("executing");
+    expect(state.selectedTaskId).toBe("TASK-0002");
+    expect(fs.readFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), "utf-8")).toMatch(
+      /### TASK-0002: Add docs[\s\S]*- Status: pending/,
+    );
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("## Selected Task");
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("Task ID: TASK-0002");
+  });
+
+  it("marks a task complete and relaunches the selector for the next model decision", async () => {
+    const workDir = makeTempDir("ralph-task-complete-");
+    const skillBase = makeTempDir("ralph-task-complete-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "pi-skills/pr-reviewer");
+
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+      `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Add selected task state
+- Status: in_progress
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/domain.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- PipelineState persists selectedTask.
+
+#### Test Plan
+- Unit test selected task serialization.
+
+#### Notes
+- Ready.
+`,
+      "utf-8",
+    );
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["tasks", "implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 1,
+      selectedTaskId: "TASK-0001",
+      selectedTask: {
+        id: "TASK-0001",
+        title: "Add selected task state",
+        status: "in_progress",
+        priority: "P0",
+        source: "hardened_spec",
+        dependsOn: [],
+        filesHint: ["src/domain.ts"],
+        acceptanceCriteria: ["PipelineState persists selectedTask."],
+        testPlan: ["Unit test selected task serialization."],
+        createdAt: "2026-05-23T00:00:00.000Z",
+        updatedAt: "2026-05-23T00:00:00.000Z",
+      },
+      taskFile: "docs/specs/todo_feature-a.md",
+      autoClearContext: false,
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await handlers.get("agent_end")?.(
+      {
+        messages: [{ role: "assistant", content: [{ type: "text", text: "done\nRALPH_TASK_COMPLETE" }] }],
+      },
+      makeFakeContext(branch, workDir, { idle: true }),
+    );
+
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTaskId?: string }>(branch);
+    expect(state.currentPhase).toBe("implement");
+    expect(state.phaseStatus).toBe("selecting_task");
+    expect(state.selectedTaskId).toBeUndefined();
+    const ledger = fs.readFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), "utf-8");
+    expect(ledger).toContain("- Status: in_progress");
+    expect(ledger).toContain("- Completed: none");
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("ralph-works Task Selector");
+  });
+
+  it("rejects the legacy phase completion marker while a selected implementation task is active", async () => {
+    const workDir = makeTempDir("ralph-task-phase-marker-");
+    const skillBase = makeTempDir("ralph-task-phase-marker-skills-");
+    process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "pi-skills/pr-reviewer");
+
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+      `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Add selected task state
+- Status: in_progress
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/domain.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- PipelineState persists selectedTask.
+
+#### Test Plan
+- Unit test selected task serialization.
+
+#### Notes
+- Ready.
+`,
+      "utf-8",
+    );
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["tasks", "implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 1,
+      phaseStatus: "executing",
+      selectedTaskId: "TASK-0001",
+      selectedTask: {
+        id: "TASK-0001",
+        title: "Add selected task state",
+        status: "in_progress",
+        priority: "P0",
+        source: "hardened_spec",
+        dependsOn: [],
+        filesHint: ["src/domain.ts"],
+        acceptanceCriteria: ["PipelineState persists selectedTask."],
+        testPlan: ["Unit test selected task serialization."],
+        createdAt: "2026-05-23T00:00:00.000Z",
+        updatedAt: "2026-05-23T00:00:00.000Z",
+      },
+      taskFile: "docs/specs/todo_feature-a.md",
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: `Implementation complete.\n\n${PHASE_COMPLETE_MARKER}` }],
+          },
+        ],
+      },
+      makeFakeContext(branch, workDir, { idle: true }),
+    );
+
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTaskId?: string }>(branch);
+    expect(state.currentPhase).toBe("implement");
+    expect(state.phaseStatus).toBe("executing");
+    expect(state.selectedTaskId).toBe("TASK-0001");
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("Use RALPH_TASK_COMPLETE");
+  });
+
+  it("marks a blocked task and relaunches the selector", async () => {
+    const workDir = makeTempDir("ralph-task-blocked-");
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+      `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Integrate external dependency
+- Status: in_progress
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/integration.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- Integration has required credentials.
+
+#### Test Plan
+- Run integration test.
+
+#### Notes
+- Waiting on credentials.
+
+### TASK-0002: Add local fallback
+- Status: pending
+- Priority: P1
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/fallback.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- Fallback path is available.
+
+#### Test Plan
+- Unit test fallback path.
+
+#### Notes
+- Ready.
+`,
+      "utf-8",
+    );
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["tasks", "implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 1,
+      selectedTaskId: "TASK-0001",
+      selectedTask: {
+        id: "TASK-0001",
+        title: "Integrate external dependency",
+        status: "in_progress",
+        priority: "P0",
+        source: "hardened_spec",
+        dependsOn: [],
+        filesHint: ["src/integration.ts"],
+        acceptanceCriteria: ["Integration has required credentials."],
+        testPlan: ["Run integration test."],
+        createdAt: "2026-05-23T00:00:00.000Z",
+        updatedAt: "2026-05-23T00:00:00.000Z",
+      },
+      taskFile: "docs/specs/todo_feature-a.md",
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    await handlers.get("agent_end")?.(
+      {
+        messages: [{ role: "assistant", content: [{ type: "text", text: "blocked\nRALPH_TASK_BLOCKED" }] }],
+      },
+      makeFakeContext(branch, workDir, { idle: true }),
+    );
+
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTaskId?: string }>(branch);
+    expect(state.currentPhase).toBe("implement");
+    expect(state.phaseStatus).toBe("selecting_task");
+    expect(state.selectedTaskId).toBeUndefined();
+    const ledger = fs.readFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), "utf-8");
+    expect(ledger).toContain("- Status: in_progress");
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("ralph-works Task Selector");
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("TASK-0002: Add local fallback");
+  });
+
+  it("auto-compacts after a completed task before selecting the next task", async () => {
+    const workDir = makeTempDir("ralph-task-loop-compact-");
+    fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "docs", "specs", "todo_feature-a.md"),
+      `# Implementation Tasks - feature-a
+
+Spec: docs/specs/feature-a.md
+Status: active
+Version: 1
+
+## Tasks
+
+### TASK-0001: Finish first task
+- Status: in_progress
+- Priority: P0
+- Source: hardened_spec
+- Depends On: none
+- Review Finding Ref: none
+- Files Hint: src/first.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- First task is complete.
+
+#### Test Plan
+- Unit test first task.
+
+#### Notes
+- Ready.
+
+### TASK-0002: Start second task
+- Status: pending
+- Priority: P1
+- Source: hardened_spec
+- Depends On: TASK-0001
+- Review Finding Ref: none
+- Files Hint: src/second.ts
+- Created: 2026-05-23T00:00:00.000Z
+- Updated: 2026-05-23T00:00:00.000Z
+- Completed: none
+
+#### Acceptance Criteria
+- Second task is selected after compaction.
+
+#### Test Plan
+- Unit test second task.
+
+#### Notes
+- Ready.
+`,
+      "utf-8",
+    );
+
+    const branch: FakeEntry[] = [];
+    pushState(branch, workDir, {
+      phases: ["tasks", "implement", "review"],
+      currentPhase: "implement",
+      currentPhaseIndex: 1,
+      selectedTaskId: "TASK-0001",
+      selectedTask: {
+        id: "TASK-0001",
+        title: "Finish first task",
+        status: "in_progress",
+        priority: "P0",
+        source: "hardened_spec",
+        dependsOn: [],
+        filesHint: ["src/first.ts"],
+        acceptanceCriteria: ["First task is complete."],
+        testPlan: ["Unit test first task."],
+        createdAt: "2026-05-23T00:00:00.000Z",
+        updatedAt: "2026-05-23T00:00:00.000Z",
+      },
+      taskFile: "docs/specs/todo_feature-a.md",
+      autoClearContext: true,
+    });
+
+    const { default: registerExtension } = await import("../index");
+    const { pi, handlers, sendUserMessages } = makeFakePi(branch);
+    registerExtension(pi as any);
+
+    const ctx = makeFakeContext(branch, workDir, { idle: true });
+    await handlers.get("agent_end")?.(
+      {
+        messages: [{ role: "assistant", content: [{ type: "text", text: "done\nRALPH_TASK_COMPLETE" }] }],
+      },
+      ctx,
+    );
+
+    expect(ctx.compact).toHaveBeenCalledTimes(1);
+    expect(sendUserMessages).toHaveLength(0);
+
+    const compactOptions = ctx.compact.mock.calls[0]?.[0] as { onComplete?: () => void };
+    compactOptions.onComplete?.();
+
+    expect(sendUserMessages).toHaveLength(1);
+    expect(String(sendUserMessages[0]?.content)).toContain("CONTEXT RESET");
+    expect(String(sendUserMessages[0]?.content)).toContain("TASK-0002: Start second task");
   });
 
   it("completes the pipeline on LGTM review decisions", async () => {

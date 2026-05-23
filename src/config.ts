@@ -5,7 +5,7 @@ import * as path from "node:path";
 export const CUSTOM_TYPE = "ralph-loop-state";
 
 /** Skill root can be overridden in tests; production defaults to Pi's global skill directory. */
-export const SKILL_BASE = process.env.PI_SKILL_BASE ?? path.join(os.homedir(), ".pi", "agent", "skills", "_global");
+export const SKILL_BASE = process.env.PI_SKILL_BASE ?? path.join(os.homedir(), ".pi", "agent", "skills");
 
 export const MAX_PHASE_ATTEMPTS = 3;
 export const GATE_THRESHOLD = 3;

@@ -76,6 +76,23 @@ export const PHASE_CONFIGS: Record<string, PhaseConfig> = {
       return { pass: true };
     },
   },
+  tasks: {
+    displayName: "Generate Tasks",
+    desc: "Create implementation task ledger from hardened spec",
+    skillPath: path.join(SKILL_BASE, "tasks", "SKILL.md"),
+    preHook: (pk, s) => {
+      if (!fs.existsSync(PHASE_CONFIGS[pk].skillPath)) return false;
+      const sp = path.join(s.workDir, "docs", "specs", `${s.feature}.md`);
+      if (!fs.existsSync(sp)) return false;
+      return validateHardenedSpecStatus(fs.readFileSync(sp, "utf-8")).valid;
+    },
+    postHook: (_pk, s) => {
+      const todoPath = path.join(s.workDir, "docs", "specs", `todo_${sanitizeFeatureName(s.feature)}.md`);
+      if (!fs.existsSync(todoPath)) return { pass: false, errors: [`Task ledger not found at ${todoPath}`] };
+      if (fs.statSync(todoPath).size === 0) return { pass: false, errors: ["Task ledger is empty"] };
+      return { pass: true };
+    },
+  },
   render: {
     displayName: "Render Markdown → HTML",
     desc: "Convert hardened markdown spec to polished HTML with Mermaid diagrams and typography",

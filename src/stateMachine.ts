@@ -12,7 +12,7 @@ export interface PhaseValidationResult {
   error?: string;
 }
 
-export const PHASE_ORDER = ["spec", "redteam", "harden", "render", "implement", "review"] as const;
+export const PHASE_ORDER = ["spec", "redteam", "harden", "tasks", "render", "implement", "review"] as const;
 export type PhaseKey = (typeof PHASE_ORDER)[number];
 
 export interface PhaseMeta {
@@ -24,6 +24,7 @@ export const PHASE_META: Record<string, PhaseMeta> = {
   spec: { name: "Generate Spec", desc: "Create Markdown engineering specification" },
   redteam: { name: "Red Team Audit", desc: "Adversarial security review of the spec" },
   harden: { name: "Harden Spec", desc: "Address audit findings, update spec with mitigations" },
+  tasks: { name: "Generate Tasks", desc: "Create implementation task ledger from hardened spec" },
   render: {
     name: "Render Markdown → HTML",
     desc: "Convert hardened markdown spec to polished HTML with Mermaid diagrams and typography",
@@ -44,12 +45,14 @@ export function validatePhaseOrder(phases: string[]): PhaseValidationResult {
     if (PHASE_ORDER.indexOf(p as PhaseKey) === -1) return { valid: false, error: `Unknown phase: "${p}"` };
   }
   // Second check: dependency constraints (before topological order)
-  if (phases.includes("review") && !phases.includes("implement"))
-    return { valid: false, error: "Cannot run review without implement" };
   if ((phases.includes("redteam") || phases.includes("harden")) && !phases.includes("spec"))
     return { valid: false, error: "Cannot run redteam or harden without spec" };
+  if (phases.includes("tasks") && !phases.includes("harden"))
+    return { valid: false, error: "Cannot run tasks without harden" };
   if (phases.includes("render") && !phases.includes("harden"))
     return { valid: false, error: "Cannot run render without harden" };
+  if (phases.includes("review") && !phases.includes("implement"))
+    return { valid: false, error: "Cannot run review without implement" };
   // Third check: topological order
   for (let i = 0; i < phases.length - 1; i++) {
     const ci = PHASE_ORDER.indexOf(phases[i] as PhaseKey);

@@ -72,6 +72,9 @@ export function getExpectedArtifactPaths(phaseKey: string, state: PipelineState)
         relativePath: `docs/specs/harden-changelog-${state.feature}.md`,
       });
       break;
+    case "tasks":
+      relativePaths.push({ label: "Task ledger", relativePath: `docs/specs/todo_${sanitized}.md` });
+      break;
     case "render":
       relativePaths.push({ label: "Rendered HTML", relativePath: `docs/specs/${sanitized}-final.html` });
       break;

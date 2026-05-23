@@ -13,7 +13,7 @@ ralph-works is the boring engineering answer: a Pi extension that gives long age
 - **Spec first:** define scope, architecture, and tradeoffs before code exists.
 - **Security early:** run a STRIDE-flavored red-team pass while the fix is still cheap.
 - **Harden the plan:** patch the spec, not just the implementation.
-- **Red Green TDD by default:** write failing tests, implement, and run the repository's configured gates.
+- **Task-scoped TDD by default:** generate a durable task ledger, select one task at a time, write failing tests, implement, and run the repository's configured gates.
 - **Human checkpoints:** pause before implementation unless `--yolo` is explicit.
 - **Review with backtracking:** `CRITICAL` sends the run back to implementation; `LGTM` completes it.
 
@@ -30,9 +30,9 @@ The hosted walkthrough is the brand-forward overview:
 /ralph-works start
         |
         v
-Generate Spec -> Red Team Audit -> Harden Spec -> Render HTML* -> TDD Implementation -> Review Loop
-                                                                                         |
-                                                                                  CRITICAL returns to TDD
+Generate Spec -> Red Team Audit -> Harden Spec -> Generate Tasks -> Render HTML* -> Task-scoped TDD -> Review Loop
+                                                                                                          |
+                                                                                              CRITICAL reopens tasks
 
 * HTML rendering is opt-in with --render-html, html, or an explicit render phase.
 ```
@@ -42,8 +42,9 @@ Generate Spec -> Red Team Audit -> Harden Spec -> Render HTML* -> TDD Implementa
 | `spec`      | Writes the engineering spec | Scope, architecture, plan, and tradeoffs             |
 | `redteam`   | Attacks the plan            | Threats, failure modes, and severity-tagged findings |
 | `harden`    | Repairs the plan            | Mitigations and a hardened implementation route      |
+| `tasks`     | Creates the task ledger     | Ordered Markdown implementation tasks                |
 | `render`    | Converts Markdown to HTML   | Optional reviewable spec page                        |
-| `implement` | Runs Red-Green-Refactor     | Code, tests, and configured gate results             |
+| `implement` | Runs scoped TDD task loops  | Code, tests, and configured gate results per task    |
 | `review`    | Performs multi-pass review  | `CRITICAL` remediation loops or final `LGTM`         |
 
 ## Why Pi
@@ -75,13 +76,14 @@ Reload Pi after installing or updating the extension:
 
 ## Phase Skills
 
-`/ralph-works start` validates the phase skill files before launching the selected pipeline. By default, skills are read from `~/.pi/agent/skills/_global`; set `PI_SKILL_BASE` to use another directory.
+`/ralph-works start` validates the phase skill files before launching the selected pipeline. By default, skills are read from Pi's global skill directory at `~/.pi/agent/skills`; set `PI_SKILL_BASE` to use another directory.
 
 | Skill file                                                 | Required for                                       |
 | ---------------------------------------------------------- | -------------------------------------------------- |
 | `generate-spec/SKILL.md`                                   | Generate Spec                                      |
 | `red-team-audit/SKILL.md`                                  | Red Team Audit                                     |
 | `harden-spec/SKILL.md`                                     | Harden Spec                                        |
+| `tasks/SKILL.md`                                           | Generate Tasks                                     |
 | `tdd-implement/SKILL.md`                                   | TDD Implementation                                 |
 | `pr-reviewer/SKILL.md` or `pi-skills/pr-reviewer/SKILL.md` | Review Loop                                        |
 | `markdown-to-html/SKILL.md`                                | Render phase, only when HTML rendering is selected |
@@ -90,18 +92,18 @@ Reload Pi after installing or updating the extension:
 
 ### Start a Run
 
-| Command                                                                   | Result                                                               |
-| ------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `/ralph-works start <feature>`                                            | Start the default pipeline: spec, redteam, harden, implement, review |
-| `/ralph-works start <feature> --render-html`                              | Include the optional render phase                                    |
-| `/ralph-works start <feature> html`                                       | Alias for HTML rendering                                             |
-| `/ralph-works start <feature> --yolo`                                     | Skip the pre-implementation human checkpoint                         |
-| `/ralph-works start <feature> spec,implement`                             | Run only selected phases                                             |
-| `/ralph-works start <feature> "reduce nesting depth"`                     | Add an inline prompt                                                 |
-| `/ralph-works start <feature> .ralph/task.md`                             | Load the prompt from a file                                          |
-| `/ralph-works start <feature> "..." spec,redteam,harden,render,implement` | Combine prompt text with an explicit phase list                      |
+| Command                                                                         | Result                                                                      |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `/ralph-works start <feature>`                                                  | Start the default pipeline: spec, redteam, harden, tasks, implement, review |
+| `/ralph-works start <feature> --render-html`                                    | Include the optional render phase                                           |
+| `/ralph-works start <feature> html`                                             | Alias for HTML rendering                                                    |
+| `/ralph-works start <feature> --yolo`                                           | Skip the pre-implementation human checkpoint                                |
+| `/ralph-works start <feature> spec,harden,tasks,implement`                      | Run only selected phases                                                    |
+| `/ralph-works start <feature> "reduce nesting depth"`                           | Add an inline prompt                                                        |
+| `/ralph-works start <feature> .ralph/task.md`                                   | Load the prompt from a file                                                 |
+| `/ralph-works start <feature> "..." spec,redteam,harden,tasks,render,implement` | Combine prompt text with an explicit phase list                             |
 
-Valid phase names are `spec`, `redteam`, `harden`, `render`, `implement`, and `review`.
+Valid phase names are `spec`, `redteam`, `harden`, `tasks`, `render`, `implement`, and `review`.
 
 ### Control a Run
 
@@ -112,8 +114,8 @@ Valid phase names are `spec`, `redteam`, `harden`, `render`, `implement`, and `r
 | `/ralph-works resume`                 | Resume at the current phase                                  |
 | `/ralph-works resume <phase>`         | Resume at a specific phase                                   |
 | `/ralph-works continue`               | Re-launch the current or queued phase without advancing it   |
-| `/ralph-works continue --render-html` | Enable HTML rendering before TDD, then continue              |
-| `/ralph-works continue html`          | Alias for enabling HTML rendering before TDD                 |
+| `/ralph-works continue --render-html` | Enable HTML rendering before the task loop, then continue    |
+| `/ralph-works continue html`          | Alias for enabling HTML rendering before the task loop       |
 | `/ralph-works continue --yolo`        | Continue with straight-through mode enabled for later phases |
 | `/ralph-works cancel`                 | Abort the pipeline                                           |
 
@@ -133,13 +135,13 @@ Assistant turn completion does not advance the pipeline by itself. Non-review ph
 RALPH_PHASE_COMPLETE
 ```
 
-The controller then runs phase validation and queues the next phase as a follow-up message. `implement` can also advance after a passing configured `ralph_gate_check`, so a completed TDD pass can hand off to review even if the marker was omitted. The `review` phase ends through the `ralph_review_decision` tool instead of the marker.
+The controller then runs phase validation and queues the next phase as a follow-up message. `implement` is a task loop: Ralph launches a selector prompt, trusts one `RALPH_SELECTED_TASK TASK-0001`, persists only that task ID plus the todo path, and tells `tdd-implement` to read that task from the todo document. Ralph does not parse generated task documents to inject task details or update task status. `RALPH_TASK_COMPLETE` is accepted only after configured gates pass; the LLM remains responsible for keeping the todo document current. `RALPH_TASK_BLOCKED` clears the selected task ID and relaunches the selector. The `review` phase ends through the `ralph_review_decision` tool instead of the marker; `CRITICAL` findings are converted into new task-ledger entries and routed back through the same task loop.
 
-By default, a run that includes planning phases pauses before `implement` so the developer can inspect the route. Use `/ralph-works continue` to approve the handoff, or start with `--yolo` when straight-through mode is intentional.
+By default, a run that includes planning phases pauses before `implement` so the developer can inspect the hardened spec and task ledger. Use `/ralph-works continue` to approve the handoff, or start with `--yolo` when straight-through mode is intentional.
 
 ## Quality Gates
 
-ralph-works gates are opt-in. Add `.ralph/gate-config.json` to let the extension run configured gates during `implement` and `review`, and to enable manual checks through `/ralph-works gate [paths...]`.
+ralph-works gates are opt-in. Add `.ralph/gate-config.json` to let the extension run configured gates before each implementation task is marked complete, during `review`, and through manual checks with `/ralph-works gate [paths...]`.
 
 ```json
 {

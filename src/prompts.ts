@@ -151,6 +151,16 @@ export function buildPhasePrompt(phaseKey: string, state: PipelineState): string
     case "harden":
       phaseContext = `## Task\nIntegrate red team findings into spec.\nRead findings: ${auditFile}\nPatch spec, write changelog, set YAML front matter \`status: hardened\``;
       break;
+    case "tasks": {
+      const sanitized = sanitizeFeatureName(state.feature);
+      phaseContext = `## Task
+Create a comprehensive implementation task ledger from the hardened spec.
+Read: docs/specs/${state.feature}.md
+Read harden changelog: docs/specs/harden-changelog-${state.feature}.md
+Output: docs/specs/todo_${sanitized}.md
+	Requirements: human-readable Markdown task ledger, stable task IDs such as TASK-0001, priority/status/source metadata, acceptance criteria, and test plan for each task. The controller treats this document as LLM-readable source material, not as a deterministically parsed schema. Do not implement code in this phase.`;
+      break;
+    }
     case "render": {
       const sanitized = sanitizeFeatureName(state.feature);
       phaseContext = `## Task
@@ -169,7 +179,19 @@ Use atomic write pattern: write to ${sanitized}-final.html.tmp then rename to fi
           : gateResolution.gates.length > 0
             ? `Configured ralph-works gates are available through the registered \`ralph_gate_check\` tool.\nConfig source: ${gateResolution.source}\nCommands:\n${gateResolution.gates.map((g) => `- ${g.name}: ${g.command}`).join("\n")}\nIf the registered tool is not visible in your tool list, do not run \`ralph_gate_check\` in bash; continue with documented project commands and let the completion post-hook or operator run \`/ralph-works gate\`.`
             : "No ralph-works gates are configured for this workDir. Run the project's documented test commands manually during Red-Green-Refactor, and do not assume universal lint/typecheck/test defaults exist.";
-      phaseContext = `## Task
+      const selectedTaskSection =
+        state.selectedTaskId && state.taskFile
+          ? `## Selected Task
+Task ID: ${state.selectedTaskId}
+
+Task ledger: ${state.taskFile}
+
+Read the task ledger and work only on ${state.selectedTaskId}. Do not implement adjacent pending tasks. If additional work is discovered, record it as a separate pending task in the task ledger. Update ${state.selectedTaskId} in the task ledger with its final status and evidence before emitting the final task marker.`
+          : `## Selected Task
+No selected task is persisted. Do not perform broad implementation; wait for Ralph to select a task from the task ledger.`;
+      phaseContext = `${selectedTaskSection}
+
+## Task
 Implement via Red-Green-Refactor.
 Read spec: docs/specs/${state.feature}-final.html (HTML) or docs/specs/${state.feature}.md (markdown fallback)
 ${gateInstructions}`;
@@ -181,11 +203,13 @@ ${gateInstructions}`;
   }
   const rules = [
     phaseKey === "implement"
-      ? "- Use configured ralph-works gates only when `.ralph/gate-config.json` exists. Otherwise run the repository's documented test commands manually and complete with the phase marker."
+      ? "- Task-loop mode is active. Use configured ralph-works gates only when `.ralph/gate-config.json` exists. Otherwise run the repository's documented test commands manually. When the selected task is complete, end your final assistant message with exactly `RALPH_TASK_COMPLETE`, or use `RALPH_TASK_BLOCKED`, `RALPH_TASK_PARTIALLY_VERIFIED`, or `RALPH_TASK_NEEDS_FOLLOWUP` when that status is accurate. Do not use `RALPH_PHASE_COMPLETE` during implement."
       : "",
     phaseKey === "review"
       ? "- End the review by calling `ralph_review_decision` with status LGTM or CRITICAL."
-      : `- When this phase is fully complete, end your final assistant message with the exact line \`${PHASE_COMPLETE_MARKER}\`. The controller will not advance automatically at turn end.`,
+      : phaseKey === "implement"
+        ? ""
+        : `- When this phase is fully complete, end your final assistant message with the exact line \`${PHASE_COMPLETE_MARKER}\`. The controller will not advance automatically at turn end.`,
   ]
     .filter(Boolean)
     .join("\n");
