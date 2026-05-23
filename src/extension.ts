@@ -80,7 +80,7 @@ import {
   PHASE_COMPLETE_MARKER,
   sanitizeFeatureName,
 } from "./stateMachine";
-import { appendReviewTasks, parseTaskLedger, updateTaskStatus } from "./taskLedger";
+import { appendReviewTasks } from "./taskLedger";
 import {
   enterImplementCheckpoint as buildImplementCheckpointState,
   enterPhaseExecution,
@@ -167,7 +167,7 @@ function finalNonEmptyLine(text: string): string {
 
 function parseSelectedTaskMarker(text: string): string | null {
   const line = finalNonEmptyLine(text);
-  const match = line.match(/^RALPH_SELECTED_TASK\s+(TASK-\d{4})$/);
+  const match = line.match(/^RALPH_SELECTED_TASK\s+(TASK-[A-Za-z0-9][A-Za-z0-9_-]*)$/);
   return match?.[1] ?? null;
 }
 
@@ -644,7 +644,7 @@ async function completeImplementPhaseFromTaskLoop(
 ): Promise<void> {
   const clearedState: PipelineState = {
     ...state,
-    selectedTask: undefined,
+    selectedTaskId: undefined,
     taskFile: taskFileRelativePath(state),
     turnWriteCount: 0,
     readyToAdvancePhase: undefined,
@@ -673,7 +673,7 @@ async function launchTaskSelector(
   const selectingState: PipelineState = {
     ...state,
     phaseStatus: "selecting_task",
-    selectedTask: undefined,
+    selectedTaskId: undefined,
     taskFile: taskFileRelativePath(state),
     turnWriteCount: 0,
     readyToAdvancePhase: undefined,
@@ -701,32 +701,15 @@ async function handleSelectedTaskMarker(
 
   const taskPath = taskFileAbsolutePath(state);
   if (!fs.existsSync(taskPath)) return false;
-  const content = fs.readFileSync(taskPath, "utf-8");
   if (noTasksRemain) {
     await completeImplementPhaseFromTaskLoop(pi, ctx, state);
     return true;
   }
   if (!taskId) return false;
 
-  const ledger = parseTaskLedger(content);
-  const selectedTask = ledger.tasks.find((task) => task.id === taskId);
-  if (!selectedTask) {
-    sendPipelineUserMessage(pi, ctx, `Selected task ${taskId} was not found in ${taskFileRelativePath(state)}.`, {
-      deliverAs: "steer",
-    });
-    return true;
-  }
-
-  const updatedContent = updateTaskStatus(content, taskId, "in_progress");
-  fs.writeFileSync(taskPath, updatedContent, "utf-8");
-  const updatedLedger = parseTaskLedger(updatedContent);
-  const updatedTask = updatedLedger.tasks.find((task) => task.id === taskId) ?? {
-    ...selectedTask,
-    status: "in_progress" as const,
-  };
   const selectedState: PipelineState = {
     ...state,
-    selectedTask: updatedTask,
+    selectedTaskId: taskId,
     taskFile: taskFileRelativePath(state),
     phaseStatus: "pre_hook",
     taskSelectorAttempts: 0,
@@ -742,8 +725,8 @@ async function continueTaskLoopAfterStatus(
   state: PipelineState,
   status: "complete" | "blocked" | "partially_verified" | "needs_followup",
 ): Promise<void> {
-  const task = state.selectedTask;
-  if (!task) return;
+  const taskId = state.selectedTaskId;
+  if (!taskId) return;
   const taskPath = taskFileAbsolutePath(state);
   if (!fs.existsSync(taskPath)) return;
 
@@ -758,12 +741,9 @@ async function continueTaskLoopAfterStatus(
     }
   }
 
-  const content = fs.readFileSync(taskPath, "utf-8");
-  const updatedContent = updateTaskStatus(content, task.id, status);
-  fs.writeFileSync(taskPath, updatedContent, "utf-8");
   const nextState: PipelineState = {
     ...state,
-    selectedTask: undefined,
+    selectedTaskId: undefined,
     taskFile: taskFileRelativePath(state),
     taskLoopIteration: (state.taskLoopIteration ?? 0) + 1,
     lastTaskSignal: status,
@@ -830,7 +810,7 @@ async function handleTaskStatusMarker(
   state: PipelineState,
   assistantText: string,
 ): Promise<boolean> {
-  if (state.currentPhase !== "implement" || state.phaseStatus !== "executing" || !state.selectedTask) return false;
+  if (state.currentPhase !== "implement" || state.phaseStatus !== "executing" || !state.selectedTaskId) return false;
   const status = parseTaskStatusMarker(assistantText);
   if (!status) return false;
   await continueTaskLoopAfterStatus(pi, ctx, state, status);
@@ -870,7 +850,7 @@ async function launchPhase(
     return;
   }
 
-  if (pk === "implement" && !state.selectedTask) {
+  if (pk === "implement" && !state.selectedTaskId) {
     await launchTaskSelector(pi, ctx, state, options);
     return;
   }
@@ -1029,7 +1009,7 @@ async function handleReviewDecision(
         ...state,
         reviewIterations: iter + 1,
         implementCheckpointApproved: true,
-        selectedTask: undefined,
+        selectedTaskId: undefined,
         taskFile: taskFileRelativePath(state),
       },
       {
@@ -1052,7 +1032,7 @@ async function handleReviewDecision(
 
 function buildImplementGateReminder(state: PipelineState): string {
   const resolution = resolveGateConfiguration(state.workDir);
-  const taskLabel = state.selectedTask ? `selected task ${state.selectedTask.id}` : "selected task";
+  const taskLabel = state.selectedTaskId ? `selected task ${state.selectedTaskId}` : "selected task";
   if (resolution.errors.length > 0) {
     return `ralph-works gate configuration is invalid at ${resolution.source}. Fix the gate config or run the repository's documented test commands manually before completing ${taskLabel}. Errors:\n${resolution.errors.map((error) => `- ${error}`).join("\n")}`;
   }
@@ -1152,8 +1132,8 @@ async function handleAgentEnd(
     sendPipelineUserMessage(
       pi,
       ctx,
-      state.selectedTask
-        ? `Use RALPH_TASK_COMPLETE, RALPH_TASK_BLOCKED, RALPH_TASK_PARTIALLY_VERIFIED, or RALPH_TASK_NEEDS_FOLLOWUP for ${state.selectedTask.id}. The implement phase no longer accepts ${PHASE_COMPLETE_MARKER} while a task is active.`
+      state.selectedTaskId
+        ? `Use RALPH_TASK_COMPLETE, RALPH_TASK_BLOCKED, RALPH_TASK_PARTIALLY_VERIFIED, or RALPH_TASK_NEEDS_FOLLOWUP for ${state.selectedTaskId}. The implement phase no longer accepts ${PHASE_COMPLETE_MARKER} while a task is active.`
         : `The implement phase now requires Ralph to select a task before TDD starts. ${PHASE_COMPLETE_MARKER} is not accepted for broad implementation.`,
       { deliverAs: "steer" },
     );

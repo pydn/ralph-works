@@ -1259,6 +1259,7 @@ Version: 1
       currentPhaseIndex: 1,
       phaseStatus: "executing",
       autoClearContext: false,
+      selectedTaskId: "TASK-0001",
       selectedTask: {
         id: "TASK-0001",
         title: "Add review launch",
@@ -1362,6 +1363,7 @@ Version: 1
       currentPhaseIndex: 1,
       phaseStatus: "executing",
       autoClearContext: false,
+      selectedTaskId: "TASK-0001",
       selectedTask: {
         id: "TASK-0001",
         title: "Add task marker enforcement",
@@ -1460,6 +1462,7 @@ Version: 1
       currentPhaseIndex: 1,
       phaseStatus: "executing",
       phaseAttempts: 0,
+      selectedTaskId: "TASK-0001",
       selectedTask: {
         id: "TASK-0001",
         title: "Enforce invalid gate handling",
@@ -1722,12 +1725,13 @@ Version: 1
     expect(String(sendUserMessages[0]?.content)).toContain("ralph-works Task Selector");
     expect(String(sendUserMessages[0]?.content)).toContain("Missing auth boundary test");
     const ledger = fs.readFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), "utf-8");
-    expect(ledger).toContain("### TASK-0002: Missing auth boundary test");
+    expect(ledger).toContain("### TASK-REVIEW-");
+    expect(ledger).toContain(": Missing auth boundary test");
     expect(ledger).toContain("- Source: review_critical");
     expect(ledger).toContain("- Review Finding Ref: review-1 issue-1");
   });
 
-  it("accepts a selected task marker, marks the ledger in progress, and launches scoped TDD", async () => {
+  it("accepts a selected task marker and launches scoped TDD with the task ID and ledger path", async () => {
     const workDir = makeTempDir("ralph-selected-task-");
     const skillBase = makeTempDir("ralph-selected-task-skills-");
     process.env.PI_SKILL_BASE = skillBase;
@@ -1787,14 +1791,15 @@ Version: 1
       makeFakeContext(branch, workDir, { idle: true }),
     );
 
-    const state = latestState<{ selectedTask?: { id?: string }; phaseStatus?: string }>(branch);
-    expect(state.selectedTask?.id).toBe("TASK-0001");
+    const state = latestState<{ selectedTaskId?: string; phaseStatus?: string }>(branch);
+    expect(state.selectedTaskId).toBe("TASK-0001");
     expect(state.phaseStatus).toBe("executing");
     expect(fs.readFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), "utf-8")).toContain(
-      "- Status: in_progress",
+      "- Status: pending",
     );
     expect(String(sendUserMessages.at(-1)?.content)).toContain("## Selected Task");
-    expect(String(sendUserMessages.at(-1)?.content)).toContain("id: TASK-0001");
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("Task ID: TASK-0001");
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("Task ledger: docs/specs/todo_feature-a.md");
   });
 
   it("trusts the selector no-tasks marker and advances to review", async () => {
@@ -1857,10 +1862,10 @@ Version: 1
       makeFakeContext(branch, workDir, { idle: true }),
     );
 
-    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTask?: unknown }>(branch);
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTaskId?: string }>(branch);
     expect(state.currentPhase).toBe("review");
     expect(state.phaseStatus).toBe("executing");
-    expect(state.selectedTask).toBeUndefined();
+    expect(state.selectedTaskId).toBeUndefined();
     expect(String(sendUserMessages.at(-1)?.content)).toContain("Phase: ralph-works Review Loop");
   });
 
@@ -1944,15 +1949,15 @@ Version: 1
       makeFakeContext(branch, workDir, { idle: true }),
     );
 
-    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTask?: { id?: string } }>(branch);
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTaskId?: string }>(branch);
     expect(state.currentPhase).toBe("implement");
     expect(state.phaseStatus).toBe("executing");
-    expect(state.selectedTask?.id).toBe("TASK-0002");
+    expect(state.selectedTaskId).toBe("TASK-0002");
     expect(fs.readFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), "utf-8")).toMatch(
-      /### TASK-0002: Add docs[\s\S]*- Status: in_progress/,
+      /### TASK-0002: Add docs[\s\S]*- Status: pending/,
     );
     expect(String(sendUserMessages.at(-1)?.content)).toContain("## Selected Task");
-    expect(String(sendUserMessages.at(-1)?.content)).toContain("id: TASK-0002");
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("Task ID: TASK-0002");
   });
 
   it("marks a task complete and relaunches the selector for the next model decision", async () => {
@@ -2000,6 +2005,7 @@ Version: 1
       phases: ["tasks", "implement", "review"],
       currentPhase: "implement",
       currentPhaseIndex: 1,
+      selectedTaskId: "TASK-0001",
       selectedTask: {
         id: "TASK-0001",
         title: "Add selected task state",
@@ -2028,13 +2034,13 @@ Version: 1
       makeFakeContext(branch, workDir, { idle: true }),
     );
 
-    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTask?: unknown }>(branch);
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTaskId?: string }>(branch);
     expect(state.currentPhase).toBe("implement");
     expect(state.phaseStatus).toBe("selecting_task");
-    expect(state.selectedTask).toBeUndefined();
+    expect(state.selectedTaskId).toBeUndefined();
     const ledger = fs.readFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), "utf-8");
-    expect(ledger).toContain("- Status: complete");
-    expect(ledger).toMatch(/- Completed: 20\d\d-/);
+    expect(ledger).toContain("- Status: in_progress");
+    expect(ledger).toContain("- Completed: none");
     expect(String(sendUserMessages.at(-1)?.content)).toContain("ralph-works Task Selector");
   });
 
@@ -2084,6 +2090,7 @@ Version: 1
       currentPhase: "implement",
       currentPhaseIndex: 1,
       phaseStatus: "executing",
+      selectedTaskId: "TASK-0001",
       selectedTask: {
         id: "TASK-0001",
         title: "Add selected task state",
@@ -2116,10 +2123,10 @@ Version: 1
       makeFakeContext(branch, workDir, { idle: true }),
     );
 
-    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTask?: { id?: string } }>(branch);
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTaskId?: string }>(branch);
     expect(state.currentPhase).toBe("implement");
     expect(state.phaseStatus).toBe("executing");
-    expect(state.selectedTask?.id).toBe("TASK-0001");
+    expect(state.selectedTaskId).toBe("TASK-0001");
     expect(String(sendUserMessages.at(-1)?.content)).toContain("Use RALPH_TASK_COMPLETE");
   });
 
@@ -2184,6 +2191,7 @@ Version: 1
       phases: ["tasks", "implement", "review"],
       currentPhase: "implement",
       currentPhaseIndex: 1,
+      selectedTaskId: "TASK-0001",
       selectedTask: {
         id: "TASK-0001",
         title: "Integrate external dependency",
@@ -2211,12 +2219,12 @@ Version: 1
       makeFakeContext(branch, workDir, { idle: true }),
     );
 
-    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTask?: unknown }>(branch);
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTaskId?: string }>(branch);
     expect(state.currentPhase).toBe("implement");
     expect(state.phaseStatus).toBe("selecting_task");
-    expect(state.selectedTask).toBeUndefined();
+    expect(state.selectedTaskId).toBeUndefined();
     const ledger = fs.readFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), "utf-8");
-    expect(ledger).toContain("- Status: blocked");
+    expect(ledger).toContain("- Status: in_progress");
     expect(String(sendUserMessages.at(-1)?.content)).toContain("ralph-works Task Selector");
     expect(String(sendUserMessages.at(-1)?.content)).toContain("TASK-0002: Add local fallback");
   });
@@ -2282,6 +2290,7 @@ Version: 1
       phases: ["tasks", "implement", "review"],
       currentPhase: "implement",
       currentPhaseIndex: 1,
+      selectedTaskId: "TASK-0001",
       selectedTask: {
         id: "TASK-0001",
         title: "Finish first task",

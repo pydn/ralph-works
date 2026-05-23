@@ -155,8 +155,8 @@ export interface PipelineState {
   phaseModelNonce?: string;
   /** Markdown implementation task ledger path, relative to workDir. */
   taskFile?: string;
-  /** Current task selected from the task ledger for one scoped TDD invocation. */
-  selectedTask?: RalphImplementationTask;
+  /** Current task ID selected from the task ledger for one scoped TDD invocation. */
+  selectedTaskId?: string;
   taskLoopIteration?: number;
   taskSelectorAttempts?: number;
   lastTaskSignal?: "complete" | "blocked" | "partially_verified" | "needs_followup";

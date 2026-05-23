@@ -347,6 +347,7 @@ Version: 1
           turnWriteCount: 0,
           autoClearContext: true,
           lastContextClearAt: Date.now(),
+          selectedTaskId: "TASK-0001",
           selectedTask: {
             id: "TASK-0001",
             title: "Complete before review",

@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { PROMPT_FILE_EXTENSIONS, RENDER_PHASE } from "./config";
-import type { PipelineState, RalphImplementationTask } from "./domain";
+import type { PipelineState } from "./domain";
 import { parseRalphFlags } from "./modelPlan";
 import { PHASE_CONFIGS } from "./phaseConfig";
 import { PHASE_COMPLETE_MARKER, PHASE_ORDER, resolveGateConfiguration, sanitizeFeatureName } from "./stateMachine";
@@ -113,23 +113,6 @@ function findLatestSpec(wd: string): string | null {
   }
 }
 
-function formatSelectedTask(task: RalphImplementationTask): string {
-  return [
-    `id: ${task.id}`,
-    `title: ${task.title}`,
-    `priority: ${task.priority}`,
-    `status: ${task.status}`,
-    `source: ${task.source}`,
-    `dependsOn: ${task.dependsOn.length ? task.dependsOn.join(", ") : "none"}`,
-    `reviewFindingRef: ${task.reviewFindingRef ?? "none"}`,
-    `filesHint: ${task.filesHint.length ? task.filesHint.join(", ") : "none"}`,
-    "acceptanceCriteria:",
-    ...task.acceptanceCriteria.map((item) => `- ${item}`),
-    "testPlan:",
-    ...task.testPlan.map((item) => `- ${item}`),
-  ].join("\n");
-}
-
 /**
  * Build the phase prompt sent to the agent.
  *
@@ -175,7 +158,7 @@ Create a comprehensive implementation task ledger from the hardened spec.
 Read: docs/specs/${state.feature}.md
 Read harden changelog: docs/specs/harden-changelog-${state.feature}.md
 Output: docs/specs/todo_${sanitized}.md
-Requirements: strict Markdown task format, stable TASK-0001 IDs, priority/status/source metadata, acceptance criteria, and test plan for each task. Do not implement code in this phase.`;
+	Requirements: human-readable Markdown task ledger, stable task IDs such as TASK-0001, priority/status/source metadata, acceptance criteria, and test plan for each task. The controller treats this document as LLM-readable source material, not as a deterministically parsed schema. Do not implement code in this phase.`;
       break;
     }
     case "render": {
@@ -197,15 +180,13 @@ Use atomic write pattern: write to ${sanitized}-final.html.tmp then rename to fi
             ? `Configured ralph-works gates are available through the registered \`ralph_gate_check\` tool.\nConfig source: ${gateResolution.source}\nCommands:\n${gateResolution.gates.map((g) => `- ${g.name}: ${g.command}`).join("\n")}\nIf the registered tool is not visible in your tool list, do not run \`ralph_gate_check\` in bash; continue with documented project commands and let the completion post-hook or operator run \`/ralph-works gate\`.`
             : "No ralph-works gates are configured for this workDir. Run the project's documented test commands manually during Red-Green-Refactor, and do not assume universal lint/typecheck/test defaults exist.";
       const selectedTaskSection =
-        state.selectedTask && state.taskFile
+        state.selectedTaskId && state.taskFile
           ? `## Selected Task
-<selected_task>
-${formatSelectedTask(state.selectedTask)}
-</selected_task>
+Task ID: ${state.selectedTaskId}
 
 Task ledger: ${state.taskFile}
 
-You may not implement adjacent pending tasks. If additional work is discovered, record it as a separate pending task in the task ledger.`
+Read the task ledger and work only on ${state.selectedTaskId}. Do not implement adjacent pending tasks. If additional work is discovered, record it as a separate pending task in the task ledger. Update ${state.selectedTaskId} in the task ledger with its final status and evidence before emitting the final task marker.`
           : `## Selected Task
 No selected task is persisted. Do not perform broad implementation; wait for Ralph to select a task from the task ledger.`;
       phaseContext = `${selectedTaskSection}

@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PipelineState, RalphImplementationTask } from "../src/domain";
+import type { PipelineState } from "../src/domain";
 
 const tempDirs: string[] = [];
 
@@ -53,7 +53,7 @@ afterEach(() => {
 });
 
 describe("tasks phase", () => {
-  it("validates a strict Markdown task ledger as the tasks phase artifact", async () => {
+  it("validates a non-empty Markdown task ledger as the tasks phase artifact", async () => {
     const workDir = makeTempDir("ralph-tasks-phase-");
     fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
     fs.writeFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), taskLedger("feature-a"), "utf-8");
@@ -86,20 +86,7 @@ describe("tasks phase", () => {
 });
 
 describe("task-scoped implement prompt", () => {
-  it("includes the selected task and task file in the implement prompt", async () => {
-    const selectedTask: RalphImplementationTask = {
-      id: "TASK-0001",
-      title: "Add task support",
-      priority: "P0",
-      status: "in_progress",
-      source: "hardened_spec",
-      acceptanceCriteria: ["Task state is persisted."],
-      testPlan: ["Unit test task parsing."],
-      filesHint: ["src/domain.ts"],
-      dependsOn: [],
-      createdAt: "2026-05-23T00:00:00.000Z",
-      updatedAt: "2026-05-23T00:00:00.000Z",
-    };
+  it("includes the selected task ID and task file in the implement prompt", async () => {
     const { buildPhasePrompt } = await import("../src/prompts");
     const prompt = buildPhasePrompt("implement", {
       feature: "feature-a",
@@ -108,14 +95,15 @@ describe("task-scoped implement prompt", () => {
       maxIterations: 10,
       startedAt: 0,
       taskFile: "docs/specs/todo_feature-a.md",
-      selectedTask,
+      selectedTaskId: "TASK-0001",
     } satisfies PipelineState);
 
     expect(prompt).toContain("## Selected Task");
-    expect(prompt).toContain("<selected_task>");
-    expect(prompt).toContain("id: TASK-0001");
+    expect(prompt).toContain("Task ID: TASK-0001");
     expect(prompt).toContain("Task ledger: docs/specs/todo_feature-a.md");
-    expect(prompt).toContain("may not implement adjacent pending tasks");
+    expect(prompt).toContain("Read the task ledger and work only on TASK-0001");
+    expect(prompt).toContain("Do not implement adjacent pending tasks");
+    expect(prompt).toContain("Update TASK-0001 in the task ledger");
     expect(prompt).toContain("RALPH_TASK_COMPLETE");
     expect(prompt).toContain("Do not use `RALPH_PHASE_COMPLETE` during implement");
     expect(prompt).not.toContain("complete with the phase marker");

@@ -4,7 +4,6 @@ import { SKILL_BASE } from "./config";
 import type { PipelineState, PostHookResult } from "./domain";
 import { runLintGates } from "./gates";
 import { sanitizeFeatureName, validateHardenedSpecStatus } from "./stateMachine";
-import { parseTaskLedger } from "./taskLedger";
 
 export interface PhaseConfig {
   displayName: string;
@@ -90,10 +89,7 @@ export const PHASE_CONFIGS: Record<string, PhaseConfig> = {
     postHook: (_pk, s) => {
       const todoPath = path.join(s.workDir, "docs", "specs", `todo_${sanitizeFeatureName(s.feature)}.md`);
       if (!fs.existsSync(todoPath)) return { pass: false, errors: [`Task ledger not found at ${todoPath}`] };
-      const ledger = parseTaskLedger(fs.readFileSync(todoPath, "utf-8"));
-      if (!ledger.tasks.length) return { pass: false, errors: ["Task ledger contains no tasks"] };
-      if (!ledger.tasks.some((task) => task.status === "pending"))
-        return { pass: false, errors: ["Task ledger contains no pending tasks"] };
+      if (fs.statSync(todoPath).size === 0) return { pass: false, errors: ["Task ledger is empty"] };
       return { pass: true };
     },
   },

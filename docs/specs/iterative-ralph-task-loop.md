@@ -50,7 +50,7 @@ The desired redesign makes implementation an automatic task loop:
 | `/home/peyton/code/ralph-works` | Primary checkout is for coordination and review             | Implementation work must occur in a dedicated git worktree                                            |
 | `/tmp/ralph-works-*`            | Writable worktree location                                  | Spec, code, and tests for this change should be edited here                                           |
 | `/home/peyton/.pi/agent/skills` | Live Pi skills checkout with unrelated dirty files possible | Skill changes should be isolated in a skill repo worktree and copied to live skills only when desired |
-| `docs/specs/todo_<feature>.md`  | Markdown source of truth for tasks                          | Controller must parse and update this file conservatively                                             |
+| `docs/specs/todo_<feature>.md`  | Markdown source of truth for tasks                          | LLMs read and edit this file; the controller treats it as source material, not a parsed schema        |
 
 ### Runtime
 
@@ -74,9 +74,9 @@ The desired redesign makes implementation an automatic task loop:
 
 | #   | Story                                                                                                                                 | Priority | Acceptance Criteria                                                                                                                                    |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1   | As an operator, I want Ralph to create an implementation task ledger from the hardened spec, so implementation has a durable backlog. | High     | A `tasks` phase writes `docs/specs/todo_<feature>.md`; post-hook validates parseable pending tasks.                                                    |
-| 2   | As an operator, I want Ralph to automatically select one task at a time, so the TDD skill stays scoped.                               | High     | After compaction, the selector prompt chooses one task, Ralph persists it in state, and launches `tdd-implement` with `selected_task` and `task_file`. |
-| 3   | As an operator, I want completed tasks gated before being marked done, so review does not inherit broken intermediate states.         | High     | `RALPH_TASK_COMPLETE` does not update the ledger to complete until full configured gates pass.                                                         |
+| 1   | As an operator, I want Ralph to create an implementation task ledger from the hardened spec, so implementation has a durable backlog. | High     | A `tasks` phase writes `docs/specs/todo_<feature>.md`; post-hook validates that the document exists and is non-empty.                                  |
+| 2   | As an operator, I want Ralph to automatically select one task at a time, so the TDD skill stays scoped.                               | High     | After compaction, the selector prompt chooses one task ID, Ralph persists that ID plus `task_file`, and launches `tdd-implement`.                      |
+| 3   | As an operator, I want completed tasks gated before being treated as done, so review does not inherit broken intermediate states.     | High     | `RALPH_TASK_COMPLETE` is accepted only after full configured gates pass; the controller does not edit the generated ledger.                            |
 | 4   | As an operator, I want blocked tasks skipped automatically, so the loop keeps making progress.                                        | Medium   | `RALPH_TASK_BLOCKED` marks the current task blocked, compacts context, and relaunches the selector without user approval.                              |
 | 5   | As an operator, I want CRITICAL review findings converted into tasks, so remediation uses the same loop.                              | High     | `ralph_review_decision(CRITICAL)` triggers automatic task import into the original todo file, grouping related findings by root cause where practical. |
 
@@ -102,7 +102,7 @@ flowchart TD
     G --> H{selector reports tasks remain?}
     H -- yes --> I[compact context]
     I --> J[selector prompt]
-    J --> K[persist selected_task]
+    J --> K[persist selectedTaskId]
     K --> L[tdd-implement one task]
     L --> M{task signal}
     M -- complete / needs followup --> N[run full configured gates]
@@ -144,7 +144,7 @@ The task ledger path is:
 docs/specs/todo_<feature>.md
 ```
 
-Markdown is the source of truth. To make it parseable, each task must use a strict heading and metadata block.
+Markdown is the source of truth. It should stay clear and consistent for LLM reading, but the controller must not depend on deterministic parsing of this generated document.
 
 ```markdown
 # Implementation Tasks - <feature>
@@ -169,8 +169,8 @@ Version: 1
 
 #### Acceptance Criteria
 
-- PipelineState persists taskFile and selectedTask.
-- Compaction reload can recover the selected task from state and ledger.
+- PipelineState persists taskFile and selectedTaskId.
+- Compaction reload can recover the selected task ID and ledger path from state.
 
 #### Test Plan
 
@@ -249,7 +249,7 @@ Extend `PipelineState`:
 
 ```typescript
 taskFile?: string;
-selectedTask?: RalphImplementationTask;
+selectedTaskId?: string;
 taskLoopIteration?: number;
 taskSelectorAttempts?: number;
 lastTaskSignal?: "complete" | "blocked" | "partially_verified" | "needs_followup";
@@ -273,7 +273,7 @@ State is a mirror for compaction survivability. The Markdown ledger remains auth
 
 The selector is a small internal prompt launched by Ralph during `implement`, not a public phase. It reads the Markdown task ledger and chooses the next task by judgment, using status, priority, dependencies, notes, and ledger order as inputs. The controller does not deterministically sort, re-rank, or reject a selected task because a different task appears more eligible.
 
-The selector must return a single parseable final line:
+The selector must return a single marker final line:
 
 ```text
 RALPH_SELECTED_TASK TASK-0001
@@ -285,24 +285,20 @@ If the selector determines no implementation task remains:
 RALPH_NO_TASKS_REMAIN
 ```
 
-Ralph parses this line, loads the full task details from the Markdown ledger, persists `selectedTask`, marks the task `in_progress`, compacts context, and launches `tdd-implement`.
+Ralph parses only this marker line, persists the selected task ID, compacts context, and launches `tdd-implement` with the task ID and todo document path. Ralph does not parse the todo document to load task details or update status.
 
 ### TDD Launch Context
 
-The implement phase prompt must pass both `selected_task` and `task_file` into the skill context:
+The implement phase prompt must pass both the selected task ID and `task_file` into the skill context:
 
 ```markdown
 ## Selected Task
 
-<selected_task>
-id: TASK-0001
-title: Add selected task state to PipelineState
-priority: P0
-source: hardened_spec
-...
-</selected_task>
+Task ID: TASK-0001
 
 Task ledger: docs/specs/todo\_<feature>.md
+
+Read the task ledger and work only on TASK-0001.
 ```
 
 The prompt must say that the agent may not implement adjacent pending tasks.
@@ -311,12 +307,12 @@ The prompt must say that the agent may not implement adjacent pending tasks.
 
 The controller must parse these exact final non-empty lines from assistant output during `implement`:
 
-| Marker                          | Controller Behavior                                                                         |
-| ------------------------------- | ------------------------------------------------------------------------------------------- |
-| `RALPH_TASK_COMPLETE`           | Run full configured gates, then mark selected task `complete` if gates pass                 |
-| `RALPH_TASK_BLOCKED`            | Mark selected task `blocked`, clear selected task, compact, relaunch selector               |
-| `RALPH_TASK_PARTIALLY_VERIFIED` | Run gates if code changed, mark `partially_verified`, relaunch selector                     |
-| `RALPH_TASK_NEEDS_FOLLOWUP`     | Run full configured gates, mark current task `needs_followup`, keep any new tasks in ledger |
+| Marker                          | Controller Behavior                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------------------ |
+| `RALPH_TASK_COMPLETE`           | Run full configured gates, then clear selected task ID and relaunch selector if gates pass |
+| `RALPH_TASK_BLOCKED`            | Clear selected task ID, compact, relaunch selector                                         |
+| `RALPH_TASK_PARTIALLY_VERIFIED` | Run gates if code changed, clear selected task ID, relaunch selector                       |
+| `RALPH_TASK_NEEDS_FOLLOWUP`     | Run full configured gates, clear selected task ID, keep any new tasks in ledger            |
 
 `RALPH_PHASE_COMPLETE` should not complete the implement phase while the task loop is active. In the new model, the implement phase completes when the selector returns `RALPH_NO_TASKS_REMAIN`.
 
@@ -327,8 +323,8 @@ Before marking a task `complete` or `needs_followup`, Ralph must run full config
 | Gate Result               | Outcome                                                                                                                                          |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | All configured gates pass | Update ledger and continue task loop                                                                                                             |
-| Any configured gate fails | Keep task `in_progress`, send failure details back to TDD                                                                                        |
-| Gate config invalid       | Keep task `in_progress`, enter validation failure                                                                                                |
+| Any configured gate fails | Keep selected task ID active, send failure details back to TDD                                                                                   |
+| Gate config invalid       | Keep selected task ID active, enter validation failure                                                                                           |
 | No configured gates       | Do not invent defaults; rely on documented project commands captured by task summary and make the controller behavior explicit in implementation |
 
 ### Review CRITICAL Backtracking
@@ -360,8 +356,7 @@ sequenceDiagram
     Controller->>Controller: compact context
     Controller->>Selector: choose next task from ledger
     Selector-->>Controller: RALPH_SELECTED_TASK TASK-00NN
-    Controller->>Ledger: mark TASK-00NN in_progress
-    Controller->>TDD: launch tdd-implement with selected_task
+    Controller->>TDD: launch tdd-implement with task ID and ledger path
 ```
 
 _Caption: Review findings reenter the same task loop instead of launching a separate remediation path._
@@ -380,7 +375,7 @@ Responsibilities:
 | --------------------------- | -------------------------------------------------------------------- |
 | Read hardened spec          | Use `docs/specs/<feature>.md` after `status: hardened` validation    |
 | Read harden changelog       | Include mitigations and deferred risks in task planning              |
-| Create comprehensive ledger | Write `docs/specs/todo_<feature>.md` in strict Markdown format       |
+| Create comprehensive ledger | Write `docs/specs/todo_<feature>.md` as clear Markdown               |
 | Produce task IDs            | Use stable sequential IDs starting at `TASK-0001`                    |
 | Prioritize                  | Use `P0` for blockers/security/core contracts, then `P1`, `P2`, `P3` |
 | Include tests               | Every task must have task-level acceptance criteria and test plan    |
@@ -394,13 +389,13 @@ RALPH_PHASE_COMPLETE
 
 ### Update `tdd-implement`
 
-The skill was already updated to operate on one `selected_task`. Additional alignment may be needed after controller implementation:
+The skill should operate on one selected task ID from the todo document. Additional alignment may be needed after controller implementation:
 
-| Area                             | Required Wording                                                                                        |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| No fallback broad implementation | If no `selected_task` or `task_file` is provided, block rather than deriving a full implementation plan |
-| Markdown source of truth         | Update the selected task section in `docs/specs/todo_<feature>.md`                                      |
-| Task signal                      | End with one `RALPH_TASK_*` marker in task-loop mode                                                    |
+| Area                             | Required Wording                                                                                         |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| No fallback broad implementation | If no selected task ID or `task_file` is provided, block rather than deriving a full implementation plan |
+| Markdown source of truth         | Update the selected task section in `docs/specs/todo_<feature>.md`                                       |
+| Task signal                      | End with one `RALPH_TASK_*` marker in task-loop mode                                                     |
 
 ### Update `pr-reviewer`
 
@@ -417,18 +412,18 @@ Review output should make task conversion reliable:
 
 ## Implementation Plan
 
-| Step | Area                | Work                                                                                        | Tests                                                         |
-| ---- | ------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| 1    | Skills              | Add `tasks/SKILL.md`; update `tdd-implement` and `pr-reviewer` wording if needed            | Skill file prerequisite tests                                 |
-| 2    | Phase config        | Add `tasks` to phase order, defaults, metadata, skill validation, and artifact expectations | `validatePhaseOrder`, missing skill prerequisite tests        |
-| 3    | Ledger parser       | Add strict Markdown parser/updater for task entries                                         | Unit tests for parse, update, append, reopen, malformed files |
-| 4    | State model         | Add task fields to `PipelineState` and copy-on-write helpers                                | Serialization/reload tests                                    |
-| 5    | Task selector       | Add selector prompt handling and `RALPH_SELECTED_TASK` parser                               | Agent-end parser tests                                        |
-| 6    | Implement loop      | Replace broad implement completion with task loop                                           | Phase-launch and task-marker tests                            |
-| 7    | Gates               | Require full configured gates before completing tasks                                       | Gate pass/fail task completion tests                          |
-| 8    | Review backtracking | Convert/group CRITICAL findings into ledger tasks                                           | `ralph_review_decision` tests                                 |
-| 9    | Compaction          | Compact between task completions and before selection                                       | Session-start/reorientation tests                             |
-| 10   | Docs                | Update README and phase descriptions                                                        | Documentation review                                          |
+| Step | Area                | Work                                                                                        | Tests                                                  |
+| ---- | ------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| 1    | Skills              | Add `tasks/SKILL.md`; update `tdd-implement` and `pr-reviewer` wording if needed            | Skill file prerequisite tests                          |
+| 2    | Phase config        | Add `tasks` to phase order, defaults, metadata, skill validation, and artifact expectations | `validatePhaseOrder`, missing skill prerequisite tests |
+| 3    | Task loop state     | Persist selected task ID and task file without parsing generated todo docs                  | Unit tests for selector marker handling                |
+| 4    | State model         | Add task fields to `PipelineState` and copy-on-write helpers                                | Serialization/reload tests                             |
+| 5    | Task selector       | Add selector prompt handling and `RALPH_SELECTED_TASK` parser                               | Agent-end parser tests                                 |
+| 6    | Implement loop      | Replace broad implement completion with task loop                                           | Phase-launch and task-marker tests                     |
+| 7    | Gates               | Require full configured gates before completing tasks                                       | Gate pass/fail task completion tests                   |
+| 8    | Review backtracking | Convert/group CRITICAL findings into ledger tasks                                           | `ralph_review_decision` tests                          |
+| 9    | Compaction          | Compact between task completions and before selection                                       | Session-start/reorientation tests                      |
+| 10   | Docs                | Update README and phase descriptions                                                        | Documentation review                                   |
 
 ---
 
@@ -436,26 +431,26 @@ Review output should make task conversion reliable:
 
 ### Unit Tests
 
-| Module                 | Coverage                                                                         |
-| ---------------------- | -------------------------------------------------------------------------------- |
-| `stateMachine.ts`      | Phase order with `tasks`, task marker parsing, selector marker parsing           |
-| New task ledger module | Parse strict Markdown, update status, append review tasks, reopen completed task |
-| `stateController.ts`   | Enter selecting, task selected, task validating, blocked skip                    |
-| `prompts.ts`           | Build tasks phase prompt, selector prompt, selected task TDD prompt              |
+| Module                 | Coverage                                                                     |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| `stateMachine.ts`      | Phase order with `tasks`, task marker parsing, selector marker parsing       |
+| New task ledger module | Append review remediation tasks without parsing existing generated todo docs |
+| `stateController.ts`   | Enter selecting, task selected, task validating, blocked skip                |
+| `prompts.ts`           | Build tasks phase prompt, selector prompt, selected task TDD prompt          |
 
 ### Integration Tests
 
-| Scenario                         | Expected Result                                                        |
-| -------------------------------- | ---------------------------------------------------------------------- |
-| Full default phase list          | Includes `tasks`, excludes `render` unless requested                   |
-| Harden completes                 | `tasks` phase launches before `implement`                              |
-| Tasks phase completes            | Todo file exists and contains parseable pending tasks                  |
-| Selector picks task              | State stores selected task and ledger marks it `in_progress`           |
-| Task complete with gates passing | Ledger marks task `complete`, selected task clears, next task selected |
-| Task complete with gates failing | Ledger stays `in_progress`, failure steer sent                         |
-| Task blocked                     | Ledger marks `blocked`, next unblocked task selected                   |
-| No pending tasks                 | Implement phase completes and review launches                          |
-| Review CRITICAL                  | New/reopened tasks added to original ledger, implement loop resumes    |
+| Scenario                         | Expected Result                                                     |
+| -------------------------------- | ------------------------------------------------------------------- |
+| Full default phase list          | Includes `tasks`, excludes `render` unless requested                |
+| Harden completes                 | `tasks` phase launches before `implement`                           |
+| Tasks phase completes            | Todo file exists and is non-empty                                   |
+| Selector picks task              | State stores selected task ID and launches TDD with the ledger path |
+| Task complete with gates passing | Selected task ID clears, selector relaunches                        |
+| Task complete with gates failing | Selected task ID remains active, failure steer sent                 |
+| Task blocked                     | Selected task ID clears and selector relaunches                     |
+| No pending tasks                 | Implement phase completes and review launches                       |
+| Review CRITICAL                  | New/reopened tasks added to original ledger, implement loop resumes |
 
 ### Manual Smoke Test
 
@@ -473,11 +468,11 @@ Run a small pipeline with a hardened spec that yields two tasks:
 
 | Risk                                 | Likelihood | Impact | Mitigation                                                                                      |
 | ------------------------------------ | ---------- | ------ | ----------------------------------------------------------------------------------------------- |
-| Markdown parsing is brittle          | Medium     | High   | Use strict heading and metadata grammar with unit tests and clear validation errors             |
-| Selector picks an impossible task    | Medium     | Medium | Check dependencies and blocked status deterministically before accepting selector output        |
-| Gate failures cause loop churn       | Medium     | Medium | Keep task `in_progress` and send a targeted failure steer with gate output                      |
+| Markdown parsing is brittle          | Medium     | High   | Do not parse LLM-generated todo documents in the controller; let the LLM read and edit them     |
+| Selector picks an impossible task    | Medium     | Medium | Trust selector judgment and rely on the TDD pass to report blocked work with evidence           |
+| Gate failures cause loop churn       | Medium     | Medium | Keep selected task ID active and send a targeted failure steer with gate output                 |
 | CRITICAL findings are too vague      | Medium     | Medium | Fall back to one task per finding when grouping confidence is low                               |
-| Context compaction loses task detail | Low        | High   | Persist `selectedTask` in state and task ledger path in state; rehydrate from ledger on reload  |
+| Context compaction loses task detail | Low        | High   | Persist `selectedTaskId` and task ledger path in state                                          |
 | No gate config exists                | Medium     | High   | Spec implementation must decide explicit no-gate behavior before coding; do not invent defaults |
 
 ---
@@ -496,11 +491,11 @@ Run a small pipeline with a hardened spec that yields two tasks:
 
 - Default phase order includes `tasks` between `harden` and `implement`.
 - `implement` without `tasks` is invalid.
-- `tasks` phase writes a strict Markdown ledger at `docs/specs/todo_<feature>.md`.
-- Controller persists `taskFile` plus the selected task; task ordering decisions belong to the selector prompt, not deterministic controller parsing.
+- `tasks` phase writes a human-readable Markdown ledger at `docs/specs/todo_<feature>.md`.
+- Controller persists `taskFile` plus the selected task ID; task ordering and interpretation belong to the selector/TDD prompts, not deterministic controller parsing.
 - Ralph automatically compacts, selects, persists, and launches one task at a time.
-- `tdd-implement` receives `selected_task` and `task_file` in its phase prompt.
-- `RALPH_TASK_COMPLETE` requires full configured gates before ledger completion.
-- `RALPH_TASK_BLOCKED` marks the task blocked and relaunches the selector.
+- `tdd-implement` receives the selected task ID and `task_file` in its phase prompt.
+- `RALPH_TASK_COMPLETE` requires full configured gates before the controller clears the selected task ID.
+- `RALPH_TASK_BLOCKED` clears the selected task ID and relaunches the selector.
 - Review CRITICAL findings append or reopen grouped remediation tasks in the original ledger.
 - When the selector returns `RALPH_NO_TASKS_REMAIN`, the implement phase completes and review starts.
