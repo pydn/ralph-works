@@ -226,11 +226,12 @@ describe("/ralph-works start command", () => {
     expect(state.currentPhase).toBe("spec");
   });
 
-  it("rejects direct implement starts without the required tasks phase", async () => {
+  it("starts direct implement runs and waits for an existing task ledger", async () => {
     const workDir = makeTempDir("ralph-implement-tool-prompt-");
     writePassingGateConfig(workDir);
     const skillBase = makeTempDir("ralph-implement-tool-prompt-skills-");
     process.env.PI_SKILL_BASE = skillBase;
+    seedSkill(skillBase, "tdd-implement");
 
     const branch: FakeEntry[] = [];
     const { default: registerExtension } = await import("../index");
@@ -240,7 +241,10 @@ describe("/ralph-works start command", () => {
     await commands.get("ralph-works")?.("start feature-a implement", makeFakeContext(branch, workDir));
 
     expect(sendUserMessages).toHaveLength(0);
-    expect(latestState(branch)).toBeUndefined();
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; lastValidationFailure?: string }>(branch);
+    expect(state.currentPhase).toBe("implement");
+    expect(state.phaseStatus).toBe("pre_hook");
+    expect(state.lastValidationFailure).toContain("Task ledger not found");
   });
 
   it("persists yolo mode from the start command", async () => {
@@ -1287,13 +1291,28 @@ Version: 1
       makeFakeContext(branch, workDir, { idle: true }),
     );
 
+    const selectorState = latestState<{ currentPhase?: string; pipelineStatus?: string; phaseStatus?: string }>(branch);
+    expect(selectorState.currentPhase).toBe("implement");
+    expect(selectorState.pipelineStatus).toBe("running");
+    expect(selectorState.phaseStatus).toBe("selecting_task");
+    expect(sendUserMessages).toHaveLength(1);
+    expect(sendUserMessages[0]?.options).toBeUndefined();
+    expect(String(sendUserMessages[0]?.content)).toContain("ralph-works Task Selector");
+
+    await handlers.get("agent_end")?.(
+      {
+        messages: [{ role: "assistant", content: [{ type: "text", text: "RALPH_NO_TASKS_REMAIN" }] }],
+      },
+      makeFakeContext(branch, workDir, { idle: true }),
+    );
+
     const state = latestState<{ currentPhase?: string; pipelineStatus?: string; phaseStatus?: string }>(branch);
     expect(state.currentPhase).toBe("review");
     expect(state.pipelineStatus).toBe("running");
     expect(state.phaseStatus).toBe("executing");
-    expect(sendUserMessages).toHaveLength(1);
-    expect(sendUserMessages[0]?.options).toBeUndefined();
-    expect(String(sendUserMessages[0]?.content)).toContain("# pr-reviewer");
+    expect(sendUserMessages).toHaveLength(2);
+    expect(sendUserMessages[1]?.options).toBeUndefined();
+    expect(String(sendUserMessages[1]?.content)).toContain("# pr-reviewer");
   });
 
   it("keeps a selected task active after passing gates until the task marker is emitted", async () => {
@@ -1778,7 +1797,7 @@ Version: 1
     expect(String(sendUserMessages.at(-1)?.content)).toContain("id: TASK-0001");
   });
 
-  it("does not trust a no-tasks marker when pending eligible tasks remain in the ledger", async () => {
+  it("trusts the selector no-tasks marker and advances to review", async () => {
     const workDir = makeTempDir("ralph-no-tasks-guard-");
     const skillBase = makeTempDir("ralph-no-tasks-guard-skills-");
     process.env.PI_SKILL_BASE = skillBase;
@@ -1838,13 +1857,14 @@ Version: 1
       makeFakeContext(branch, workDir, { idle: true }),
     );
 
-    const state = latestState<{ currentPhase?: string; phaseStatus?: string }>(branch);
-    expect(state.currentPhase).toBe("implement");
-    expect(state.phaseStatus).toBe("selecting_task");
-    expect(String(sendUserMessages.at(-1)?.content)).toContain("TASK-0001 is still eligible");
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTask?: unknown }>(branch);
+    expect(state.currentPhase).toBe("review");
+    expect(state.phaseStatus).toBe("executing");
+    expect(state.selectedTask).toBeUndefined();
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("Phase: ralph-works Review Loop");
   });
 
-  it("rejects a selected task marker when it is not the highest-priority eligible task", async () => {
+  it("accepts selector task choice without deterministic priority re-ranking", async () => {
     const workDir = makeTempDir("ralph-selector-priority-");
     const skillBase = makeTempDir("ralph-selector-priority-skills-");
     process.env.PI_SKILL_BASE = skillBase;
@@ -1924,14 +1944,18 @@ Version: 1
       makeFakeContext(branch, workDir, { idle: true }),
     );
 
-    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTask?: unknown }>(branch);
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTask?: { id?: string } }>(branch);
     expect(state.currentPhase).toBe("implement");
-    expect(state.phaseStatus).toBe("selecting_task");
-    expect(state.selectedTask).toBeUndefined();
-    expect(String(sendUserMessages.at(-1)?.content)).toContain("Expected selector to choose TASK-0001");
+    expect(state.phaseStatus).toBe("executing");
+    expect(state.selectedTask?.id).toBe("TASK-0002");
+    expect(fs.readFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), "utf-8")).toMatch(
+      /### TASK-0002: Add docs[\s\S]*- Status: in_progress/,
+    );
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("## Selected Task");
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("id: TASK-0002");
   });
 
-  it("marks a task complete and advances to review when no tasks remain", async () => {
+  it("marks a task complete and relaunches the selector for the next model decision", async () => {
     const workDir = makeTempDir("ralph-task-complete-");
     const skillBase = makeTempDir("ralph-task-complete-skills-");
     process.env.PI_SKILL_BASE = skillBase;
@@ -1990,6 +2014,7 @@ Version: 1
         updatedAt: "2026-05-23T00:00:00.000Z",
       },
       taskFile: "docs/specs/todo_feature-a.md",
+      autoClearContext: false,
     });
 
     const { default: registerExtension } = await import("../index");
@@ -2003,13 +2028,14 @@ Version: 1
       makeFakeContext(branch, workDir, { idle: true }),
     );
 
-    const state = latestState<{ currentPhase?: string; selectedTask?: unknown }>(branch);
-    expect(state.currentPhase).toBe("review");
+    const state = latestState<{ currentPhase?: string; phaseStatus?: string; selectedTask?: unknown }>(branch);
+    expect(state.currentPhase).toBe("implement");
+    expect(state.phaseStatus).toBe("selecting_task");
     expect(state.selectedTask).toBeUndefined();
     const ledger = fs.readFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), "utf-8");
     expect(ledger).toContain("- Status: complete");
     expect(ledger).toMatch(/- Completed: 20\d\d-/);
-    expect(String(sendUserMessages.at(-1)?.content)).toContain("Phase: ralph-works Review Loop");
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("ralph-works Task Selector");
   });
 
   it("rejects the legacy phase completion marker while a selected implementation task is active", async () => {
@@ -2097,7 +2123,7 @@ Version: 1
     expect(String(sendUserMessages.at(-1)?.content)).toContain("Use RALPH_TASK_COMPLETE");
   });
 
-  it("marks a blocked task and selects the next eligible task", async () => {
+  it("marks a blocked task and relaunches the selector", async () => {
     const workDir = makeTempDir("ralph-task-blocked-");
     fs.mkdirSync(path.join(workDir, "docs", "specs"), { recursive: true });
     fs.writeFileSync(
@@ -2191,7 +2217,7 @@ Version: 1
     expect(state.selectedTask).toBeUndefined();
     const ledger = fs.readFileSync(path.join(workDir, "docs", "specs", "todo_feature-a.md"), "utf-8");
     expect(ledger).toContain("- Status: blocked");
-    expect(String(sendUserMessages.at(-1)?.content)).toContain("RALPH_SELECTED_TASK TASK-0001");
+    expect(String(sendUserMessages.at(-1)?.content)).toContain("ralph-works Task Selector");
     expect(String(sendUserMessages.at(-1)?.content)).toContain("TASK-0002: Add local fallback");
   });
 

@@ -9,7 +9,6 @@ export interface RalphTaskLedger {
 }
 
 const TASK_HEADING_RE = /^### (TASK-\d{4}): (.+)$/gm;
-const STATUS_ORDER: RalphImplementationTask["priority"][] = ["P0", "P1", "P2", "P3"];
 
 function metadataValue(block: string, label: string): string | undefined {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -79,20 +78,6 @@ export function parseTaskLedger(content: string): RalphTaskLedger {
     version: Number(rootValue(content, "Version") ?? 0) || undefined,
     tasks,
   };
-}
-
-function priorityRank(priority: RalphImplementationTask["priority"]): number {
-  const idx = STATUS_ORDER.indexOf(priority);
-  return idx >= 0 ? idx : STATUS_ORDER.length;
-}
-
-export function selectNextTask(tasks: RalphImplementationTask[]): RalphImplementationTask | null {
-  const completeIds = new Set(tasks.filter((task) => task.status === "complete").map((task) => task.id));
-  const eligible = tasks.filter(
-    (task) => task.status === "pending" && task.dependsOn.every((dependency) => completeIds.has(dependency)),
-  );
-  if (!eligible.length) return null;
-  return [...eligible].sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority))[0] ?? null;
 }
 
 function replaceMetadata(block: string, label: string, value: string): string {

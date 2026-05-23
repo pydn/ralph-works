@@ -21,11 +21,11 @@ The desired redesign makes implementation an automatic task loop:
 1. Hardened spec completes.
 2. Ralph creates a comprehensive implementation task ledger.
 3. Ralph compacts context.
-4. Ralph selects one highest-priority remaining unblocked task.
+4. Ralph launches a selector prompt that chooses one next implementation task from the Markdown ledger.
 5. Ralph persists the selected task in state.
 6. Ralph launches `tdd-implement` scoped only to that task.
 7. The task must pass full configured gates before it is marked complete.
-8. Ralph compacts and repeats until no unblocked pending tasks remain.
+8. Ralph compacts and repeats until the selector reports no implementation tasks remain.
 9. Ralph advances to review.
 10. CRITICAL review findings create or reopen tasks in the original ledger and route back through the same loop.
 
@@ -75,9 +75,9 @@ The desired redesign makes implementation an automatic task loop:
 | #   | Story                                                                                                                                 | Priority | Acceptance Criteria                                                                                                                                    |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 1   | As an operator, I want Ralph to create an implementation task ledger from the hardened spec, so implementation has a durable backlog. | High     | A `tasks` phase writes `docs/specs/todo_<feature>.md`; post-hook validates parseable pending tasks.                                                    |
-| 2   | As an operator, I want Ralph to automatically select one task at a time, so the TDD skill stays scoped.                               | High     | After compaction, selector chooses one eligible task, persists it in state, and launches `tdd-implement` with `selected_task` and `task_file`.         |
+| 2   | As an operator, I want Ralph to automatically select one task at a time, so the TDD skill stays scoped.                               | High     | After compaction, the selector prompt chooses one task, Ralph persists it in state, and launches `tdd-implement` with `selected_task` and `task_file`. |
 | 3   | As an operator, I want completed tasks gated before being marked done, so review does not inherit broken intermediate states.         | High     | `RALPH_TASK_COMPLETE` does not update the ledger to complete until full configured gates pass.                                                         |
-| 4   | As an operator, I want blocked tasks skipped automatically, so the loop keeps making progress.                                        | Medium   | `RALPH_TASK_BLOCKED` marks the current task blocked and selects the next unblocked eligible task without user approval.                                |
+| 4   | As an operator, I want blocked tasks skipped automatically, so the loop keeps making progress.                                        | Medium   | `RALPH_TASK_BLOCKED` marks the current task blocked, compacts context, and relaunches the selector without user approval.                              |
 | 5   | As an operator, I want CRITICAL review findings converted into tasks, so remediation uses the same loop.                              | High     | `ralph_review_decision(CRITICAL)` triggers automatic task import into the original todo file, grouping related findings by root cause where practical. |
 
 ---
@@ -99,7 +99,7 @@ flowchart TD
     E -- yes --> F[render]
     E -- no --> G[implement task loop]
     F --> G
-    G --> H{pending unblocked tasks?}
+    G --> H{selector reports tasks remain?}
     H -- yes --> I[compact context]
     I --> J[selector prompt]
     J --> K[persist selected_task]
@@ -184,14 +184,14 @@ Version: 1
 
 ### Task Status Vocabulary
 
-| Status               | Meaning                                                      | Selector Eligibility         |
-| -------------------- | ------------------------------------------------------------ | ---------------------------- |
-| `pending`            | Ready to be selected when dependencies are complete          | Eligible                     |
-| `in_progress`        | Currently selected by Ralph                                  | Not eligible                 |
-| `complete`           | Implemented and full gates passed                            | Not eligible                 |
-| `blocked`            | Could not proceed due to missing info or prerequisite        | Not eligible until reopened  |
-| `partially_verified` | Implemented but required external verification could not run | Not eligible unless reopened |
-| `needs_followup`     | Current task complete and follow-up tasks were recorded      | Not eligible                 |
+| Status               | Meaning                                                      | Selector Guidance                           |
+| -------------------- | ------------------------------------------------------------ | ------------------------------------------- |
+| `pending`            | Ready for selector consideration                             | Usually selectable                          |
+| `in_progress`        | Currently selected by Ralph                                  | Avoid unless recovering stale state         |
+| `complete`           | Implemented and full gates passed                            | Avoid                                       |
+| `blocked`            | Could not proceed due to missing info or prerequisite        | Avoid until reopened or no alternative work |
+| `partially_verified` | Implemented but required external verification could not run | Avoid unless reopened                       |
+| `needs_followup`     | Current task complete and follow-up tasks were recorded      | Avoid                                       |
 
 ### Task Schema
 
@@ -271,13 +271,7 @@ State is a mirror for compaction survivability. The Markdown ledger remains auth
 
 ### Selector Prompt
 
-The selector is a small internal prompt launched by Ralph during `implement`, not a public phase. It reads the task ledger and chooses the highest-priority eligible task:
-
-1. Status is `pending`.
-2. Dependencies are `complete`.
-3. Task is not blocked.
-4. Highest priority wins.
-5. Ties preserve ledger order.
+The selector is a small internal prompt launched by Ralph during `implement`, not a public phase. It reads the Markdown task ledger and chooses the next task by judgment, using status, priority, dependencies, notes, and ledger order as inputs. The controller does not deterministically sort, re-rank, or reject a selected task because a different task appears more eligible.
 
 The selector must return a single parseable final line:
 
@@ -285,7 +279,7 @@ The selector must return a single parseable final line:
 RALPH_SELECTED_TASK TASK-0001
 ```
 
-If no task is eligible:
+If the selector determines no implementation task remains:
 
 ```text
 RALPH_NO_TASKS_REMAIN
@@ -320,11 +314,11 @@ The controller must parse these exact final non-empty lines from assistant outpu
 | Marker                          | Controller Behavior                                                                         |
 | ------------------------------- | ------------------------------------------------------------------------------------------- |
 | `RALPH_TASK_COMPLETE`           | Run full configured gates, then mark selected task `complete` if gates pass                 |
-| `RALPH_TASK_BLOCKED`            | Mark selected task `blocked`, clear selected task, compact, select next eligible task       |
-| `RALPH_TASK_PARTIALLY_VERIFIED` | Run gates if code changed, mark `partially_verified`, select next eligible task             |
+| `RALPH_TASK_BLOCKED`            | Mark selected task `blocked`, clear selected task, compact, relaunch selector               |
+| `RALPH_TASK_PARTIALLY_VERIFIED` | Run gates if code changed, mark `partially_verified`, relaunch selector                     |
 | `RALPH_TASK_NEEDS_FOLLOWUP`     | Run full configured gates, mark current task `needs_followup`, keep any new tasks in ledger |
 
-`RALPH_PHASE_COMPLETE` should not complete the implement phase while pending unblocked tasks remain. In the new model, the implement phase completes only when the task ledger has no eligible pending tasks.
+`RALPH_PHASE_COMPLETE` should not complete the implement phase while the task loop is active. In the new model, the implement phase completes when the selector returns `RALPH_NO_TASKS_REMAIN`.
 
 ### Gate Requirement
 
@@ -349,7 +343,7 @@ When `ralph_review_decision` receives `CRITICAL`:
 6. Append tasks to the same `docs/specs/todo_<feature>.md` file.
 7. Set phase back to `implement`.
 8. Compact context.
-9. Select the next eligible task.
+9. Relaunch the selector.
 
 Review remediation task source should be `review_critical`. `reviewFindingRef` should include the review iteration and finding title or index.
 
@@ -364,7 +358,7 @@ sequenceDiagram
     Review->>Controller: ralph_review_decision(CRITICAL, issues)
     Controller->>Ledger: append/reopen grouped remediation tasks
     Controller->>Controller: compact context
-    Controller->>Selector: choose next eligible task
+    Controller->>Selector: choose next task from ledger
     Selector-->>Controller: RALPH_SELECTED_TASK TASK-00NN
     Controller->>Ledger: mark TASK-00NN in_progress
     Controller->>TDD: launch tdd-implement with selected_task
@@ -503,10 +497,10 @@ Run a small pipeline with a hardened spec that yields two tasks:
 - Default phase order includes `tasks` between `harden` and `implement`.
 - `implement` without `tasks` is invalid.
 - `tasks` phase writes a strict Markdown ledger at `docs/specs/todo_<feature>.md`.
-- Controller parses the Markdown ledger and persists `taskFile` plus `selectedTask`.
+- Controller persists `taskFile` plus the selected task; task ordering decisions belong to the selector prompt, not deterministic controller parsing.
 - Ralph automatically compacts, selects, persists, and launches one task at a time.
 - `tdd-implement` receives `selected_task` and `task_file` in its phase prompt.
 - `RALPH_TASK_COMPLETE` requires full configured gates before ledger completion.
-- `RALPH_TASK_BLOCKED` marks the task blocked and continues to the next unblocked eligible task.
+- `RALPH_TASK_BLOCKED` marks the task blocked and relaunches the selector.
 - Review CRITICAL findings append or reopen grouped remediation tasks in the original ledger.
-- When no pending unblocked tasks remain, the implement phase completes and review starts.
+- When the selector returns `RALPH_NO_TASKS_REMAIN`, the implement phase completes and review starts.

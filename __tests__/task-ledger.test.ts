@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendReviewTasks, parseTaskLedger, selectNextTask, updateTaskStatus } from "../src/taskLedger";
+import { appendReviewTasks, parseTaskLedger, updateTaskStatus } from "../src/taskLedger";
 
 const LEDGER = `# Implementation Tasks - feature-a
 
@@ -41,12 +41,12 @@ Version: 1
 - Completed: none
 
 #### Acceptance Criteria
-- Selector chooses the highest priority eligible task.
-- Blocked tasks are skipped.
+- Selector prompt can read the task details.
+- Controller can persist the selected task.
 
 #### Test Plan
-- Unit test selector ordering.
-- Unit test dependency handling.
+- Unit test task parsing.
+- Unit test status updates.
 
 #### Notes
 - Ready.
@@ -87,23 +87,9 @@ describe("parseTaskLedger", () => {
       source: "hardened_spec",
       dependsOn: ["TASK-0001"],
       filesHint: ["src/taskLedger.ts", "src/extension.ts"],
-      acceptanceCriteria: ["Selector chooses the highest priority eligible task.", "Blocked tasks are skipped."],
-      testPlan: ["Unit test selector ordering.", "Unit test dependency handling."],
+      acceptanceCriteria: ["Selector prompt can read the task details.", "Controller can persist the selected task."],
+      testPlan: ["Unit test task parsing.", "Unit test status updates."],
     });
-  });
-});
-
-describe("selectNextTask", () => {
-  it("selects the highest-priority pending task whose dependencies are complete and skips blocked tasks", () => {
-    const ledger = parseTaskLedger(LEDGER);
-
-    expect(selectNextTask(ledger.tasks)?.id).toBe("TASK-0002");
-  });
-
-  it("returns null when no pending unblocked task is eligible", () => {
-    const ledger = parseTaskLedger(updateTaskStatus(LEDGER, "TASK-0002", "blocked", "2026-05-23T00:02:00.000Z"));
-
-    expect(selectNextTask(ledger.tasks)).toBeNull();
   });
 });
 

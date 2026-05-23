@@ -135,7 +135,7 @@ Assistant turn completion does not advance the pipeline by itself. Non-review ph
 RALPH_PHASE_COMPLETE
 ```
 
-The controller then runs phase validation and queues the next phase as a follow-up message. `implement` is a task loop: Ralph launches a selector prompt, persists one `RALPH_SELECTED_TASK TASK-0001`, runs `tdd-implement` only for that task, and accepts `RALPH_TASK_COMPLETE` only after configured gates pass. `RALPH_TASK_BLOCKED` marks the task blocked and selects the next eligible task. The `review` phase ends through the `ralph_review_decision` tool instead of the marker; `CRITICAL` findings are converted into new task-ledger entries and routed back through the same task loop.
+The controller then runs phase validation and queues the next phase as a follow-up message. `implement` is a task loop: Ralph launches a selector prompt, trusts one `RALPH_SELECTED_TASK TASK-0001`, persists that selected task, runs `tdd-implement` only for that task, and accepts `RALPH_TASK_COMPLETE` only after configured gates pass. `RALPH_TASK_BLOCKED` marks the task blocked and relaunches the selector. The `review` phase ends through the `ralph_review_decision` tool instead of the marker; `CRITICAL` findings are converted into new task-ledger entries and routed back through the same task loop.
 
 By default, a run that includes planning phases pauses before `implement` so the developer can inspect the hardened spec and task ledger. Use `/ralph-works continue` to approve the handoff, or start with `--yolo` when straight-through mode is intentional.
 

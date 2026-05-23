@@ -74,10 +74,9 @@ describe("validatePhaseOrder", () => {
     expect(result.valid).toBe(true);
   });
 
-  it("rejects implement without tasks", () => {
-    const result = validatePhaseOrder(["spec", "implement"]);
-    expect(result.valid).toBe(false);
-    expect(result.error).toContain("tasks");
+  it("allows implement without tasks so an existing task ledger can drive TDD/review smoke tests", () => {
+    const result = validatePhaseOrder(["implement", "review"]);
+    expect(result.valid).toBe(true);
   });
 
   it("rejects unknown phase names", () => {

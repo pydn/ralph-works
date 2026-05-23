@@ -80,7 +80,7 @@ import {
   PHASE_COMPLETE_MARKER,
   sanitizeFeatureName,
 } from "./stateMachine";
-import { appendReviewTasks, parseTaskLedger, selectNextTask, updateTaskStatus } from "./taskLedger";
+import { appendReviewTasks, parseTaskLedger, updateTaskStatus } from "./taskLedger";
 import {
   enterImplementCheckpoint as buildImplementCheckpointState,
   enterPhaseExecution,
@@ -196,15 +196,16 @@ function buildTaskSelectorPrompt(state: PipelineState, ledgerContent: string): s
   return [
     "# ralph-works Task Selector",
     "",
-    "Select exactly one highest-priority pending, unblocked implementation task from the task ledger.",
-    "A task is eligible only when all `Depends On` tasks are complete.",
+    "Read the Markdown task ledger and select exactly one implementation task for the next scoped TDD pass.",
+    "Use the task statuses, priorities, dependencies, notes, and ledger order as judgment inputs.",
+    "The controller will trust your selection; it will not deterministically sort or re-rank the ledger.",
     "Return only one final marker line:",
     "",
     "```text",
     "RALPH_SELECTED_TASK TASK-0001",
     "```",
     "",
-    "If no pending unblocked task remains, return:",
+    "If you determine no implementation task remains, return:",
     "",
     "```text",
     "RALPH_NO_TASKS_REMAIN",
@@ -669,12 +670,6 @@ async function launchTaskSelector(
   }
 
   const ledgerContent = fs.readFileSync(taskPath, "utf-8");
-  const ledger = parseTaskLedger(ledgerContent);
-  if (!selectNextTask(ledger.tasks)) {
-    await completeImplementPhaseFromTaskLoop(pi, ctx, state);
-    return;
-  }
-
   const selectingState: PipelineState = {
     ...state,
     phaseStatus: "selecting_task",
@@ -707,54 +702,18 @@ async function handleSelectedTaskMarker(
   const taskPath = taskFileAbsolutePath(state);
   if (!fs.existsSync(taskPath)) return false;
   const content = fs.readFileSync(taskPath, "utf-8");
-  const ledger = parseTaskLedger(content);
   if (noTasksRemain) {
-    const nextTask = selectNextTask(ledger.tasks);
-    if (nextTask) {
-      const selectingState: PipelineState = {
-        ...state,
-        phaseStatus: "selecting_task",
-        selectedTask: undefined,
-        taskFile: taskFileRelativePath(state),
-      };
-      saveState(pi, selectingState);
-      refreshWidget(ctx, selectingState);
-      sendPipelineUserMessage(
-        pi,
-        ctx,
-        `Cannot advance from implement: ${nextTask.id} is still eligible in ${taskFileRelativePath(state)}. Select the next task or mark it blocked with evidence.`,
-        { deliverAs: "steer" },
-      );
-      return true;
-    }
     await completeImplementPhaseFromTaskLoop(pi, ctx, state);
     return true;
   }
+  if (!taskId) return false;
 
+  const ledger = parseTaskLedger(content);
   const selectedTask = ledger.tasks.find((task) => task.id === taskId);
   if (!selectedTask) {
     sendPipelineUserMessage(pi, ctx, `Selected task ${taskId} was not found in ${taskFileRelativePath(state)}.`, {
       deliverAs: "steer",
     });
-    return true;
-  }
-  const expectedTask = selectNextTask(ledger.tasks);
-  if (!expectedTask) {
-    sendPipelineUserMessage(
-      pi,
-      ctx,
-      `Selected task ${taskId} is not eligible because no pending unblocked task remains in ${taskFileRelativePath(state)}. Return RALPH_NO_TASKS_REMAIN or reopen a task explicitly.`,
-      { deliverAs: "steer" },
-    );
-    return true;
-  }
-  if (expectedTask.id !== taskId) {
-    sendPipelineUserMessage(
-      pi,
-      ctx,
-      `Expected selector to choose ${expectedTask.id} from ${taskFileRelativePath(state)}, but got ${taskId}. Select the highest-priority eligible task.`,
-      { deliverAs: "steer" },
-    );
     return true;
   }
 
@@ -802,8 +761,6 @@ async function continueTaskLoopAfterStatus(
   const content = fs.readFileSync(taskPath, "utf-8");
   const updatedContent = updateTaskStatus(content, task.id, status);
   fs.writeFileSync(taskPath, updatedContent, "utf-8");
-  const updatedLedger = parseTaskLedger(updatedContent);
-  const nextTask = selectNextTask(updatedLedger.tasks);
   const nextState: PipelineState = {
     ...state,
     selectedTask: undefined,
@@ -816,10 +773,6 @@ async function continueTaskLoopAfterStatus(
   };
   saveState(pi, nextState);
   refreshWidget(ctx, nextState);
-  if (!nextTask) {
-    await completeImplementPhaseFromTaskLoop(pi, ctx, nextState);
-    return;
-  }
   await launchTaskSelectorAfterTaskCompaction(pi, ctx, nextState);
 }
 

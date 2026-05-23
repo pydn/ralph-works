@@ -51,8 +51,6 @@ export function validatePhaseOrder(phases: string[]): PhaseValidationResult {
     return { valid: false, error: "Cannot run tasks without harden" };
   if (phases.includes("render") && !phases.includes("harden"))
     return { valid: false, error: "Cannot run render without harden" };
-  if (phases.includes("implement") && !phases.includes("tasks"))
-    return { valid: false, error: "Cannot run implement without tasks" };
   if (phases.includes("review") && !phases.includes("implement"))
     return { valid: false, error: "Cannot run review without implement" };
   // Third check: topological order
