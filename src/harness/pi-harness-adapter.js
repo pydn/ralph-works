@@ -168,6 +168,14 @@ export function registerRalphWorksExtension(
       return undefined;
     }
 
+    if (state.phaseStatus === HARDEN_APPROVAL_STATUS) {
+      ctx.ui?.notify?.(
+        "Hardened spec is waiting for approval. Run /ralph-works approve before implementation planning continues.",
+        "warning",
+      );
+      return state;
+    }
+
     state = recordCompactionEvent(state, {
       boundary: "phase",
       reason: "hardened spec awaiting approval",
@@ -189,6 +197,24 @@ export function registerRalphWorksExtension(
       "warning",
     );
     return state;
+  }
+
+  async function advanceToNextPhase(ctx, commandArgs, reason) {
+    if (!state) {
+      return undefined;
+    }
+
+    if (state.currentPhase === "harden_spec") {
+      return pauseForHardenApproval(ctx);
+    }
+
+    const nextState = advancePhase(state, {
+      renderHtml: commandArgs.includes("--render-html"),
+      reason,
+    });
+    return enterPhase(ctx, nextState, {
+      reason: `entered ${nextState.currentPhase}`,
+    });
   }
 
   async function startWorkflow(ctx, commandArgs) {
@@ -238,8 +264,7 @@ export function registerRalphWorksExtension(
       return undefined;
     }
 
-    state = applyPhaseCommand(state, "next", commandArgs);
-    return enterPhase(ctx, state, { reason: `entered ${state.currentPhase}` });
+    return advanceToNextPhase(ctx, commandArgs, "command:next");
   }
 
   async function recordWorkflowArtifact(ctx, commandArgs) {
@@ -445,10 +470,7 @@ export function registerRalphWorksExtension(
   }
 
   async function approveHardenedSpec(ctx) {
-    if (
-      state?.currentPhase !== "harden_spec" ||
-      state.phaseStatus !== HARDEN_APPROVAL_STATUS
-    ) {
+    if (state?.currentPhase !== "harden_spec") {
       return false;
     }
 
@@ -496,16 +518,27 @@ export function registerRalphWorksExtension(
       await recordWorkflowArtifact(ctx, commandArgs);
       return;
     }
-    if (command === "loopback" || command === "approve") {
+    if (command === "approve") {
       if (!state) {
         notifyNoActivePipeline(ctx);
         return;
       }
-      if (command === "approve" && await approveHardenedSpec(ctx)) {
+      if (await approveHardenedSpec(ctx)) {
         return;
       }
-      if (command === "approve" && state.currentPhase === "review") {
+      if (state.currentPhase === "review") {
         await completePipeline(ctx, "LGTM");
+        return;
+      }
+      ctx.ui?.notify?.(
+        "Nothing to approve in the current ralph-works phase.",
+        "info",
+      );
+      return;
+    }
+    if (command === "loopback") {
+      if (!state) {
+        notifyNoActivePipeline(ctx);
         return;
       }
       state = applyPhaseCommand(state, command, commandArgs);
@@ -597,12 +630,11 @@ export function registerRalphWorksExtension(
         return createToolResult("ralph-works pipeline not started", undefined);
       }
 
-      state = applyPhaseCommand(
-        state,
-        "next",
+      await advanceToNextPhase(
+        ctx,
         params.renderHtml ? ["--render-html"] : [],
+        "command:next",
       );
-      await enterPhase(ctx, state, { reason: `entered ${state.currentPhase}` });
       return createToolResult(`ralph-works phase: ${state.currentPhase}`, state);
     },
   });
@@ -634,20 +666,9 @@ export function registerRalphWorksExtension(
 }
 
 function applyPhaseCommand(state, command, commandArgs) {
-  if (command === "next") {
-    return advancePhase(state, {
-      renderHtml: commandArgs.includes("--render-html"),
-      reason: "command:next",
-    });
-  }
   if (command === "loopback") {
     return transitionToPhase(state, "tdd_implement", {
       reason: commandArgs.join(" ") || "review-critical-bugs",
-    });
-  }
-  if (command === "approve") {
-    return transitionToPhase(state, "complete", {
-      reason: "LGTM",
     });
   }
 
