@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-import { PHASE_COMPLETE_MARKER } from "../state/phase-completion.js";
+import {
+  PHASE_COMPLETE_MARKER,
+  TDD_TASK_COMPLETE_MARKER,
+} from "../state/phase-completion.js";
 import { getPhaseLabel } from "../state/phase-state.js";
 
 function readSkill(extensionRoot, phase) {
@@ -48,6 +51,13 @@ function phaseRules(phaseId) {
     return [
       "- If the implementation is LGTM, end with exactly `LGTM`.",
       "- If critical issues remain, include `[CRITICAL]` findings or end with `RALPH_REVIEW_CHANGES_REQUESTED` so RalphWorks loops back to TDD.",
+    ];
+  }
+
+  if (phaseId === "tdd_implement") {
+    return [
+      `- When one implementation task is complete and required gates pass, end the final assistant message with exactly \`${TDD_TASK_COMPLETE_MARKER} <task-id>\` on its own line.`,
+      `- When all implementation tasks are complete and the phase is ready for review, end the final assistant message with exactly \`${PHASE_COMPLETE_MARKER}\` on its own line.`,
     ];
   }
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -151,6 +151,26 @@ test("ralph-works does not render TUI before the pipeline starts", async () => {
       message: "No active ralph-works pipeline. Start one with /ralph-works start <feature> [prompt].",
       level: "info",
     });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("/ralph-works help lists commands without requiring an active pipeline", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await piCalls.commands.get("ralph-works").handler("help", ctx);
+
+    assert.equal(ctxCalls.statuses.length, 0);
+    assert.equal(ctxCalls.widgets.length, 0);
+    assert.equal(ctxCalls.notifications.length, 1);
+    assert.equal(ctxCalls.notifications[0].level, "info");
+    assert.match(ctxCalls.notifications[0].message, /\/ralph-works start <feature> \[prompt\]/);
+    assert.match(ctxCalls.notifications[0].message, /\/ralph-works help/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -464,6 +484,129 @@ test("ralph-works tdd-complete blocks task completion when required gates fail",
     assert.equal(piCalls.appended.at(-1).data.tddCompletedTasks, 0);
     assert.equal(ctxCalls.compactions.length, compactionsBefore);
     assert.match(ctxCalls.notifications.at(-1).message, /gates failed/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("TDD task marker runs gates, records completion, compacts, and continues TDD", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    await writeFile(
+      path.join(tempDir, "gate.config.json"),
+      JSON.stringify({
+        gates: [{ name: "unit_tests", command: "npm test", required: true }],
+        run_after_phase: ["tdd_implement"],
+        fail_behavior: "block_transition",
+      }),
+    );
+    await mkdir(path.join(tempDir, "docs"));
+    await writeFile(
+      path.join(tempDir, "docs/feature-a-task-list.md"),
+      [
+        "- [ ] T001 P0 Build phase state",
+        "- [ ] T002 P1 Render task progress",
+      ].join("\n"),
+    );
+
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await startPipeline(piCalls, ctx);
+    for (let index = 0; index < 4; index += 1) {
+      await piCalls.commands.get("ralph-works").handler("next", ctx);
+    }
+    const userMessagesBeforeMarker = piCalls.userMessages.length;
+
+    await finishAssistantTurn(piCalls, ctx, "T001 done.\nRALPH_TDD_TASK_COMPLETE T001");
+
+    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
+    assert.equal(latestState(piCalls).tddCompletedTasks, 1);
+    assert.equal(
+      latestState(piCalls).implementationStatus.completedTaskIds[0],
+      "T001",
+    );
+    assert.equal(ctxCalls.compactions.at(-1).customInstructions.includes("Boundary: task"), true);
+    assert.match(ctxCalls.widgets.at(-1).value.join("\n"), /unit_tests/);
+    assert.equal(piCalls.userMessages.length, userMessagesBeforeMarker);
+
+    await completeLatestCompaction(ctxCalls);
+
+    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
+    assert.equal(piCalls.userMessages.length, userMessagesBeforeMarker + 1);
+    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Red-Green TDD Implement/);
+    assert.match(String(piCalls.userMessages.at(-1).content), /RALPH_TDD_TASK_COMPLETE <task-id>/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("TDD task marker blocks completion when required gates fail", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    await writeFile(
+      path.join(tempDir, "gate.config.json"),
+      JSON.stringify({
+        gates: [{ name: "unit_tests", command: "npm test", required: true }],
+        run_after_phase: ["tdd_implement"],
+        fail_behavior: "block_transition",
+      }),
+    );
+
+    const { pi, calls: piCalls } = createFakePi({
+      exec: async () => ({ code: 1, stdout: "", stderr: "failed" }),
+    });
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await startPipeline(piCalls, ctx);
+    for (let index = 0; index < 4; index += 1) {
+      await piCalls.commands.get("ralph-works").handler("next", ctx);
+    }
+    const compactionsBefore = ctxCalls.compactions.length;
+
+    await finishAssistantTurn(piCalls, ctx, "T001 done.\nRALPH_TDD_TASK_COMPLETE T001");
+
+    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
+    assert.equal(latestState(piCalls).tddCompletedTasks, 0);
+    assert.equal(ctxCalls.compactions.length, compactionsBefore);
+    assert.match(ctxCalls.notifications.at(-1).message, /gates failed/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("TDD task marker advances to review after final task compaction", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    await mkdir(path.join(tempDir, "docs"));
+    await writeFile(
+      path.join(tempDir, "docs/feature-a-task-list.md"),
+      "- [ ] T001 P0 Build phase state\n",
+    );
+
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await startPipeline(piCalls, ctx);
+    for (let index = 0; index < 4; index += 1) {
+      await piCalls.commands.get("ralph-works").handler("next", ctx);
+    }
+
+    await finishAssistantTurn(piCalls, ctx, "T001 done.\nRALPH_TDD_TASK_COMPLETE T001");
+    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
+    assert.equal(ctxCalls.compactions.at(-1).customInstructions.includes("Boundary: task"), true);
+
+    await completeLatestCompaction(ctxCalls);
+
+    assert.equal(latestState(piCalls).currentPhase, "review");
+    assert.equal(ctxCalls.compactions.at(-1).customInstructions.includes("Boundary: phase"), true);
+
+    await completeLatestCompaction(ctxCalls);
+
+    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Review/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

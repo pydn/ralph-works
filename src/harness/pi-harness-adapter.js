@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,6 +8,7 @@ import { requiredGatesPassed } from "../gates/gate-result.js";
 import { buildPhasePrompt } from "../prompts/phase-prompt-builder.js";
 import {
   HARDEN_APPROVAL_STATUS,
+  getTddTaskCompletionMarkerTaskId,
   hasPhaseCompletionMarker,
   isLgtmReview,
   requestsReviewLoopback,
@@ -16,7 +18,12 @@ import {
   advancePhase,
   transitionToPhase,
 } from "../state/phase-transitions.js";
-import { createImplementationStatus, markTaskComplete } from "../tasks/task-status-updater.js";
+import { parseTaskList } from "../tasks/task-list-loader.js";
+import { selectNextTask } from "../tasks/task-selector.js";
+import {
+  createImplementationStatus,
+  markTaskComplete,
+} from "../tasks/task-status-updater.js";
 import { splitCommandArgs } from "./pi-argument-parser.js";
 import { triggerRalphWorksCompaction } from "./pi-compaction-trigger.js";
 import { runPiConfiguredGates } from "./pi-gate-runner.js";
@@ -34,6 +41,20 @@ import { updateRalphWorksTui } from "./pi-tui-updater.js";
 const DEFAULT_EXTENSION_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const NO_ACTIVE_PIPELINE_MESSAGE =
   "No active ralph-works pipeline. Start one with /ralph-works start <feature> [prompt].";
+const HELP_MESSAGE = [
+  "Commands:",
+  "/ralph-works start <feature> [prompt]",
+  "/ralph-works status",
+  "/ralph-works next",
+  "/ralph-works next --render-html",
+  "/ralph-works gates",
+  "/ralph-works tdd-complete <task-id>",
+  "/ralph-works artifact <key> <path>",
+  "/ralph-works loopback [reason]",
+  "/ralph-works approve",
+  "/ralph-works reset",
+  "/ralph-works help",
+].join("\n");
 
 function extractMessageText(content) {
   if (typeof content === "string") {
@@ -48,6 +69,22 @@ function extractMessageText(content) {
     .map((part) => part.text)
     .join("\n")
     .trim();
+}
+
+function readTaskList(ctx, workflowState) {
+  const taskListPath = workflowState.phases.find(
+    (phase) => phase.id === "create_tasks",
+  )?.artifactPath;
+  if (!taskListPath) {
+    return [];
+  }
+
+  try {
+    const absolutePath = path.resolve(ctx.cwd ?? process.cwd(), taskListPath);
+    return parseTaskList(readFileSync(absolutePath, "utf8"));
+  } catch {
+    return [];
+  }
 }
 
 export function registerRalphWorksExtension(
@@ -234,15 +271,35 @@ export function registerRalphWorksExtension(
     return gateResults;
   }
 
-  async function completeTddTask(ctx, commandArgs) {
+  async function continueAfterTddTaskCompaction(ctx) {
+    if (!state || state.currentPhase !== "tdd_implement") {
+      return state;
+    }
+
+    const tasks = readTaskList(ctx, state);
+    const nextTask = tasks.length > 0
+      ? selectNextTask(tasks, implementationStatus)
+      : undefined;
+
+    if (tasks.length === 0 || nextTask) {
+      return launchCurrentPhase(ctx, {
+        prefixText: "Continue TDD implementation with the next incomplete task.",
+        delivery: "followUp",
+      });
+    }
+
+    const nextState = advancePhase(state, {
+      reason: "completed tdd_implement",
+    });
+    return enterPhase(ctx, nextState, {
+      reason: `entered ${nextState.currentPhase}`,
+    });
+  }
+
+  async function completeTddTask(ctx, taskId) {
     if (!state) {
       notifyNoActivePipeline(ctx);
       return undefined;
-    }
-
-    const taskId = commandArgs[0];
-    if (!taskId) {
-      throw new Error("Usage: /ralph-works tdd-complete <task-id>");
     }
 
     const gateResults = await runGates(ctx);
@@ -265,7 +322,28 @@ export function registerRalphWorksExtension(
     });
     persistRalphWorksState(pi, state);
     await showStatus(ctx);
-    triggerRalphWorksCompaction(ctx, state, "task", `completed ${taskId}`);
+
+    let continued = false;
+    const continueOnce = async () => {
+      if (continued) {
+        return state;
+      }
+      continued = true;
+      return continueAfterTddTaskCompaction(ctx);
+    };
+    const compactStarted = triggerRalphWorksCompaction(
+      ctx,
+      state,
+      "task",
+      `completed ${taskId}`,
+      {
+        onComplete: continueOnce,
+        onError: continueOnce,
+      },
+    );
+    if (!compactStarted) {
+      return continueOnce();
+    }
     return state;
   }
 
@@ -353,6 +431,14 @@ export function registerRalphWorksExtension(
       return;
     }
 
+    const tddTaskId = state.currentPhase === "tdd_implement"
+      ? getTddTaskCompletionMarkerTaskId(assistantText)
+      : undefined;
+    if (tddTaskId) {
+      await completeTddTask(ctx, tddTaskId);
+      return;
+    }
+
     if (hasPhaseCompletionMarker(assistantText)) {
       await handlePhaseCompleteSignal(ctx);
     }
@@ -387,11 +473,7 @@ export function registerRalphWorksExtension(
       return;
     }
     if (command === "help") {
-      ctx.ui?.notify?.(
-        "Commands: start, status, next, gates, tdd-complete <task-id>, artifact <key> <path>, loopback, approve, reset",
-        "info",
-      );
-      await showStatus(ctx);
+      ctx.ui?.notify?.(HELP_MESSAGE, "info");
       return;
     }
     if (command === "next") {
@@ -403,7 +485,11 @@ export function registerRalphWorksExtension(
       return;
     }
     if (command === "tdd-complete") {
-      await completeTddTask(ctx, commandArgs);
+      const taskId = commandArgs[0];
+      if (!taskId) {
+        throw new Error("Usage: /ralph-works tdd-complete <task-id>");
+      }
+      await completeTddTask(ctx, taskId);
       return;
     }
     if (command === "artifact") {
@@ -439,6 +525,8 @@ export function registerRalphWorksExtension(
 
   pi.on("session_start", async (_event, ctx) => {
     state = restoreRalphWorksState(ctx);
+    implementationStatus = state?.implementationStatus
+      ?? createImplementationStatus();
     if (state) {
       await showStatus(ctx);
     }
