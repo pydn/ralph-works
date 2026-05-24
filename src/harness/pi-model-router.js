@@ -12,7 +12,8 @@ export async function loadValidModelConfig(ctx) {
 }
 
 export async function getActivePhaseModelName(ctx, state) {
-  return resolvePhaseModel(await loadValidModelConfig(ctx), state.currentPhase)?.raw;
+  return resolvePhaseModel(await loadValidModelConfig(ctx), state.currentPhase)
+    ?.raw;
 }
 
 export async function routeModelForCurrentPhase(pi, ctx, state) {
@@ -36,7 +37,10 @@ export async function routeModelForCurrentPhase(pi, ctx, state) {
 
   const selected = await pi.setModel?.(model);
   if (selected === false) {
-    ctx.ui?.notify?.(`No API key available for model: ${modelRef.raw}`, "error");
+    ctx.ui?.notify?.(
+      `No API key available for model: ${modelRef.raw}`,
+      "error",
+    );
   }
 
   return modelRef.raw;

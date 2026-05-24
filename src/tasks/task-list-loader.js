@@ -14,7 +14,8 @@ export function parseTaskList(markdown) {
     tasks.push({
       id: match[2],
       title: match[4],
-      priority: match[3] === undefined ? Number.POSITIVE_INFINITY : Number(match[3]),
+      priority:
+        match[3] === undefined ? Number.POSITIVE_INFINITY : Number(match[3]),
       completed: match[1].toLowerCase() === "x",
       lineNumber: index + 1,
       raw: line,

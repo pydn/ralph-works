@@ -16,7 +16,10 @@ export function triggerRalphWorksCompaction(
     customInstructions: summary,
     onComplete,
     onError: (error) => {
-      ctx.ui?.notify?.(`ralph-works compaction failed: ${error.message}`, "error");
+      ctx.ui?.notify?.(
+        `ralph-works compaction failed: ${error.message}`,
+        "error",
+      );
       onError?.(error);
     },
   });

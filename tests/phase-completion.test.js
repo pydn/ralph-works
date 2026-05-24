@@ -22,7 +22,9 @@ test("critical review findings override LGTM text", () => {
 
 test("TDD task completion marker returns the final-line task id", () => {
   assert.equal(
-    getTddTaskCompletionMarkerTaskId("Task complete.\nRALPH_TDD_TASK_COMPLETE T001"),
+    getTddTaskCompletionMarkerTaskId(
+      "Task complete.\nRALPH_TDD_TASK_COMPLETE T001",
+    ),
     "T001",
   );
   assert.equal(

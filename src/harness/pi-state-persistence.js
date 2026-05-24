@@ -6,9 +6,10 @@ export function restoreRalphWorksState(ctx) {
   const entries = ctx.sessionManager?.getEntries?.() ?? [];
   const restored = [...entries]
     .reverse()
-    .find((entry) =>
-      entry.type === "custom" &&
-      entry.customType === RALPH_WORKS_STATE_ENTRY_TYPE
+    .find(
+      (entry) =>
+        entry.type === "custom" &&
+        entry.customType === RALPH_WORKS_STATE_ENTRY_TYPE,
     );
 
   if (!restored?.data?.currentPhase) {

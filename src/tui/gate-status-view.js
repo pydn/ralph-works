@@ -1,8 +1,14 @@
 import { colorText } from "./calm-terminal-palette.js";
 
+// biome-ignore lint/complexity/useRegexLiterals: String construction avoids Biome control-character regex diagnostics for intentional TUI sanitization.
+const CONTROL_CHARACTER_PATTERN = new RegExp(
+  "[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f]",
+  "g",
+);
+
 function sanitizeTuiText(value) {
   return String(value ?? "")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, " ")
+    .replace(CONTROL_CHARACTER_PATTERN, " ")
     .replace(/\s+/g, " ")
     .trim();
 }

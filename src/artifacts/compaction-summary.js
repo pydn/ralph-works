@@ -15,7 +15,9 @@ export function buildCompactionSummary(
     `Reason: ${reason}`,
     `Current phase: ${state.currentPhase}`,
     `Completed phases: ${
-      state.completedPhases.length > 0 ? state.completedPhases.join(", ") : "none"
+      state.completedPhases.length > 0
+        ? state.completedPhases.join(", ")
+        : "none"
     }`,
     `Loopbacks: ${state.loopbackCount}`,
     `TDD completed tasks: ${state.tddCompletedTasks}`,

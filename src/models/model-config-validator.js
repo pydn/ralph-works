@@ -15,21 +15,23 @@ export function validateModelConfig(config) {
     errors.push("default_model must be a non-empty string when defined.");
   }
 
-  if (
-    config.phase_models === undefined ||
-    config.phase_models === null
-  ) {
+  if (config.phase_models === undefined || config.phase_models === null) {
     return errors;
   }
 
-  if (typeof config.phase_models !== "object" || Array.isArray(config.phase_models)) {
+  if (
+    typeof config.phase_models !== "object" ||
+    Array.isArray(config.phase_models)
+  ) {
     errors.push("phase_models must be an object.");
     return errors;
   }
 
   for (const [phase, model] of Object.entries(config.phase_models)) {
     if (!isRalphWorksPhase(phase) || phase === "complete") {
-      errors.push(`phase_models.${phase} is not a configurable RalphWorks phase.`);
+      errors.push(
+        `phase_models.${phase} is not a configurable RalphWorks phase.`,
+      );
     }
     if (typeof model !== "string" || model.trim() === "") {
       errors.push(`phase_models.${phase} must be a non-empty string.`);

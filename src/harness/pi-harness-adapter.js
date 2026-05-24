@@ -1,23 +1,19 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { recordCompactionEvent } from "../artifacts/compaction-summary.js";
 import { recordArtifact } from "../artifacts/artifact-tracker.js";
+import { recordCompactionEvent } from "../artifacts/compaction-summary.js";
 import { requiredGatesPassed } from "../gates/gate-result.js";
 import { buildPhasePrompt } from "../prompts/phase-prompt-builder.js";
 import {
-  HARDEN_APPROVAL_STATUS,
   getTddTaskCompletionMarkerTaskId,
+  HARDEN_APPROVAL_STATUS,
   hasPhaseCompletionMarker,
   isLgtmReview,
   requestsReviewLoopback,
 } from "../state/phase-completion.js";
 import { createPhaseState } from "../state/phase-state.js";
-import {
-  advancePhase,
-  transitionToPhase,
-} from "../state/phase-transitions.js";
+import { advancePhase, transitionToPhase } from "../state/phase-transitions.js";
 import { parseTaskList } from "../tasks/task-list-loader.js";
 import { selectNextTask } from "../tasks/task-selector.js";
 import {
@@ -38,7 +34,9 @@ import {
 import { createToolResult } from "./pi-tool-result.js";
 import { updateRalphWorksTui } from "./pi-tui-updater.js";
 
-const DEFAULT_EXTENSION_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+const DEFAULT_EXTENSION_ROOT = fileURLToPath(
+  new URL("../../", import.meta.url),
+);
 const NO_ACTIVE_PIPELINE_MESSAGE =
   "No active ralph-works pipeline. Start one with /ralph-works start <feature> [prompt].";
 const HARDEN_APPROVAL_MESSAGE =
@@ -159,10 +157,16 @@ export function registerRalphWorksExtension(
       });
     };
 
-    const compactStarted = triggerRalphWorksCompaction(ctx, state, "phase", reason, {
-      onComplete: launchAfterCompaction,
-      onError: launchAfterCompaction,
-    });
+    const compactStarted = triggerRalphWorksCompaction(
+      ctx,
+      state,
+      "phase",
+      reason,
+      {
+        onComplete: launchAfterCompaction,
+        onError: launchAfterCompaction,
+      },
+    );
     if (!compactStarted) {
       return launchAfterCompaction();
     }
@@ -251,9 +255,10 @@ export function registerRalphWorksExtension(
       return undefined;
     }
 
-    state = state.currentPhase === "complete"
-      ? state
-      : transitionToPhase(state, "complete", { reason });
+    state =
+      state.currentPhase === "complete"
+        ? state
+        : transitionToPhase(state, "complete", { reason });
     state = {
       ...state,
       pipelineStatus: "completed",
@@ -309,13 +314,15 @@ export function registerRalphWorksExtension(
     }
 
     const tasks = readTaskList(ctx, state);
-    const nextTask = tasks.length > 0
-      ? selectNextTask(tasks, implementationStatus)
-      : undefined;
+    const nextTask =
+      tasks.length > 0
+        ? selectNextTask(tasks, implementationStatus)
+        : undefined;
 
     if (tasks.length === 0 || nextTask) {
       return launchCurrentPhase(ctx, {
-        prefixText: "Continue TDD implementation with the next incomplete task.",
+        prefixText:
+          "Continue TDD implementation with the next incomplete task.",
         delivery: "followUp",
       });
     }
@@ -336,7 +343,10 @@ export function registerRalphWorksExtension(
 
     const gateResults = await runGates(ctx);
     if (!requiredGatesPassed(gateResults)) {
-      ctx.ui?.notify?.("ralph-works gates failed; task remains incomplete.", "error");
+      ctx.ui?.notify?.(
+        "ralph-works gates failed; task remains incomplete.",
+        "error",
+      );
       return state;
     }
 
@@ -407,7 +417,11 @@ export function registerRalphWorksExtension(
         gateResults,
       };
       persistRalphWorksState(pi, state);
-      updateRalphWorksTui(ctx, state, await getActivePhaseModelName(ctx, state));
+      updateRalphWorksTui(
+        ctx,
+        state,
+        await getActivePhaseModelName(ctx, state),
+      );
       if (!requiredGatesPassed(gateResults)) {
         ctx.ui?.notify?.(
           "ralph-works gates failed; review phase will not start.",
@@ -463,9 +477,10 @@ export function registerRalphWorksExtension(
       return;
     }
 
-    const tddTaskId = state.currentPhase === "tdd_implement"
-      ? getTddTaskCompletionMarkerTaskId(assistantText)
-      : undefined;
+    const tddTaskId =
+      state.currentPhase === "tdd_implement"
+        ? getTddTaskCompletionMarkerTaskId(assistantText)
+        : undefined;
     if (tddTaskId) {
       await completeTddTask(ctx, tddTaskId);
       return;
@@ -566,8 +581,8 @@ export function registerRalphWorksExtension(
 
   pi.on("session_start", async (_event, ctx) => {
     state = restoreRalphWorksState(ctx);
-    implementationStatus = state?.implementationStatus
-      ?? createImplementationStatus();
+    implementationStatus =
+      state?.implementationStatus ?? createImplementationStatus();
     if (state) {
       await showStatus(ctx);
     }
@@ -644,7 +659,10 @@ export function registerRalphWorksExtension(
         params.renderHtml ? ["--render-html"] : [],
         "command:next",
       );
-      return createToolResult(`ralph-works phase: ${state.currentPhase}`, state);
+      return createToolResult(
+        `ralph-works phase: ${state.currentPhase}`,
+        state,
+      );
     },
   });
 

@@ -5,11 +5,19 @@
   "type": "module",
   "description": "Lightweight RalphWorks workflow coordinator for the Pi agent harness.",
   "scripts": {
+    "check": "biome check .",
+    "check:write": "biome check --write .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
     "test": "node --test"
   },
   "pi": {
     "extensions": [
       "./index.ts"
     ]
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.15"
   }
 }

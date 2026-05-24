@@ -14,7 +14,8 @@ export async function loadValidGateConfig(ctx) {
 export async function runPiConfiguredGates(pi, ctx) {
   const config = await loadValidGateConfig(ctx);
   return runConfiguredGates(config, {
-    executor: (gate) => pi.exec("sh", ["-lc", gate.command], { signal: ctx.signal }),
+    executor: (gate) =>
+      pi.exec("sh", ["-lc", gate.command], { signal: ctx.signal }),
     signal: ctx.signal,
   });
 }

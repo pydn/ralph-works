@@ -40,8 +40,9 @@ function artifactLines(state, phase) {
   const outputArtifact = phase.artifactPath
     ? [`- Current output: ${phase.artifactPath}`]
     : [];
-  const recordedArtifacts = Object.entries(state.artifacts ?? {})
-    .map(([key, value]) => `- Recorded ${key}: ${value}`);
+  const recordedArtifacts = Object.entries(state.artifacts ?? {}).map(
+    ([key, value]) => `- Recorded ${key}: ${value}`,
+  );
 
   return [...priorArtifacts, ...outputArtifact, ...recordedArtifacts];
 }
