@@ -1,3 +1,4 @@
+import { HARDEN_APPROVAL_STATUS } from "../state/phase-completion.js";
 import { listArtifactReferences } from "./artifact-tracker.js";
 
 export function buildCompactionSummary(
@@ -18,9 +19,19 @@ export function buildCompactionSummary(
     }`,
     `Loopbacks: ${state.loopbackCount}`,
     `TDD completed tasks: ${state.tddCompletedTasks}`,
-    "",
-    "## Artifacts",
   ];
+
+  if (state.phaseStatus === HARDEN_APPROVAL_STATUS) {
+    lines.push(
+      "",
+      "## Action Required",
+      "The workflow is paused at harden_spec and must not continue until the user explicitly approves the hardened spec.",
+      "- Run `/ralph-works approve` to continue to implementation planning.",
+      "- Run `/ralph-works approve --render-html` to render HTML before implementation planning.",
+    );
+  }
+
+  lines.push("", "## Artifacts");
 
   const artifactReferences = listArtifactReferences(state);
   if (artifactReferences.length === 0) {

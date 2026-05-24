@@ -279,6 +279,22 @@ test("harden spec completion pauses for explicit user approval", async () => {
     assert.equal(piCalls.userMessages.length, messagesBeforeHardenCompletion);
     assert.match(ctxCalls.notifications.at(-1).message, /Approve the hardened spec/);
     assert.match(ctxCalls.notifications.at(-1).message, /approve --render-html/);
+    assert.match(ctxCalls.compactions.at(-1).customInstructions, /## Action Required/);
+    assert.match(ctxCalls.compactions.at(-1).customInstructions, /\/ralph-works approve\b/);
+    assert.match(
+      ctxCalls.compactions.at(-1).customInstructions,
+      /\/ralph-works approve --render-html\b/,
+    );
+
+    const notificationsBeforeCompactionComplete = ctxCalls.notifications.length;
+    assert.equal(typeof ctxCalls.compactions.at(-1).onComplete, "function");
+    await ctxCalls.compactions.at(-1).onComplete();
+
+    assert.equal(
+      ctxCalls.notifications.length,
+      notificationsBeforeCompactionComplete + 1,
+    );
+    assert.match(ctxCalls.notifications.at(-1).message, /Approve the hardened spec/);
 
     await piCalls.commands.get("ralph-works").handler("approve", ctx);
     await completeLatestCompaction(ctxCalls);

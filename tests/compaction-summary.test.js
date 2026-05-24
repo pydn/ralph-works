@@ -6,6 +6,7 @@ import {
   buildCompactionSummary,
   recordCompactionEvent,
 } from "../src/artifacts/compaction-summary.js";
+import { HARDEN_APPROVAL_STATUS } from "../src/state/phase-completion.js";
 import { createPhaseState } from "../src/state/phase-state.js";
 import { transitionToPhase } from "../src/state/phase-transitions.js";
 
@@ -36,4 +37,25 @@ test("recordCompactionEvent stores phase and task boundaries", () => {
 
   assert.equal(next.compactionEvents.length, 1);
   assert.equal(next.compactionEvents[0].boundary, "task");
+});
+
+test("compaction summary preserves harden approval action after compaction", () => {
+  let state = createPhaseState();
+  state = transitionToPhase(state, "red_team", { reason: "spec-complete" });
+  state = transitionToPhase(state, "harden_spec", { reason: "red-team-complete" });
+  state = {
+    ...state,
+    phaseStatus: HARDEN_APPROVAL_STATUS,
+  };
+
+  const summary = buildCompactionSummary(state, {
+    boundary: "phase",
+    reason: "hardened spec awaiting approval",
+  });
+
+  assert.match(summary, /## Action Required/);
+  assert.match(summary, /paused at harden_spec/);
+  assert.match(summary, /must not continue/i);
+  assert.match(summary, /\/ralph-works approve\b/);
+  assert.match(summary, /\/ralph-works approve --render-html\b/);
 });

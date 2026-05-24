@@ -101,6 +101,10 @@ export function registerRalphWorksExtension(
     ctx.ui?.notify?.(NO_ACTIVE_PIPELINE_MESSAGE, "info");
   }
 
+  function notifyHardenApproval(ctx, message = HARDEN_APPROVAL_MESSAGE) {
+    ctx.ui?.notify?.(message, "warning");
+  }
+
   async function showStatus(ctx) {
     if (!state) {
       notifyNoActivePipeline(ctx);
@@ -172,9 +176,9 @@ export function registerRalphWorksExtension(
     }
 
     if (state.phaseStatus === HARDEN_APPROVAL_STATUS) {
-      ctx.ui?.notify?.(
+      notifyHardenApproval(
+        ctx,
         `Hardened spec is waiting for approval. ${HARDEN_APPROVAL_MESSAGE}`,
-        "warning",
       );
       return state;
     }
@@ -194,11 +198,11 @@ export function registerRalphWorksExtension(
       state,
       "phase",
       "hardened spec awaiting approval",
+      {
+        onComplete: () => notifyHardenApproval(ctx),
+      },
     );
-    ctx.ui?.notify?.(
-      HARDEN_APPROVAL_MESSAGE,
-      "warning",
-    );
+    notifyHardenApproval(ctx);
     return state;
   }
 
