@@ -27,9 +27,17 @@ export function getPhaseLabel(phaseId) {
   return getPhaseDefinition(phaseId)?.label ?? phaseId;
 }
 
-export function createPhaseState({ now = () => new Date().toISOString() } = {}) {
+export function createPhaseState({
+  feature,
+  promptText,
+  now = () => new Date().toISOString(),
+} = {}) {
   return {
     extensionName: RALPH_WORKS_NAME,
+    feature,
+    promptText,
+    pipelineStatus: "running",
+    phaseStatus: "executing",
     currentPhase: "generate_spec",
     phases: RALPH_WORKS_PHASES.map((phase) => ({ ...phase })),
     completedPhases: [],

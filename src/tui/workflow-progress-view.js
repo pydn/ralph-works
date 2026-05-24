@@ -2,6 +2,7 @@ import {
   getPhaseLabel,
   RALPH_WORKS_NAME,
 } from "../state/phase-state.js";
+import { HARDEN_APPROVAL_STATUS } from "../state/phase-completion.js";
 import { colorText } from "./calm-terminal-palette.js";
 import { renderGateStatus } from "./gate-status-view.js";
 
@@ -93,6 +94,9 @@ function buildPhaseTrack(state, { color }) {
 function resolveStatus(state) {
   if (state.currentPhase === "complete") {
     return { label: "COMPLETE", tone: "sage" };
+  }
+  if (state.phaseStatus === HARDEN_APPROVAL_STATUS) {
+    return { label: "WAITING", tone: "amber" };
   }
   if (
     state.gateResults?.some(

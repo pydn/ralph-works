@@ -12,7 +12,7 @@ export function restoreRalphWorksState(ctx) {
     );
 
   if (!restored?.data?.currentPhase) {
-    return createPhaseState();
+    return undefined;
   }
 
   return {

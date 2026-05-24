@@ -13,6 +13,7 @@ function createFakePi({ exec = async () => ({ code: 0, stdout: "ok", stderr: "" 
     tools: [],
     appended: [],
     models: [],
+    userMessages: [],
   };
 
   return {
@@ -36,6 +37,9 @@ function createFakePi({ exec = async () => ({ code: 0, stdout: "ok", stderr: "" 
       },
       async exec(command, args) {
         return exec(command, args);
+      },
+      sendUserMessage(content, options) {
+        calls.userMessages.push({ content, options });
       },
     },
   };
@@ -86,6 +90,28 @@ function stripAnsi(value) {
   return value.replace(/\u001b\[[0-9;]*m/g, "");
 }
 
+function latestState(piCalls) {
+  return piCalls.appended.at(-1)?.data;
+}
+
+async function startPipeline(piCalls, ctx, args = "start feature-a Build feature A") {
+  await piCalls.commands.get("ralph-works").handler(args, ctx);
+}
+
+async function finishAssistantTurn(piCalls, ctx, text) {
+  await piCalls.events.get("agent_end")(
+    {
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text }],
+        },
+      ],
+    },
+    ctx,
+  );
+}
+
 test("extension registers ralph-works command, tools, and skill discovery", async () => {
   const { pi, calls } = createFakePi();
 
@@ -103,21 +129,134 @@ test("extension registers ralph-works command, tools, and skill discovery", asyn
   assert.deepEqual(resources.skillPaths, [path.resolve("skills")]);
 });
 
-test("ralph-works status command renders the calm TUI widget", async () => {
+test("ralph-works does not render TUI before the pipeline starts", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     const { pi, calls: piCalls } = createFakePi();
     const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
+    await piCalls.events.get("session_start")({ reason: "startup" }, ctx);
     await piCalls.commands.get("ralph-works").handler("status", ctx);
 
-    assert.equal(ctxCalls.statuses.at(-1).key, "ralph-works");
-    assert.match(ctxCalls.statuses.at(-1).value, /Generate Spec/);
-    const widgetText = ctxCalls.widgets.at(-1).value.join("\n");
-    assert.match(stripAnsi(widgetText), /ralph-works · RUNNING/);
-    assert.match(stripAnsi(widgetText), /▶ 1\/8 Generate Spec/);
-    assert.match(widgetText, /\u001b\[38;2;/);
+    assert.equal(ctxCalls.statuses.length, 0);
+    assert.equal(ctxCalls.widgets.length, 0);
+    assert.deepEqual(ctxCalls.notifications.at(-1), {
+      message: "No active ralph-works pipeline. Start one with /ralph-works start <feature> [prompt].",
+      level: "info",
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("/ralph-works start launches the first phase with skill and artifact context", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await startPipeline(piCalls, ctx, "start feature-a Build feature A");
+
+    const state = latestState(piCalls);
+    assert.equal(state.pipelineStatus, "running");
+    assert.equal(state.phaseStatus, "executing");
+    assert.equal(state.feature, "feature-a");
+    assert.equal(state.promptText, "Build feature A");
+    assert.equal(state.currentPhase, "generate_spec");
+    assert.equal(ctxCalls.widgets.length, 1);
+    assert.equal(piCalls.userMessages.length, 1);
+    assert.match(String(piCalls.userMessages[0].content), /# ralph-works Phase: Generate Spec/);
+    assert.match(String(piCalls.userMessages[0].content), /<ralph-skill-instructions>/);
+    assert.match(String(piCalls.userMessages[0].content), /generated-spec\.md/);
+    assert.match(String(piCalls.userMessages[0].content), /RALPH_PHASE_COMPLETE/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("phase completion automatically launches the next phase prompt", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await startPipeline(piCalls, ctx);
+    await finishAssistantTurn(piCalls, ctx, "Spec complete.\nRALPH_PHASE_COMPLETE");
+
+    assert.equal(latestState(piCalls).currentPhase, "red_team");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(piCalls.userMessages.length, 2);
+    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Red Team Pass/);
+    assert.match(String(piCalls.userMessages.at(-1).content), /generated-spec\.md/);
+    assert.match(String(piCalls.userMessages.at(-1).content), /red-team-findings\.md/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("harden spec completion pauses for explicit user approval", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await startPipeline(piCalls, ctx);
+    await finishAssistantTurn(piCalls, ctx, "Spec complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(piCalls, ctx, "Red team complete.\nRALPH_PHASE_COMPLETE");
+    const messagesBeforeHardenCompletion = piCalls.userMessages.length;
+    await finishAssistantTurn(piCalls, ctx, "Hardened spec complete.\nRALPH_PHASE_COMPLETE");
+
+    assert.equal(latestState(piCalls).currentPhase, "harden_spec");
+    assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
+    assert.equal(piCalls.userMessages.length, messagesBeforeHardenCompletion);
+    assert.match(ctxCalls.notifications.at(-1).message, /Approve the hardened spec/);
+
+    await piCalls.commands.get("ralph-works").handler("approve", ctx);
+
+    assert.equal(latestState(piCalls).currentPhase, "create_tasks");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Task Creation/);
+    assert.match(String(piCalls.userMessages.at(-1).content), /hardened-spec\.md/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("TDD and review automatically loop until review is LGTM", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await startPipeline(piCalls, ctx);
+    await finishAssistantTurn(piCalls, ctx, "Spec complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(piCalls, ctx, "Red team complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(piCalls, ctx, "Hardened spec complete.\nRALPH_PHASE_COMPLETE");
+    await piCalls.commands.get("ralph-works").handler("approve", ctx);
+    await finishAssistantTurn(piCalls, ctx, "Tasks complete.\nRALPH_PHASE_COMPLETE");
+    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
+
+    await finishAssistantTurn(piCalls, ctx, "Implementation complete.\nRALPH_PHASE_COMPLETE");
+    assert.equal(latestState(piCalls).currentPhase, "review");
+    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Review/);
+
+    await finishAssistantTurn(piCalls, ctx, "[CRITICAL] Missing regression test.");
+    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
+    assert.equal(latestState(piCalls).loopbackCount, 1);
+    assert.match(String(piCalls.userMessages.at(-1).content), /Review requested changes/);
+    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Red-Green TDD Implement/);
+
+    await finishAssistantTurn(piCalls, ctx, "Fixed.\nRALPH_PHASE_COMPLETE");
+    assert.equal(latestState(piCalls).currentPhase, "review");
+    await finishAssistantTurn(piCalls, ctx, "LGTM. No critical bugs found.");
+
+    assert.equal(latestState(piCalls).currentPhase, "complete");
+    assert.equal(latestState(piCalls).pipelineStatus, "completed");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -140,10 +279,11 @@ test("ralph-works next advances phase, routes configured model, stores state, an
     const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
+    await startPipeline(piCalls, ctx);
     await piCalls.commands.get("ralph-works").handler("next", ctx);
 
-    assert.equal(piCalls.models[0].provider, "openai");
-    assert.equal(piCalls.models[0].id, "red-team-model");
+    assert.equal(piCalls.models.at(-1).provider, "openai");
+    assert.equal(piCalls.models.at(-1).id, "red-team-model");
     assert.equal(piCalls.appended.at(-1).customType, "ralph-works-state");
     assert.equal(piCalls.appended.at(-1).data.currentPhase, "red_team");
     assert.equal(ctxCalls.compactions.length, 1);
@@ -158,6 +298,7 @@ test("ralph_works_transition tool stores state and compacts phase boundaries", a
     const { pi, calls: piCalls } = createFakePi();
     const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+    await startPipeline(piCalls, ctx);
 
     const tool = piCalls.tools.find(
       (definition) => definition.name === "ralph_works_transition",
@@ -189,6 +330,7 @@ test("ralph-works loopback routes the TDD model", async () => {
     const { ctx } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
+    await startPipeline(piCalls, ctx);
     for (let index = 0; index < 5; index += 1) {
       await piCalls.commands.get("ralph-works").handler("next", ctx);
     }
@@ -220,6 +362,7 @@ test("ralph-works tdd-complete runs gates, records task completion, and compacts
     const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
+    await startPipeline(piCalls, ctx);
     for (let index = 0; index < 4; index += 1) {
       await piCalls.commands.get("ralph-works").handler("next", ctx);
     }
@@ -255,6 +398,7 @@ test("ralph-works tdd-complete blocks task completion when required gates fail",
     const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
+    await startPipeline(piCalls, ctx);
     for (let index = 0; index < 4; index += 1) {
       await piCalls.commands.get("ralph-works").handler("next", ctx);
     }

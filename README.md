@@ -11,7 +11,7 @@
 7. Review
 8. Complete
 
-The extension tracks the active phase, renders a small dark-terminal TUI widget, exposes the local RalphWorks skills to Pi, routes phase models from `model.config.json`, runs configured gates from `gate.config.json`, and triggers compaction after phase and TDD task boundaries.
+The extension starts only when `/ralph-works start` is called. It tracks the active phase, renders a small dark-terminal TUI widget after the pipeline starts, injects the phase skill and artifact context into each phase prompt, routes phase models from `model.config.json`, runs configured gates from `gate.config.json`, and triggers compaction after phase and TDD task boundaries.
 
 ## Install
 
@@ -28,6 +28,7 @@ For auto-discovery, place or link this directory under a Pi extension location s
 Use `/ralph-works` as the command prefix:
 
 ```text
+/ralph-works start feature-name Build the requested feature
 /ralph-works status
 /ralph-works next
 /ralph-works next --render-html
@@ -38,6 +39,14 @@ Use `/ralph-works` as the command prefix:
 /ralph-works approve
 /ralph-works reset
 ```
+
+If Pi was already running when the extension changed or was linked, restart Pi or run `/reload`
+before using the command. Extension commands require the leading slash; `ralph-works status`
+is treated as ordinary chat input.
+
+The normal workflow is marker-driven after `/ralph-works start`: each non-review phase prompt includes the relevant `SKILL.md`, expected artifacts, prior artifact paths, and the required `RALPH_PHASE_COMPLETE` final-line marker. When the agent emits that marker, the extension validates the boundary, updates state, and launches the next phase prompt automatically.
+
+After `harden_spec`, the pipeline pauses with a `WAITING` TUI status. Review the hardened spec and run `/ralph-works approve` to continue into task creation and TDD. The `tdd_implement` phase automatically advances to `review` after its completion marker and passing required gates. Review automatically loops back to `tdd_implement` when the review reports critical findings, and completes the pipeline when review is LGTM.
 
 The TUI widget uses the compact RalphWorks look from the main extension: a colored `ralph-works` wordmark, a short status label, a phase count with a symbol rail, review loopbacks, gate results, and the active phase model when configured. The ANSI palette is tuned for dark terminal themes with teal, seafoam, sage, slate, amber, rose, and mist tones.
 

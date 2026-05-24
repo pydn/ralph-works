@@ -76,3 +76,16 @@ test("workflow progress view shows required gate status", () => {
   assert.match(lines.join("\n"), /✗ fail · unit_tests · required · blocks transition/);
   assert.match(lines.join("\n"), /✓ pass · lint · optional/);
 });
+
+test("workflow progress view shows harden approval waiting state", () => {
+  const state = {
+    ...createPhaseState(),
+    currentPhase: "harden_spec",
+    phaseStatus: "awaiting_harden_approval",
+  };
+
+  const lines = renderWorkflowProgress(state, { color: false });
+
+  assert.match(lines[0], /ralph-works · WAITING/);
+  assert.match(lines.join("\n"), /Harden Spec/);
+});
