@@ -37,6 +37,7 @@ Use `/ralph-works` as the command prefix:
 /ralph-works artifact generatedSpec docs/feature-name-generated-spec.md
 /ralph-works loopback critical review findings
 /ralph-works approve
+/ralph-works approve --render-html
 /ralph-works reset
 /ralph-works help
 ```
@@ -49,7 +50,7 @@ The normal workflow is marker-driven after `/ralph-works start`: each non-review
 
 Artifacts are written under `docs/` with a filesystem-safe feature prefix. For example, `/ralph-works start hello-world "Write a hello world script."` produces artifact paths such as `docs/hello-world-generated-spec.md`, `docs/hello-world-red-team-findings.md`, and `docs/hello-world-task-list.md`.
 
-After `harden_spec`, the pipeline pauses with a `WAITING` TUI status. Review the hardened spec and run `/ralph-works approve` to continue into task creation and TDD. During `tdd_implement`, each completed task can end with `RALPH_TDD_TASK_COMPLETE <task-id>` on its own line. RalphWorks then runs required gates, records the completed task, triggers task-level compaction, and continues TDD after compaction. When the task list is complete, the `tdd_implement` phase advances to `review` after its phase completion marker and passing required gates. Review automatically loops back to `tdd_implement` when the review reports critical findings, and completes the pipeline when review is LGTM.
+After `harden_spec`, the pipeline pauses with a `WAITING` TUI status. Review the hardened spec and run `/ralph-works approve` to continue into task creation and TDD, or `/ralph-works approve --render-html` to render the hardened spec as HTML first. During `tdd_implement`, each completed task can end with `RALPH_TDD_TASK_COMPLETE <task-id>` on its own line. RalphWorks then runs required gates, records the completed task, triggers task-level compaction, and continues TDD after compaction. When the task list is complete, the `tdd_implement` phase advances to `review` after its phase completion marker and passing required gates. Review automatically loops back to `tdd_implement` when the review reports critical findings, and completes the pipeline when review is LGTM.
 
 The TUI widget uses the compact RalphWorks look from the main extension: a colored `ralph-works` wordmark, a short status label, a phase count with a symbol rail, review loopbacks, gate results, and the active phase model when configured. The ANSI palette is tuned for dark terminal themes with teal, seafoam, sage, slate, amber, rose, and mist tones.
 
