@@ -472,7 +472,7 @@ export function registerRalphWorksExtension(
     }
   }
 
-  async function approveHardenedSpec(ctx, commandArgs) {
+  async function approveHardenedSpec(ctx, commandArgs = []) {
     if (state?.currentPhase !== "harden_spec") {
       return false;
     }
