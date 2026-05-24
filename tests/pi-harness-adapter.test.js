@@ -118,6 +118,35 @@ async function completeLatestCompaction(ctxCalls) {
   await compaction.onComplete();
 }
 
+async function advanceToHardenSpecWithNext(piCalls, ctx) {
+  await startPipeline(piCalls, ctx);
+  await piCalls.commands.get("ralph-works").handler("next", ctx);
+  await piCalls.commands.get("ralph-works").handler("next", ctx);
+  assert.equal(latestState(piCalls).currentPhase, "harden_spec");
+}
+
+async function requestAndApproveHardenSpec(piCalls, ctx) {
+  await piCalls.commands.get("ralph-works").handler("next", ctx);
+  assert.equal(latestState(piCalls).currentPhase, "harden_spec");
+  assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
+
+  await piCalls.commands.get("ralph-works").handler("approve", ctx);
+  assert.equal(latestState(piCalls).currentPhase, "create_tasks");
+}
+
+async function advanceToTddWithApproval(piCalls, ctx) {
+  await advanceToHardenSpecWithNext(piCalls, ctx);
+  await requestAndApproveHardenSpec(piCalls, ctx);
+  await piCalls.commands.get("ralph-works").handler("next", ctx);
+  assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
+}
+
+async function advanceToReviewWithApproval(piCalls, ctx) {
+  await advanceToTddWithApproval(piCalls, ctx);
+  await piCalls.commands.get("ralph-works").handler("next", ctx);
+  assert.equal(latestState(piCalls).currentPhase, "review");
+}
+
 test("extension registers ralph-works command, tools, and skill discovery", async () => {
   const { pi, calls } = createFakePi();
 
@@ -257,6 +286,83 @@ test("harden spec completion pauses for explicit user approval", async () => {
     assert.equal(latestState(piCalls).phaseStatus, "executing");
     assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Task Creation/);
     assert.match(String(piCalls.userMessages.at(-1).content), /docs\/feature-a-hardened-spec\.md/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("ralph-works approve is the only command that advances from harden spec", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await advanceToHardenSpecWithNext(piCalls, ctx);
+    const messagesBeforeApprove = piCalls.userMessages.length;
+
+    await piCalls.commands.get("ralph-works").handler("approve", ctx);
+
+    assert.equal(latestState(piCalls).currentPhase, "create_tasks");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(piCalls.userMessages.length, messagesBeforeApprove);
+
+    await completeLatestCompaction(ctxCalls);
+
+    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Task Creation/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("ralph-works next from harden spec pauses for explicit approval", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await advanceToHardenSpecWithNext(piCalls, ctx);
+    const messagesBeforeNext = piCalls.userMessages.length;
+
+    await piCalls.commands.get("ralph-works").handler("next", ctx);
+
+    assert.equal(latestState(piCalls).currentPhase, "harden_spec");
+    assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
+    assert.equal(piCalls.userMessages.length, messagesBeforeNext);
+    assert.match(ctxCalls.notifications.at(-1).message, /Approve the hardened spec/);
+
+    await piCalls.commands.get("ralph-works").handler("next", ctx);
+
+    assert.equal(latestState(piCalls).currentPhase, "harden_spec");
+    assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
+    assert.equal(piCalls.userMessages.length, messagesBeforeNext);
+    assert.match(ctxCalls.notifications.at(-1).message, /approve/i);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("ralph_works_transition from harden spec pauses for explicit approval", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await advanceToHardenSpecWithNext(piCalls, ctx);
+    const messagesBeforeTransition = piCalls.userMessages.length;
+    const tool = piCalls.tools.find(
+      (definition) => definition.name === "ralph_works_transition",
+    );
+
+    const result = await tool.execute("tool-1", {}, undefined, undefined, ctx);
+
+    assert.equal(result.details.state.currentPhase, "harden_spec");
+    assert.equal(result.details.state.phaseStatus, "awaiting_harden_approval");
+    assert.equal(latestState(piCalls).currentPhase, "harden_spec");
+    assert.equal(piCalls.userMessages.length, messagesBeforeTransition);
+    assert.match(ctxCalls.notifications.at(-1).message, /Approve the hardened spec/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -405,10 +511,7 @@ test("ralph-works loopback routes the TDD model", async () => {
     const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
-    await startPipeline(piCalls, ctx);
-    for (let index = 0; index < 5; index += 1) {
-      await piCalls.commands.get("ralph-works").handler("next", ctx);
-    }
+    await advanceToReviewWithApproval(piCalls, ctx);
     const modelSelectionsBeforeLoopback = piCalls.models.length;
     await piCalls.commands.get("ralph-works").handler("loopback critical bugs", ctx);
     await completeLatestCompaction(ctxCalls);
@@ -438,10 +541,7 @@ test("ralph-works tdd-complete runs gates, records task completion, and compacts
     const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
-    await startPipeline(piCalls, ctx);
-    for (let index = 0; index < 4; index += 1) {
-      await piCalls.commands.get("ralph-works").handler("next", ctx);
-    }
+    await advanceToTddWithApproval(piCalls, ctx);
     await piCalls.commands.get("ralph-works").handler("tdd-complete T001", ctx);
 
     assert.equal(piCalls.appended.at(-1).data.tddCompletedTasks, 1);
@@ -474,10 +574,7 @@ test("ralph-works tdd-complete blocks task completion when required gates fail",
     const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
-    await startPipeline(piCalls, ctx);
-    for (let index = 0; index < 4; index += 1) {
-      await piCalls.commands.get("ralph-works").handler("next", ctx);
-    }
+    await advanceToTddWithApproval(piCalls, ctx);
     const compactionsBefore = ctxCalls.compactions.length;
     await piCalls.commands.get("ralph-works").handler("tdd-complete T001", ctx);
 
@@ -513,10 +610,7 @@ test("TDD task marker runs gates, records completion, compacts, and continues TD
     const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
-    await startPipeline(piCalls, ctx);
-    for (let index = 0; index < 4; index += 1) {
-      await piCalls.commands.get("ralph-works").handler("next", ctx);
-    }
+    await advanceToTddWithApproval(piCalls, ctx);
     const userMessagesBeforeMarker = piCalls.userMessages.length;
 
     await finishAssistantTurn(piCalls, ctx, "T001 done.\nRALPH_TDD_TASK_COMPLETE T001");
@@ -560,10 +654,7 @@ test("TDD task marker blocks completion when required gates fail", async () => {
     const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
-    await startPipeline(piCalls, ctx);
-    for (let index = 0; index < 4; index += 1) {
-      await piCalls.commands.get("ralph-works").handler("next", ctx);
-    }
+    await advanceToTddWithApproval(piCalls, ctx);
     const compactionsBefore = ctxCalls.compactions.length;
 
     await finishAssistantTurn(piCalls, ctx, "T001 done.\nRALPH_TDD_TASK_COMPLETE T001");
@@ -590,10 +681,7 @@ test("TDD task marker advances to review after final task compaction", async () 
     const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
-    await startPipeline(piCalls, ctx);
-    for (let index = 0; index < 4; index += 1) {
-      await piCalls.commands.get("ralph-works").handler("next", ctx);
-    }
+    await advanceToTddWithApproval(piCalls, ctx);
 
     await finishAssistantTurn(piCalls, ctx, "T001 done.\nRALPH_TDD_TASK_COMPLETE T001");
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
