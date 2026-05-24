@@ -112,6 +112,12 @@ async function finishAssistantTurn(piCalls, ctx, text) {
   );
 }
 
+async function completeLatestCompaction(ctxCalls) {
+  const compaction = ctxCalls.compactions.at(-1);
+  assert.equal(typeof compaction?.onComplete, "function");
+  await compaction.onComplete();
+}
+
 test("extension registers ralph-works command, tools, and skill discovery", async () => {
   const { pi, calls } = createFakePi();
 
@@ -180,11 +186,18 @@ test("phase completion automatically launches the next phase prompt", async () =
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     const { pi, calls: piCalls } = createFakePi();
-    const { ctx } = createFakeContext(tempDir);
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
     await startPipeline(piCalls, ctx);
     await finishAssistantTurn(piCalls, ctx, "Spec complete.\nRALPH_PHASE_COMPLETE");
+
+    assert.equal(latestState(piCalls).currentPhase, "red_team");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(ctxCalls.compactions.length, 1);
+    assert.equal(piCalls.userMessages.length, 1);
+
+    await completeLatestCompaction(ctxCalls);
 
     assert.equal(latestState(piCalls).currentPhase, "red_team");
     assert.equal(latestState(piCalls).phaseStatus, "executing");
@@ -206,7 +219,9 @@ test("harden spec completion pauses for explicit user approval", async () => {
 
     await startPipeline(piCalls, ctx);
     await finishAssistantTurn(piCalls, ctx, "Spec complete.\nRALPH_PHASE_COMPLETE");
+    await completeLatestCompaction(ctxCalls);
     await finishAssistantTurn(piCalls, ctx, "Red team complete.\nRALPH_PHASE_COMPLETE");
+    await completeLatestCompaction(ctxCalls);
     const messagesBeforeHardenCompletion = piCalls.userMessages.length;
     await finishAssistantTurn(piCalls, ctx, "Hardened spec complete.\nRALPH_PHASE_COMPLETE");
 
@@ -216,6 +231,7 @@ test("harden spec completion pauses for explicit user approval", async () => {
     assert.match(ctxCalls.notifications.at(-1).message, /Approve the hardened spec/);
 
     await piCalls.commands.get("ralph-works").handler("approve", ctx);
+    await completeLatestCompaction(ctxCalls);
 
     assert.equal(latestState(piCalls).currentPhase, "create_tasks");
     assert.equal(latestState(piCalls).phaseStatus, "executing");
@@ -230,28 +246,35 @@ test("TDD and review automatically loop until review is LGTM", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     const { pi, calls: piCalls } = createFakePi();
-    const { ctx } = createFakeContext(tempDir);
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
     await startPipeline(piCalls, ctx);
     await finishAssistantTurn(piCalls, ctx, "Spec complete.\nRALPH_PHASE_COMPLETE");
+    await completeLatestCompaction(ctxCalls);
     await finishAssistantTurn(piCalls, ctx, "Red team complete.\nRALPH_PHASE_COMPLETE");
+    await completeLatestCompaction(ctxCalls);
     await finishAssistantTurn(piCalls, ctx, "Hardened spec complete.\nRALPH_PHASE_COMPLETE");
     await piCalls.commands.get("ralph-works").handler("approve", ctx);
+    await completeLatestCompaction(ctxCalls);
     await finishAssistantTurn(piCalls, ctx, "Tasks complete.\nRALPH_PHASE_COMPLETE");
+    await completeLatestCompaction(ctxCalls);
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
 
     await finishAssistantTurn(piCalls, ctx, "Implementation complete.\nRALPH_PHASE_COMPLETE");
+    await completeLatestCompaction(ctxCalls);
     assert.equal(latestState(piCalls).currentPhase, "review");
     assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Review/);
 
     await finishAssistantTurn(piCalls, ctx, "[CRITICAL] Missing regression test.");
+    await completeLatestCompaction(ctxCalls);
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
     assert.equal(latestState(piCalls).loopbackCount, 1);
     assert.match(String(piCalls.userMessages.at(-1).content), /Review requested changes/);
     assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Red-Green TDD Implement/);
 
     await finishAssistantTurn(piCalls, ctx, "Fixed.\nRALPH_PHASE_COMPLETE");
+    await completeLatestCompaction(ctxCalls);
     assert.equal(latestState(piCalls).currentPhase, "review");
     await finishAssistantTurn(piCalls, ctx, "LGTM. No critical bugs found.");
 
@@ -282,11 +305,13 @@ test("ralph-works next advances phase, routes configured model, stores state, an
     await startPipeline(piCalls, ctx);
     await piCalls.commands.get("ralph-works").handler("next", ctx);
 
-    assert.equal(piCalls.models.at(-1).provider, "openai");
-    assert.equal(piCalls.models.at(-1).id, "red-team-model");
     assert.equal(piCalls.appended.at(-1).customType, "ralph-works-state");
     assert.equal(piCalls.appended.at(-1).data.currentPhase, "red_team");
     assert.equal(ctxCalls.compactions.length, 1);
+    await completeLatestCompaction(ctxCalls);
+
+    assert.equal(piCalls.models.at(-1).provider, "openai");
+    assert.equal(piCalls.models.at(-1).id, "red-team-model");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -327,7 +352,7 @@ test("ralph-works loopback routes the TDD model", async () => {
     );
 
     const { pi, calls: piCalls } = createFakePi();
-    const { ctx } = createFakeContext(tempDir);
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
     await startPipeline(piCalls, ctx);
@@ -336,6 +361,7 @@ test("ralph-works loopback routes the TDD model", async () => {
     }
     const modelSelectionsBeforeLoopback = piCalls.models.length;
     await piCalls.commands.get("ralph-works").handler("loopback critical bugs", ctx);
+    await completeLatestCompaction(ctxCalls);
 
     assert.equal(piCalls.models.length, modelSelectionsBeforeLoopback + 1);
     assert.equal(piCalls.models.at(-1).provider, "openai");

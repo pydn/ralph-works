@@ -100,11 +100,30 @@ export function registerRalphWorksExtension(
       boundary: "phase",
       reason,
     });
-    triggerRalphWorksCompaction(ctx, state, "phase", reason);
-    return launchCurrentPhase(ctx, {
-      prefixText,
-      delivery: "followUp",
+    persistRalphWorksState(pi, state);
+    updateRalphWorksTui(ctx, state, await getActivePhaseModelName(ctx, state));
+
+    let launched = false;
+    const launchAfterCompaction = async () => {
+      if (launched) {
+        return state;
+      }
+      launched = true;
+      return launchCurrentPhase(ctx, {
+        prefixText,
+        delivery: "followUp",
+      });
+    };
+
+    const compactStarted = triggerRalphWorksCompaction(ctx, state, "phase", reason, {
+      onComplete: launchAfterCompaction,
+      onError: launchAfterCompaction,
     });
+    if (!compactStarted) {
+      return launchAfterCompaction();
+    }
+
+    return state;
   }
 
   async function pauseForHardenApproval(ctx) {
