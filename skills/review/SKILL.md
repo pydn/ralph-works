@@ -37,10 +37,10 @@ Check repository clarity when relevant. The requirements call for small, purpose
 
 ## Decision Rules
 
-If no critical bugs are found, conclude with exactly `looks good to me`. Do not block completion for minor polish.
+If no critical bugs are found, conclude with exactly `LGTM`. Do not block completion for minor polish. Do not append any generic phase-completion marker to an approving review decision.
 
 If critical bugs are found, create or update implementation tasks describing the bugs. The output should be specific enough for the TDD implementation phase to select and repair the work. The workflow should return to `tdd_implement` for another pass, and the loopback should be visible in the TUI.
 
 ## Output
 
-Produce either `looks good to me` or a set of critical bugs that re-enter TDD implementation. The suggested runtime artifact for critical findings is `review-findings.md`.
+Produce either `LGTM` or a set of critical bugs that re-enter TDD implementation. The suggested runtime artifact for critical findings is `review-findings.md`.

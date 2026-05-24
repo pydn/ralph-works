@@ -181,7 +181,9 @@ export function registerRalphWorksExtension(
       return undefined;
     }
 
-    state = transitionToPhase(state, "complete", { reason });
+    state = state.currentPhase === "complete"
+      ? state
+      : transitionToPhase(state, "complete", { reason });
     state = {
       ...state,
       pipelineStatus: "completed",
@@ -270,6 +272,18 @@ export function registerRalphWorksExtension(
   async function handlePhaseCompleteSignal(ctx) {
     if (!state) {
       return undefined;
+    }
+
+    if (state.currentPhase === "complete") {
+      return completePipeline(ctx, "LGTM");
+    }
+
+    if (state.currentPhase === "review") {
+      ctx.ui?.notify?.(
+        "Review approval must end with LGTM; RALPH_PHASE_COMPLETE is ignored during review.",
+        "warning",
+      );
+      return state;
     }
 
     if (state.currentPhase === "harden_spec") {
@@ -402,6 +416,10 @@ export function registerRalphWorksExtension(
         return;
       }
       if (command === "approve" && await approveHardenedSpec(ctx)) {
+        return;
+      }
+      if (command === "approve" && state.currentPhase === "review") {
+        await completePipeline(ctx, "LGTM");
         return;
       }
       state = applyPhaseCommand(state, command, commandArgs);
@@ -541,7 +559,7 @@ function applyPhaseCommand(state, command, commandArgs) {
   }
   if (command === "approve") {
     return transitionToPhase(state, "complete", {
-      reason: "looks good to me",
+      reason: "LGTM",
     });
   }
 

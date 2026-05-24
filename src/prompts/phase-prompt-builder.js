@@ -46,7 +46,7 @@ function artifactLines(state, phase) {
 function phaseRules(phaseId) {
   if (phaseId === "review") {
     return [
-      "- If the implementation is LGTM, end with a clear LGTM statement.",
+      "- If the implementation is LGTM, end with exactly `LGTM`.",
       "- If critical issues remain, include `[CRITICAL]` findings or end with `RALPH_REVIEW_CHANGES_REQUESTED` so RalphWorks loops back to TDD.",
     ];
   }

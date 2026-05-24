@@ -285,6 +285,36 @@ test("TDD and review automatically loop until review is LGTM", async () => {
   }
 });
 
+test("review completion requires LGTM instead of the generic phase marker", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await startPipeline(piCalls, ctx);
+    await finishAssistantTurn(piCalls, ctx, "Spec complete.\nRALPH_PHASE_COMPLETE");
+    await completeLatestCompaction(ctxCalls);
+    await finishAssistantTurn(piCalls, ctx, "Red team complete.\nRALPH_PHASE_COMPLETE");
+    await completeLatestCompaction(ctxCalls);
+    await finishAssistantTurn(piCalls, ctx, "Hardened spec complete.\nRALPH_PHASE_COMPLETE");
+    await piCalls.commands.get("ralph-works").handler("approve", ctx);
+    await completeLatestCompaction(ctxCalls);
+    await finishAssistantTurn(piCalls, ctx, "Tasks complete.\nRALPH_PHASE_COMPLETE");
+    await completeLatestCompaction(ctxCalls);
+    await finishAssistantTurn(piCalls, ctx, "Implementation complete.\nRALPH_PHASE_COMPLETE");
+    await completeLatestCompaction(ctxCalls);
+
+    await finishAssistantTurn(piCalls, ctx, "looks good to me\nRALPH_PHASE_COMPLETE");
+
+    assert.equal(latestState(piCalls).currentPhase, "review");
+    assert.equal(latestState(piCalls).pipelineStatus, "running");
+    assert.match(ctxCalls.notifications.at(-1).message, /LGTM/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("ralph-works next advances phase, routes configured model, stores state, and compacts", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {

@@ -20,7 +20,7 @@ export function isLgtmReview(text) {
   ) {
     return false;
   }
-  return /\bLGTM\b/i.test(value) || /\bno critical bugs?\b/i.test(value);
+  return /\bLGTM\b/i.test(value);
 }
 
 export function requestsReviewLoopback(text) {
