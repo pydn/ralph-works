@@ -17,7 +17,9 @@ import {
   appendSessionBoundaryEvent,
   createSessionBoundaryEvent,
   findPendingSessionBoundaryEvent,
+  findReusableUnresolvedPhaseBoundaryEvent,
   findSessionBoundaryEvent,
+  updateSessionBoundaryEvent,
 } from "../state/session-boundaries.js";
 import { parseTaskList } from "../tasks/task-list-loader.js";
 import { selectNextTask } from "../tasks/task-selector.js";
@@ -196,20 +198,50 @@ export function registerRalphWorksExtension(
     return state;
   }
 
-  function enqueueBoundaryLauncher(ctx, boundaryId) {
+  function formatErrorMessage(error) {
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+    if (typeof error === "string") {
+      return error;
+    }
+    return undefined;
+  }
+
+  function buildBoundaryHandoffFailure(boundaryId, error) {
+    const command = buildContinueBoundaryCommand(boundaryId);
+    const detail = formatErrorMessage(error);
+    return {
+      boundaryId,
+      command,
+      message: detail
+        ? `ralph-works could not enqueue boundary launcher ${boundaryId}: ${detail}. Run ${command} to continue.`
+        : `ralph-works could not enqueue boundary launcher ${boundaryId}; follow-up messages are unavailable. Run ${command} to continue.`,
+    };
+  }
+
+  async function enqueueBoundaryLauncher(boundaryId) {
     if (typeof pi.sendUserMessage !== "function") {
-      ctx.ui?.notify?.(
-        `ralph-works could not enqueue boundary launcher ${boundaryId}; follow-up messages are unavailable.`,
-        "error",
-      );
-      return false;
+      return {
+        queued: false,
+        failure: buildBoundaryHandoffFailure(boundaryId),
+      };
     }
 
-    pi.sendUserMessage(buildContinueBoundaryCommand(boundaryId), {
-      deliverAs: "followUp",
-    });
-    return true;
+    try {
+      await pi.sendUserMessage(buildContinueBoundaryCommand(boundaryId), {
+        deliverAs: "followUp",
+      });
+      return { queued: true };
+    } catch (error) {
+      return {
+        queued: false,
+        failure: buildBoundaryHandoffFailure(boundaryId, error),
+      };
+    }
   }
+
+  let lastBoundaryHandoffFailure;
 
   async function persistAndEnqueueBoundary(
     ctx,
@@ -245,7 +277,58 @@ export function registerRalphWorksExtension(
     state = appendSessionBoundaryEvent(boundaryState, boundaryEvent);
     persistRalphWorksState(pi, state);
     updateRalphWorksTui(ctx, state, await getActivePhaseModelName(ctx, state));
-    enqueueBoundaryLauncher(ctx, boundaryId);
+
+    const enqueueResult = await enqueueBoundaryLauncher(boundaryId);
+    if (!enqueueResult.queued) {
+      lastBoundaryHandoffFailure = enqueueResult.failure;
+      state = updateSessionBoundaryEvent(state, boundaryId, {
+        status: "followup_failed",
+      });
+      persistRalphWorksState(pi, state);
+      updateRalphWorksTui(
+        ctx,
+        state,
+        await getActivePhaseModelName(ctx, state),
+      );
+      ctx.ui?.notify?.(enqueueResult.failure.message, "error");
+      return state;
+    }
+
+    lastBoundaryHandoffFailure = undefined;
+    return state;
+  }
+
+  async function requeueReusableBoundary(ctx, boundaryEvent) {
+    updateRalphWorksTui(ctx, state, await getActivePhaseModelName(ctx, state));
+    if (
+      state?.currentPhase === "harden_spec" &&
+      state?.phaseStatus === HARDEN_APPROVAL_STATUS
+    ) {
+      notifyHardenApproval(
+        ctx,
+        `Hardened spec is waiting for approval. ${HARDEN_APPROVAL_MESSAGE}`,
+      );
+    }
+
+    const enqueueResult = await enqueueBoundaryLauncher(boundaryEvent.id);
+    if (!enqueueResult.queued) {
+      lastBoundaryHandoffFailure = enqueueResult.failure;
+      if (boundaryEvent.status !== "followup_failed") {
+        state = updateSessionBoundaryEvent(state, boundaryEvent.id, {
+          status: "followup_failed",
+        });
+        persistRalphWorksState(pi, state);
+        updateRalphWorksTui(
+          ctx,
+          state,
+          await getActivePhaseModelName(ctx, state),
+        );
+      }
+      ctx.ui?.notify?.(enqueueResult.failure.message, "error");
+      return state;
+    }
+
+    lastBoundaryHandoffFailure = undefined;
     return state;
   }
 
@@ -506,7 +589,7 @@ export function registerRalphWorksExtension(
     );
   }
 
-  async function pauseForHardenApproval(ctx) {
+  async function pauseForHardenApproval(ctx, { handoff = false } = {}) {
     if (!state) {
       return undefined;
     }
@@ -519,29 +602,35 @@ export function registerRalphWorksExtension(
       return state;
     }
 
+    const nextState = {
+      ...state,
+      phaseStatus: HARDEN_APPROVAL_STATUS,
+    };
+    const boundary = {
+      boundaryType: "phase",
+      reason: "hardened spec awaiting approval",
+      fromPhase: "harden_spec",
+      toPhase: "harden_spec",
+    };
+
     notifyHardenApproval(ctx);
-    return launchSessionBoundary(
-      ctx,
-      {
-        ...state,
-        phaseStatus: HARDEN_APPROVAL_STATUS,
-      },
-      {
-        boundaryType: "phase",
-        reason: "hardened spec awaiting approval",
-        fromPhase: "harden_spec",
-        toPhase: "harden_spec",
-      },
-    );
+    return handoff
+      ? persistAndEnqueueBoundary(ctx, nextState, boundary)
+      : launchSessionBoundary(ctx, nextState, boundary);
   }
 
-  async function advanceToNextPhase(ctx, commandArgs, reason) {
+  async function advanceToNextPhase(
+    ctx,
+    commandArgs,
+    reason,
+    { handoff = false } = {},
+  ) {
     if (!state) {
       return undefined;
     }
 
     if (state.currentPhase === "harden_spec") {
-      return pauseForHardenApproval(ctx);
+      return pauseForHardenApproval(ctx, { handoff });
     }
 
     if (
@@ -551,13 +640,21 @@ export function registerRalphWorksExtension(
       return state;
     }
 
+    const fromPhase = state.currentPhase;
     const nextState = advancePhase(state, {
       renderHtml: commandArgs.includes("--render-html"),
       reason,
     });
-    return enterPhase(ctx, nextState, {
+    const boundary = {
+      boundaryType: "phase",
       reason: `entered ${nextState.currentPhase}`,
-    });
+      fromPhase,
+      toPhase: nextState.currentPhase,
+    };
+
+    return handoff
+      ? persistAndEnqueueBoundary(ctx, nextState, boundary)
+      : enterPhase(ctx, nextState, { reason: boundary.reason });
   }
 
   async function startWorkflow(ctx, commandArgs) {
@@ -1035,13 +1132,33 @@ export function registerRalphWorksExtension(
         return createToolResult("ralph-works pipeline not started", undefined);
       }
 
-      await advanceToNextPhase(
-        ctx,
-        params.renderHtml ? ["--render-html"] : [],
-        "command:next",
-      );
+      lastBoundaryHandoffFailure = undefined;
+      const reusableBoundary = findReusableUnresolvedPhaseBoundaryEvent(state);
+      if (reusableBoundary) {
+        await requeueReusableBoundary(ctx, reusableBoundary);
+      } else if (state.currentPhase === "review") {
+        ctx.ui?.notify?.(
+          "Review approval must end with LGTM; ralph_works_transition is ignored during review.",
+          "warning",
+        );
+        updateRalphWorksTui(
+          ctx,
+          state,
+          await getActivePhaseModelName(ctx, state),
+        );
+      } else {
+        await advanceToNextPhase(
+          ctx,
+          params.renderHtml ? ["--render-html"] : [],
+          "command:next",
+          { handoff: true },
+        );
+      }
+      const recoveryText = lastBoundaryHandoffFailure
+        ? `\nFollow-up queue failed. Run ${lastBoundaryHandoffFailure.command} to continue.`
+        : "";
       return createToolResult(
-        `ralph-works phase: ${state.currentPhase}`,
+        `ralph-works phase: ${state.currentPhase}${recoveryText}`,
         state,
       );
     },

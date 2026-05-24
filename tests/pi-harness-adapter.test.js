@@ -521,7 +521,7 @@ test("ralph-works next from harden spec pauses for explicit approval", async () 
   }
 });
 
-test("ralph_works_transition from harden spec pauses for explicit approval", async () => {
+test("ralph_works_transition from harden spec pauses with a queued approval boundary", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     const { pi, calls: piCalls } = createFakePi();
@@ -530,16 +530,28 @@ test("ralph_works_transition from harden spec pauses for explicit approval", asy
 
     await advanceToHardenSpecWithNext(piCalls, ctx);
     const messagesBeforeTransition = piCalls.userMessages.length;
+    const compactionsBeforeTransition = ctxCalls.compactions.length;
     const tool = piCalls.tools.find(
       (definition) => definition.name === "ralph_works_transition",
     );
 
     const result = await tool.execute("tool-1", {}, undefined, undefined, ctx);
 
+    const boundary = latestBoundary(piCalls);
     assert.equal(result.details.state.currentPhase, "harden_spec");
     assert.equal(result.details.state.phaseStatus, "awaiting_harden_approval");
     assert.equal(latestState(piCalls).currentPhase, "harden_spec");
-    assert.equal(piCalls.userMessages.length, messagesBeforeTransition);
+    assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
+    assert.equal(boundary.boundaryType, "phase");
+    assert.equal(boundary.status, "pending");
+    assert.equal(boundary.fromPhase, "harden_spec");
+    assert.equal(boundary.toPhase, "harden_spec");
+    assert.equal(ctxCalls.compactions.length, compactionsBeforeTransition);
+    assert.equal(piCalls.userMessages.length, messagesBeforeTransition + 1);
+    assert.deepEqual(piCalls.userMessages.at(-1), {
+      content: `/ralph-works continue-boundary ${boundary.id}`,
+      options: { deliverAs: "followUp" },
+    });
     const approvalNotification = ctxCalls.notifications.find((notification) =>
       /Approve the hardened spec/.test(notification.message),
     );
@@ -621,6 +633,53 @@ test("TDD and review automatically loop until review is LGTM", async () => {
 
     assert.equal(latestState(piCalls).currentPhase, "complete");
     assert.equal(latestState(piCalls).pipelineStatus, "completed");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("ralph_works_transition during review is blocked without LGTM", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await advanceToReviewWithApproval(piCalls, ctx);
+    const appendCountBeforeTool = piCalls.appended.length;
+    const boundaryCountBeforeTool =
+      latestState(piCalls).sessionBoundaryEvents.length;
+    const messagesBeforeTool = piCalls.userMessages.length;
+    const compactionsBeforeTool = ctxCalls.compactions.length;
+    const tool = piCalls.tools.find(
+      (definition) => definition.name === "ralph_works_transition",
+    );
+
+    const result = await tool.execute(
+      "tool-review",
+      {},
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    assert.equal(result.details.state.currentPhase, "review");
+    assert.equal(result.details.state.pipelineStatus, "running");
+    assert.equal(latestState(piCalls).currentPhase, "review");
+    assert.equal(latestState(piCalls).pipelineStatus, "running");
+    assert.equal(piCalls.appended.length, appendCountBeforeTool);
+    assert.equal(
+      latestState(piCalls).sessionBoundaryEvents.length,
+      boundaryCountBeforeTool,
+    );
+    assert.equal(latestBoundary(piCalls).toPhase, "review");
+    assert.equal(piCalls.userMessages.length, messagesBeforeTool);
+    assert.equal(ctxCalls.compactions.length, compactionsBeforeTool);
+    assert.match(ctxCalls.notifications.at(-1).message, /LGTM/);
+    assert.match(
+      ctxCalls.notifications.at(-1).message,
+      /ignored during review/,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -713,13 +772,14 @@ test("ralph-works next advances phase, routes configured model, stores state, an
   }
 });
 
-test("ralph_works_transition tool stores state and uses compaction fallback without newSession", async () => {
+test("ralph_works_transition tool persists a pending boundary handoff without compaction", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     const { pi, calls: piCalls } = createFakePi();
     const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
     await startPipeline(piCalls, ctx);
+    const compactionsBeforeTool = ctxCalls.compactions.length;
 
     const tool = piCalls.tools.find(
       (definition) => definition.name === "ralph_works_transition",
@@ -728,13 +788,17 @@ test("ralph_works_transition tool stores state and uses compaction fallback with
 
     assert.equal(result.details.state.currentPhase, "red_team");
     assert.equal(piCalls.appended.at(-1).data.currentPhase, "red_team");
-    assert.equal(ctxCalls.compactions.length, 2);
-    assert.equal(
-      ctxCalls.compactions
-        .at(-1)
-        .customInstructions.includes("Boundary: phase"),
-      true,
-    );
+    assert.equal(ctxCalls.compactions.length, compactionsBeforeTool);
+
+    const boundary = latestBoundary(piCalls);
+    assert.equal(boundary.boundaryType, "phase");
+    assert.equal(boundary.status, "pending");
+    assert.equal(boundary.fromPhase, "generate_spec");
+    assert.equal(boundary.toPhase, "red_team");
+    assert.deepEqual(piCalls.userMessages.at(-1), {
+      content: `/ralph-works continue-boundary ${boundary.id}`,
+      options: { deliverAs: "followUp" },
+    });
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

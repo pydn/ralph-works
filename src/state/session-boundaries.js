@@ -99,6 +99,22 @@ export function findPendingSessionBoundaryEvent(state, boundaryId) {
   return PENDING_BOUNDARY_STATUSES.has(event?.status) ? event : undefined;
 }
 
+export function findReusableUnresolvedPhaseBoundaryEvent(state) {
+  const currentPhase = state?.currentPhase;
+  if (!currentPhase) {
+    return undefined;
+  }
+
+  return [...getSessionBoundaryEvents(state)]
+    .reverse()
+    .find(
+      (event) =>
+        event.boundaryType === "phase" &&
+        event.toPhase === currentPhase &&
+        PENDING_BOUNDARY_STATUSES.has(event.status),
+    );
+}
+
 export function updateSessionBoundaryEvent(state, boundaryId, updates) {
   let found = false;
   const events = getSessionBoundaryEvents(state).map((event) => {

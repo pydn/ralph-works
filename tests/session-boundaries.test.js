@@ -6,6 +6,7 @@ import {
   appendSessionBoundaryEvent,
   createSessionBoundaryEvent,
   findPendingSessionBoundaryEvent,
+  findReusableUnresolvedPhaseBoundaryEvent,
   findSessionBoundaryEvent,
   updatePendingSessionBoundaryEvent,
 } from "../src/state/session-boundaries.js";
@@ -149,4 +150,77 @@ test("session boundary helpers treat partial launch failures as retryable", () =
 
     assert.equal(findPendingSessionBoundaryEvent(state, event.id), undefined);
   }
+});
+
+test("findReusableUnresolvedPhaseBoundaryEvent returns the latest retryable phase boundary for the current phase", () => {
+  const baseState = createPhaseState();
+  const state = {
+    ...baseState,
+    currentPhase: "red_team",
+    sessionBoundaryEvents: [
+      createSessionBoundaryEvent({
+        id: "old-red-team",
+        boundaryType: "phase",
+        fromPhase: "generate_spec",
+        toPhase: "red_team",
+        status: "pending",
+      }),
+      createSessionBoundaryEvent({
+        id: "task-red-team",
+        boundaryType: "task",
+        fromPhase: "tdd_implement",
+        toPhase: "red_team",
+        status: "pending",
+      }),
+      createSessionBoundaryEvent({
+        id: "new-red-team",
+        boundaryType: "phase",
+        fromPhase: "generate_spec",
+        toPhase: "red_team",
+        status: "followup_failed",
+      }),
+    ],
+  };
+
+  assert.equal(
+    findReusableUnresolvedPhaseBoundaryEvent(state)?.id,
+    "new-red-team",
+  );
+});
+
+test("findReusableUnresolvedPhaseBoundaryEvent ignores stale and handled boundaries", () => {
+  const state = {
+    ...createPhaseState(),
+    currentPhase: "harden_spec",
+    sessionBoundaryEvents: [
+      createSessionBoundaryEvent({
+        id: "stale-pending",
+        boundaryType: "phase",
+        toPhase: "red_team",
+        status: "pending",
+      }),
+      createSessionBoundaryEvent({
+        id: "handled-current",
+        boundaryType: "phase",
+        toPhase: "harden_spec",
+        status: "created",
+      }),
+      createSessionBoundaryEvent({
+        id: "fallback-current",
+        boundaryType: "phase",
+        toPhase: "harden_spec",
+        status: "fallback_compaction",
+      }),
+    ],
+  };
+
+  assert.equal(findReusableUnresolvedPhaseBoundaryEvent(state), undefined);
+});
+
+test("findReusableUnresolvedPhaseBoundaryEvent handles missing boundary history", () => {
+  assert.equal(
+    findReusableUnresolvedPhaseBoundaryEvent({ currentPhase: "red_team" }),
+    undefined,
+  );
+  assert.equal(findReusableUnresolvedPhaseBoundaryEvent(undefined), undefined);
 });

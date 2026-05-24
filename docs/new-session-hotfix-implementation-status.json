@@ -1,0 +1,337 @@
+{
+  "feature": "new-session-hotfix",
+  "status": "in_progress",
+  "updatedAt": "2026-05-24T23:28:17.434Z",
+  "claimedTaskIds": [],
+  "completedTaskIds": [
+    "T002",
+    "T003",
+    "T004",
+    "T005",
+    "T006",
+    "T008",
+    "T010",
+    "T012"
+  ],
+  "gateResultsByTask": {
+    "T002": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      }
+    ],
+    "T003": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      }
+    ],
+    "T004": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      }
+    ],
+    "T005": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      }
+    ],
+    "T006": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      }
+    ],
+    "T007": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      }
+    ],
+    "T008": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      }
+    ],
+    "T009": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      }
+    ],
+    "T010": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      }
+    ],
+    "T011": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      }
+    ],
+    "T012": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "code": 0,
+        "passed": true,
+        "blocksTransition": false,
+        "killed": false
+      }
+    ]
+  }
+}

@@ -401,6 +401,102 @@ test("command phase transitions, harden pause, and approval use fresh sessions",
   }
 });
 
+test("slash command transitions launch immediately without queued handoffs", async () => {
+  for (const scenario of [
+    {
+      approvalCommand: "approve",
+      expectedPhase: "create_tasks",
+      expectedPrompt: /# ralph-works Phase: Task Creation/,
+    },
+    {
+      approvalCommand: "approve --render-html",
+      expectedPhase: "render_html_optional",
+      expectedPrompt: /# ralph-works Phase: Optional HTML Render/,
+    },
+  ]) {
+    const tempDir = await mkdtemp(
+      path.join(tmpdir(), "ralph-command-boundary-"),
+    );
+    try {
+      const { pi, calls: piCalls } = createFakePi();
+      const { ctx, calls: ctxCalls } = createFreshSessionContext(tempDir);
+      registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+      await runCommand(piCalls, ctx, "start feature-a Build feature A");
+      assert.equal(ctxCalls.newSessions.length, 1, scenario.approvalCommand);
+      assert.equal(piCalls.userMessages.length, 0, scenario.approvalCommand);
+
+      await runCommand(piCalls, ctx, "next");
+      assert.equal(ctxCalls.newSessions.length, 2, scenario.approvalCommand);
+      assert.equal(piCalls.userMessages.length, 0, scenario.approvalCommand);
+      assert.equal(
+        latestPersistedState(piCalls).currentPhase,
+        "red_team",
+        scenario.approvalCommand,
+      );
+
+      await runCommand(piCalls, ctx, "next");
+      await runCommand(piCalls, ctx, "next");
+      assert.equal(ctxCalls.newSessions.length, 4, scenario.approvalCommand);
+      assert.equal(piCalls.userMessages.length, 0, scenario.approvalCommand);
+      assert.equal(
+        latestPersistedState(piCalls).currentPhase,
+        "harden_spec",
+        scenario.approvalCommand,
+      );
+      assert.equal(
+        latestPersistedState(piCalls).phaseStatus,
+        "awaiting_harden_approval",
+        scenario.approvalCommand,
+      );
+      const approvalPauseBoundary =
+        latestPersistedState(piCalls).sessionBoundaryEvents.at(-1);
+      assert.equal(
+        findSessionBoundaryEvent(
+          latestSetupState(ctxCalls),
+          approvalPauseBoundary.id,
+        ).status,
+        "created",
+        scenario.approvalCommand,
+      );
+
+      await runCommand(piCalls, ctx, scenario.approvalCommand);
+      assert.equal(ctxCalls.newSessions.length, 5, scenario.approvalCommand);
+      assert.equal(piCalls.userMessages.length, 0, scenario.approvalCommand);
+      assert.equal(
+        latestPersistedState(piCalls).currentPhase,
+        scenario.expectedPhase,
+        scenario.approvalCommand,
+      );
+      assert.match(
+        String(ctxCalls.replacementUserMessages.at(-1).content),
+        scenario.expectedPrompt,
+        scenario.approvalCommand,
+      );
+      const approvalBoundary =
+        latestPersistedState(piCalls).sessionBoundaryEvents.at(-1);
+      assert.equal(
+        findSessionBoundaryEvent(
+          latestSetupState(ctxCalls),
+          approvalBoundary.id,
+        ).status,
+        "created",
+        scenario.approvalCommand,
+      );
+      assert.equal(ctxCalls.compactions.length, 0, scenario.approvalCommand);
+      assert.equal(
+        piCalls.userMessages.some((message) =>
+          String(message.content).includes("continue-boundary"),
+        ),
+        false,
+        scenario.approvalCommand,
+      );
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("fresh phase boundaries apply phase-specific models through replacement setup only", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-command-boundary-"));
   try {
@@ -1408,6 +1504,12 @@ test("fresh-session regression covers every RalphWorks boundary", async () => {
     assert.equal(
       piCalls.userMessages.some((message) =>
         /# ralph-works Phase/.test(String(message.content)),
+      ),
+      false,
+    );
+    assert.equal(
+      piCalls.userMessages.some((message) =>
+        /\/new\b/.test(String(message.content)),
       ),
       false,
     );

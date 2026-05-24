@@ -5,8 +5,11 @@ import path from "node:path";
 import test from "node:test";
 
 import { registerRalphWorksExtension } from "../src/harness/pi-harness-adapter.js";
+import { RALPH_WORKS_SESSION_BOUNDARY_PLAN_ENTRY_TYPE } from "../src/harness/pi-session-boundary-launcher.js";
 import { RALPH_WORKS_STATE_ENTRY_TYPE } from "../src/harness/pi-state-persistence.js";
+import { RALPH_WORKS_SESSION_BOUNDARY_MESSAGE_TYPE } from "../src/harness/session-boundary-plan.js";
 import { createPhaseState } from "../src/state/phase-state.js";
+import { transitionToPhase } from "../src/state/phase-transitions.js";
 import {
   createSessionBoundaryEvent,
   findSessionBoundaryEvent,
@@ -14,6 +17,9 @@ import {
 
 function createFakePi({
   exec = async () => ({ code: 0, stdout: "ok", stderr: "" }),
+  sendUserMessage = (content, options, calls) => {
+    calls.userMessages.push({ content, options });
+  },
 } = {}) {
   const calls = {
     commands: new Map(),
@@ -22,35 +28,37 @@ function createFakePi({
     appended: [],
     models: [],
     userMessages: [],
+    execs: [],
   };
-
-  return {
-    calls,
-    pi: {
-      on(eventName, handler) {
-        calls.events.set(eventName, handler);
-      },
-      registerCommand(name, options) {
-        calls.commands.set(name, options);
-      },
-      registerTool(definition) {
-        calls.tools.push(definition);
-      },
-      appendEntry(customType, data) {
-        calls.appended.push({ customType, data });
-      },
-      async setModel(model) {
-        calls.models.push(model);
-        return true;
-      },
-      async exec(command, args) {
-        return exec(command, args);
-      },
-      sendUserMessage(content, options) {
-        calls.userMessages.push({ content, options });
-      },
+  const pi = {
+    on(eventName, handler) {
+      calls.events.set(eventName, handler);
+    },
+    registerCommand(name, options) {
+      calls.commands.set(name, options);
+    },
+    registerTool(definition) {
+      calls.tools.push(definition);
+    },
+    appendEntry(customType, data) {
+      calls.appended.push({ customType, data });
+    },
+    async setModel(model) {
+      calls.models.push(model);
+      return true;
+    },
+    async exec(command, args, options) {
+      calls.execs.push({ command, args, options });
+      return exec(command, args, options);
     },
   };
+
+  if (sendUserMessage !== false) {
+    pi.sendUserMessage = (content, options) =>
+      sendUserMessage(content, options, calls);
+  }
+
+  return { calls, pi };
 }
 
 function createWritableSessionManager(
@@ -165,6 +173,26 @@ function latestSetupState(ctxCalls) {
       (entry) =>
         entry.type === "custom" &&
         entry.customType === RALPH_WORKS_STATE_ENTRY_TYPE,
+    )
+    .at(-1)?.data;
+}
+
+function latestSetupBoundaryMessage(ctxCalls) {
+  return ctxCalls.setupEntries
+    .filter(
+      (entry) =>
+        entry.type === "custom_message" &&
+        entry.customType === RALPH_WORKS_SESSION_BOUNDARY_MESSAGE_TYPE,
+    )
+    .at(-1);
+}
+
+function latestSetupBoundaryPlan(ctxCalls) {
+  return ctxCalls.setupEntries
+    .filter(
+      (entry) =>
+        entry.type === "custom" &&
+        entry.customType === RALPH_WORKS_SESSION_BOUNDARY_PLAN_ENTRY_TYPE,
     )
     .at(-1)?.data;
 }
@@ -304,6 +332,565 @@ test("assistant phase markers enqueue an internal boundary command before comman
   }
 });
 
+test("tool transition preserves TUI, model routing, artifacts, and safe continuation", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-handoff-"));
+  try {
+    await writeFile(
+      path.join(tempDir, "model.config.json"),
+      JSON.stringify({
+        phase_models: {
+          red_team: "openai/red-team-model",
+        },
+      }),
+    );
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+    await startPipeline(piCalls, ctx);
+    await piCalls.tools
+      .find((definition) => definition.name === "ralph_works_record_artifact")
+      .execute(
+        "artifact-1",
+        { key: "generated_spec", path: "docs/feature-a-generated-spec.md" },
+        undefined,
+        undefined,
+        ctx,
+      );
+
+    const tool = piCalls.tools.find(
+      (definition) => definition.name === "ralph_works_transition",
+    );
+    const newSessionsBeforeTool = ctxCalls.newSessions.length;
+    const compactionsBeforeTool = ctxCalls.compactions.length;
+    const replacementPromptsBeforeTool =
+      ctxCalls.replacementUserMessages.length;
+
+    await tool.execute("tool-model-artifact", {}, undefined, undefined, ctx);
+
+    const boundary = latestBoundary(piCalls);
+    assert.equal(latestState(piCalls).currentPhase, "red_team");
+    assert.equal(boundary.toPhase, "red_team");
+    assert.equal(boundary.status, "pending");
+    assert.equal(ctxCalls.statuses.at(-1).value, "ralph-works: Red Team Pass");
+    assert.match(ctxCalls.widgets.at(-1).value.join("\n"), /RUNNING/);
+    assert.match(ctxCalls.widgets.at(-1).value.join("\n"), /red-team-model/);
+    assert.equal(ctxCalls.newSessions.length, newSessionsBeforeTool);
+    assert.equal(ctxCalls.compactions.length, compactionsBeforeTool);
+    assert.equal(
+      ctxCalls.replacementUserMessages.length,
+      replacementPromptsBeforeTool,
+    );
+    assert.deepEqual(piCalls.userMessages.at(-1), {
+      content: `/ralph-works continue-boundary ${boundary.id}`,
+      options: { deliverAs: "followUp" },
+    });
+    assert.equal(
+      piCalls.userMessages.every(
+        (message) =>
+          message.content === `/ralph-works continue-boundary ${boundary.id}`,
+      ),
+      true,
+    );
+    assert.equal(
+      piCalls.userMessages.some((message) =>
+        String(message.content).includes("/new"),
+      ),
+      false,
+    );
+
+    await continueBoundary(piCalls, ctx, boundary.id);
+
+    const setupState = latestSetupState(ctxCalls);
+    const plan = latestSetupBoundaryPlan(ctxCalls);
+    assert.equal(ctxCalls.newSessions.length, newSessionsBeforeTool + 1);
+    assert.equal(ctxCalls.compactions.length, compactionsBeforeTool);
+    assert.deepEqual(setupState.artifacts, {
+      generated_spec: "docs/feature-a-generated-spec.md",
+    });
+    assert.deepEqual(plan.selectedModelTarget, {
+      provider: "openai",
+      id: "red-team-model",
+      raw: "openai/red-team-model",
+    });
+    assert.deepEqual(plan.artifactPaths, [
+      { key: "generated_spec", path: "docs/feature-a-generated-spec.md" },
+    ]);
+    assert.deepEqual(plan.resumeContext.artifactPaths, [
+      { key: "generated_spec", path: "docs/feature-a-generated-spec.md" },
+    ]);
+    assert.deepEqual(
+      ctxCalls.setupEntries.find((entry) => entry.type === "model"),
+      { type: "model", provider: "openai", modelId: "red-team-model" },
+    );
+    assert.match(
+      String(ctxCalls.replacementUserMessages.at(-1).content),
+      /# ralph-works Phase: Red Team Pass/,
+    );
+    assert.equal(
+      findSessionBoundaryEvent(setupState, boundary.id).status,
+      "created",
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("tool transition handoff is continued from command context as a fresh session", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-handoff-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+    await startPipeline(piCalls, ctx);
+
+    const tool = piCalls.tools.find(
+      (definition) => definition.name === "ralph_works_transition",
+    );
+    const newSessionsBeforeTool = ctxCalls.newSessions.length;
+    const compactionsBeforeTool = ctxCalls.compactions.length;
+    const replacementPromptsBeforeTool =
+      ctxCalls.replacementUserMessages.length;
+
+    const result = await tool.execute("tool-1", {}, undefined, undefined, ctx);
+
+    const boundary = latestBoundary(piCalls);
+    assert.equal(result.details.state.currentPhase, "red_team");
+    assert.equal(latestState(piCalls).currentPhase, "red_team");
+    assert.equal(boundary.boundaryType, "phase");
+    assert.equal(boundary.status, "pending");
+    assert.equal(boundary.fromPhase, "generate_spec");
+    assert.equal(boundary.toPhase, "red_team");
+    assert.equal(ctxCalls.newSessions.length, newSessionsBeforeTool);
+    assert.equal(ctxCalls.compactions.length, compactionsBeforeTool);
+    assert.equal(
+      ctxCalls.replacementUserMessages.length,
+      replacementPromptsBeforeTool,
+    );
+    assert.deepEqual(piCalls.userMessages.at(-1), {
+      content: `/ralph-works continue-boundary ${boundary.id}`,
+      options: { deliverAs: "followUp" },
+    });
+
+    await continueBoundary(piCalls, ctx, boundary.id);
+
+    assert.equal(ctxCalls.newSessions.length, newSessionsBeforeTool + 1);
+    assert.equal(ctxCalls.compactions.length, compactionsBeforeTool);
+    assert.equal(
+      ctxCalls.replacementUserMessages.length,
+      replacementPromptsBeforeTool + 1,
+    );
+    assert.match(
+      String(ctxCalls.replacementUserMessages.at(-1).content),
+      /# ralph-works Phase: Red Team Pass/,
+    );
+    assert.equal(
+      findSessionBoundaryEvent(latestSetupState(ctxCalls), boundary.id).status,
+      "created",
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("tool transition from harden spec hands off an approval-pause boundary", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-handoff-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+    await startPipeline(piCalls, ctx);
+    await advanceWithCommand(piCalls, ctx, ctxCalls);
+    await advanceWithCommand(piCalls, ctx, ctxCalls);
+    assert.equal(latestState(piCalls).currentPhase, "harden_spec");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
+
+    const tool = piCalls.tools.find(
+      (definition) => definition.name === "ralph_works_transition",
+    );
+    const newSessionsBeforeTool = ctxCalls.newSessions.length;
+    const compactionsBeforeTool = ctxCalls.compactions.length;
+    const messagesBeforeTool = piCalls.userMessages.length;
+    const replacementPromptsBeforeTool =
+      ctxCalls.replacementUserMessages.length;
+
+    const result = await tool.execute(
+      "tool-harden",
+      { renderHtml: true },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    const boundary = latestBoundary(piCalls);
+    assert.equal(result.details.state.currentPhase, "harden_spec");
+    assert.equal(result.details.state.phaseStatus, "awaiting_harden_approval");
+    assert.equal(latestState(piCalls).currentPhase, "harden_spec");
+    assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
+    assert.equal(boundary.boundaryType, "phase");
+    assert.equal(boundary.status, "pending");
+    assert.equal(boundary.fromPhase, "harden_spec");
+    assert.equal(boundary.toPhase, "harden_spec");
+    assert.equal(ctxCalls.newSessions.length, newSessionsBeforeTool);
+    assert.equal(ctxCalls.compactions.length, compactionsBeforeTool);
+    assert.equal(
+      ctxCalls.replacementUserMessages.length,
+      replacementPromptsBeforeTool,
+    );
+    assert.equal(piCalls.userMessages.length, messagesBeforeTool + 1);
+    assert.deepEqual(piCalls.userMessages.at(-1), {
+      content: `/ralph-works continue-boundary ${boundary.id}`,
+      options: { deliverAs: "followUp" },
+    });
+    assert.match(
+      ctxCalls.notifications.at(-1).message,
+      /Approve the hardened spec/,
+    );
+    assert.match(
+      ctxCalls.notifications.at(-1).message,
+      /approve --render-html/,
+    );
+
+    const boundaryCount = latestState(piCalls).sessionBoundaryEvents.length;
+    const repeatedResult = await tool.execute(
+      "tool-harden-repeat",
+      {},
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    assert.equal(repeatedResult.details.state.currentPhase, "harden_spec");
+    assert.equal(
+      repeatedResult.details.state.phaseStatus,
+      "awaiting_harden_approval",
+    );
+    assert.equal(
+      latestState(piCalls).sessionBoundaryEvents.length,
+      boundaryCount,
+    );
+    assert.equal(latestBoundary(piCalls).id, boundary.id);
+    assert.equal(ctxCalls.newSessions.length, newSessionsBeforeTool);
+    assert.equal(ctxCalls.compactions.length, compactionsBeforeTool);
+    assert.equal(piCalls.userMessages.length, messagesBeforeTool + 2);
+    assert.deepEqual(piCalls.userMessages.at(-1), {
+      content: `/ralph-works continue-boundary ${boundary.id}`,
+      options: { deliverAs: "followUp" },
+    });
+    assert.match(ctxCalls.notifications.at(-1).message, /approve/i);
+    assert.match(
+      ctxCalls.notifications.at(-1).message,
+      /approve --render-html/,
+    );
+
+    await continueBoundary(piCalls, ctx, boundary.id);
+
+    assert.equal(ctxCalls.newSessions.length, newSessionsBeforeTool + 1);
+    assert.equal(ctxCalls.compactions.length, compactionsBeforeTool);
+    assert.equal(
+      ctxCalls.replacementUserMessages.length,
+      replacementPromptsBeforeTool,
+    );
+    const approvalMessage = latestSetupBoundaryMessage(ctxCalls);
+    assert.equal(approvalMessage.display, true);
+    assert.equal(approvalMessage.details.nextActionType, "approval_pause");
+    assert.match(approvalMessage.content, /Action required/);
+    assert.match(approvalMessage.content, /\/ralph-works approve\b/);
+    assert.match(
+      approvalMessage.content,
+      /\/ralph-works approve --render-html\b/,
+    );
+    assert.doesNotMatch(
+      String(ctxCalls.replacementUserMessages.at(-1)?.content ?? ""),
+      /# ralph-works Phase: (Task Creation|Optional HTML Render)/,
+    );
+    assert.equal(
+      findSessionBoundaryEvent(latestSetupState(ctxCalls), boundary.id).status,
+      "created",
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("repeated tool transition reuses unresolved phase boundary without rerunning gates", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-handoff-"));
+  try {
+    await writeFile(
+      path.join(tempDir, "gate.config.json"),
+      JSON.stringify({
+        gates: [{ name: "unit_tests", command: "npm test", required: true }],
+        run_after_phase: ["tdd_implement"],
+        fail_behavior: "block_transition",
+      }),
+    );
+
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+    await startPipeline(piCalls, ctx);
+    await advanceWithCommand(piCalls, ctx, ctxCalls);
+    await advanceWithCommand(piCalls, ctx, ctxCalls);
+    await advanceWithCommand(piCalls, ctx, ctxCalls);
+    await piCalls.commands.get("ralph-works").handler("approve", ctx);
+    assert.equal(latestState(piCalls).currentPhase, "create_tasks");
+
+    const tool = piCalls.tools.find(
+      (definition) => definition.name === "ralph_works_transition",
+    );
+    await tool.execute("tool-create-tdd", {}, undefined, undefined, ctx);
+
+    const boundary = latestBoundary(piCalls);
+    const boundaryCount = latestState(piCalls).sessionBoundaryEvents.length;
+    const messagesAfterFirstTool = piCalls.userMessages.length;
+    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
+    assert.equal(boundary.toPhase, "tdd_implement");
+    assert.equal(piCalls.execs.length, 0);
+
+    const result = await tool.execute(
+      "tool-repeat-tdd",
+      {},
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    assert.equal(result.details.state.currentPhase, "tdd_implement");
+    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
+    assert.equal(
+      latestState(piCalls).sessionBoundaryEvents.length,
+      boundaryCount,
+    );
+    assert.equal(latestBoundary(piCalls).id, boundary.id);
+    assert.equal(piCalls.execs.length, 0);
+    assert.equal(piCalls.userMessages.length, messagesAfterFirstTool + 1);
+    assert.deepEqual(piCalls.userMessages.at(-1), {
+      content: `/ralph-works continue-boundary ${boundary.id}`,
+      options: { deliverAs: "followUp" },
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("tool transition from TDD blocks on required gate failure without a boundary", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-handoff-"));
+  try {
+    await writeFile(
+      path.join(tempDir, "gate.config.json"),
+      JSON.stringify({
+        gates: [{ name: "unit_tests", command: "npm test", required: true }],
+        run_after_phase: ["tdd_implement"],
+        fail_behavior: "block_transition",
+      }),
+    );
+
+    const { pi, calls: piCalls } = createFakePi({
+      exec: async () => ({ code: 1, stdout: "", stderr: "failed" }),
+    });
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+    await advanceToTdd(piCalls, ctx, ctxCalls);
+
+    const boundaryCountBeforeTool =
+      latestState(piCalls).sessionBoundaryEvents.length;
+    const messagesBeforeTool = piCalls.userMessages.length;
+    const newSessionsBeforeTool = ctxCalls.newSessions.length;
+    const compactionsBeforeTool = ctxCalls.compactions.length;
+    const tool = piCalls.tools.find(
+      (definition) => definition.name === "ralph_works_transition",
+    );
+
+    const result = await tool.execute(
+      "tool-tdd-gate-fail",
+      {},
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    const state = latestState(piCalls);
+    assert.equal(result.details.state.currentPhase, "tdd_implement");
+    assert.equal(state.currentPhase, "tdd_implement");
+    assert.equal(state.sessionBoundaryEvents.length, boundaryCountBeforeTool);
+    assert.equal(piCalls.userMessages.length, messagesBeforeTool);
+    assert.equal(ctxCalls.newSessions.length, newSessionsBeforeTool);
+    assert.equal(ctxCalls.compactions.length, compactionsBeforeTool);
+    assert.equal(piCalls.execs.length, 1);
+    assert.equal(state.gateResults[0].name, "unit_tests");
+    assert.equal(state.gateResults[0].passed, false);
+    assert.equal(state.gateResults[0].blocksTransition, true);
+    assert.match(ctxCalls.widgets.at(-1).value.join("\n"), /unit_tests/);
+    assert.match(ctxCalls.notifications.at(-1).message, /gates failed/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("tool transition from TDD runs gates once before creating one review boundary", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-handoff-"));
+  try {
+    await writeFile(
+      path.join(tempDir, "gate.config.json"),
+      JSON.stringify({
+        gates: [{ name: "unit_tests", command: "npm test", required: true }],
+        run_after_phase: ["tdd_implement"],
+        fail_behavior: "block_transition",
+      }),
+    );
+
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+    await advanceToTdd(piCalls, ctx, ctxCalls);
+
+    const boundaryCountBeforeTool =
+      latestState(piCalls).sessionBoundaryEvents.length;
+    const execsBeforeTool = piCalls.execs.length;
+    const newSessionsBeforeTool = ctxCalls.newSessions.length;
+    const compactionsBeforeTool = ctxCalls.compactions.length;
+    const tool = piCalls.tools.find(
+      (definition) => definition.name === "ralph_works_transition",
+    );
+
+    const result = await tool.execute(
+      "tool-tdd-gate-pass",
+      {},
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    const state = latestState(piCalls);
+    const boundary = latestBoundary(piCalls);
+    assert.equal(result.details.state.currentPhase, "review");
+    assert.equal(state.currentPhase, "review");
+    assert.equal(
+      state.sessionBoundaryEvents.length,
+      boundaryCountBeforeTool + 1,
+    );
+    assert.equal(boundary.boundaryType, "phase");
+    assert.equal(boundary.status, "pending");
+    assert.equal(boundary.fromPhase, "tdd_implement");
+    assert.equal(boundary.toPhase, "review");
+    assert.equal(piCalls.execs.length, execsBeforeTool + 1);
+    assert.equal(state.gateResults[0].name, "unit_tests");
+    assert.equal(state.gateResults[0].passed, true);
+    assert.equal(ctxCalls.newSessions.length, newSessionsBeforeTool);
+    assert.equal(ctxCalls.compactions.length, compactionsBeforeTool);
+    assert.deepEqual(piCalls.userMessages.at(-1), {
+      content: `/ralph-works continue-boundary ${boundary.id}`,
+      options: { deliverAs: "followUp" },
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("repeated tool transition reports the same manual command when follow-up queueing is unavailable", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-handoff-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi({ sendUserMessage: false });
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+    await startPipeline(piCalls, ctx);
+
+    const tool = piCalls.tools.find(
+      (definition) => definition.name === "ralph_works_transition",
+    );
+    await tool.execute("tool-first", {}, undefined, undefined, ctx);
+
+    const boundary = latestBoundary(piCalls);
+    const boundaryCount = latestState(piCalls).sessionBoundaryEvents.length;
+    const manualCommand = `/ralph-works continue-boundary ${boundary.id}`;
+    assert.equal(latestState(piCalls).currentPhase, "red_team");
+    assert.equal(boundary.status, "followup_failed");
+
+    const result = await tool.execute(
+      "tool-repeat",
+      {},
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    assert.equal(result.details.state.currentPhase, "red_team");
+    assert.equal(latestState(piCalls).currentPhase, "red_team");
+    assert.equal(
+      latestState(piCalls).sessionBoundaryEvents.length,
+      boundaryCount,
+    );
+    assert.equal(latestBoundary(piCalls).id, boundary.id);
+    assert.match(result.content[0].text, new RegExp(manualCommand));
+    assert.match(
+      ctxCalls.notifications.at(-1).message,
+      new RegExp(manualCommand),
+    );
+    assert.equal(piCalls.userMessages.length, 0);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("tool transition ignores unresolved phase boundaries for a different target phase", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-handoff-"));
+  try {
+    const activeState = transitionToPhase(
+      createPhaseState({
+        feature: "feature-a",
+        promptText: "Build feature A",
+        now: () => "2026-05-24T00:00:00.000Z",
+      }),
+      "red_team",
+      {
+        reason: "restored red team",
+        now: () => "2026-05-24T00:00:00.000Z",
+      },
+    );
+    const restoredState = {
+      ...activeState,
+      sessionBoundaryEvents: [
+        createSessionBoundaryEvent({
+          id: "stale-boundary",
+          boundaryType: "phase",
+          reason: "stale generate spec handoff",
+          fromPhase: "start",
+          toPhase: "generate_spec",
+          status: "pending",
+          now: () => "2026-05-24T00:00:00.000Z",
+        }),
+      ],
+    };
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx } = createFakeContext(tempDir, {
+      entries: [stateEntry(restoredState)],
+    });
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+    await piCalls.events.get("session_start")({}, ctx);
+
+    const tool = piCalls.tools.find(
+      (definition) => definition.name === "ralph_works_transition",
+    );
+    const result = await tool.execute(
+      "tool-stale",
+      {},
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    assert.equal(result.details.state.currentPhase, "harden_spec");
+    assert.equal(latestState(piCalls).sessionBoundaryEvents.length, 2);
+    assert.equal(latestBoundary(piCalls).toPhase, "harden_spec");
+    assert.notEqual(latestBoundary(piCalls).id, "stale-boundary");
+    assert.deepEqual(piCalls.userMessages.at(-1), {
+      content: `/ralph-works continue-boundary ${latestBoundary(piCalls).id}`,
+      options: { deliverAs: "followUp" },
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("assistant TDD markers enqueue a task boundary and retries do not duplicate kickoff", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-handoff-"));
   try {
@@ -398,6 +985,104 @@ test("stale boundary launcher commands are ignored with a notification", async (
   }
 });
 
+test("tool handoff follow-up failures are durable and manually continuable after restore", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-handoff-"));
+  try {
+    for (const scenario of [
+      { name: "missing sendUserMessage", sendUserMessage: false },
+      {
+        name: "throwing sendUserMessage",
+        sendUserMessage() {
+          throw new Error("follow-up failed");
+        },
+      },
+    ]) {
+      const { pi, calls: piCalls } = createFakePi({
+        sendUserMessage: scenario.sendUserMessage,
+      });
+      const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+      registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+      await startPipeline(piCalls, ctx);
+      const compactionsBeforeTool = ctxCalls.compactions.length;
+      const tool = piCalls.tools.find(
+        (definition) => definition.name === "ralph_works_transition",
+      );
+
+      const result = await tool.execute(
+        `tool-${scenario.name}`,
+        {},
+        undefined,
+        undefined,
+        ctx,
+      );
+
+      const persistedState = latestState(piCalls);
+      const boundary = latestBoundary(piCalls);
+      const manualCommand = `/ralph-works continue-boundary ${boundary.id}`;
+      assert.equal(
+        result.details.state.currentPhase,
+        "red_team",
+        scenario.name,
+      );
+      assert.equal(persistedState.currentPhase, "red_team", scenario.name);
+      assert.equal(boundary.status, "followup_failed", scenario.name);
+      assert.equal(
+        ctxCalls.compactions.length,
+        compactionsBeforeTool,
+        scenario.name,
+      );
+      assert.equal(piCalls.userMessages.length, 0, scenario.name);
+      assert.match(
+        ctxCalls.notifications.at(-1).message,
+        new RegExp(boundary.id),
+        scenario.name,
+      );
+      assert.match(
+        ctxCalls.notifications.at(-1).message,
+        /\/ralph-works continue-boundary /,
+        scenario.name,
+      );
+      assert.match(
+        result.content[0].text,
+        new RegExp(manualCommand),
+        scenario.name,
+      );
+
+      const { pi: restoredPi, calls: restoredPiCalls } = createFakePi({
+        sendUserMessage: scenario.sendUserMessage,
+      });
+      const { ctx: restoredCtx, calls: restoredCtxCalls } = createFakeContext(
+        tempDir,
+        { entries: [stateEntry(persistedState)] },
+      );
+      registerRalphWorksExtension(restoredPi, {
+        extensionRoot: path.resolve("."),
+      });
+
+      await restoredPiCalls.events.get("session_start")({}, restoredCtx);
+      await continueBoundary(restoredPiCalls, restoredCtx, boundary.id);
+
+      assert.equal(restoredCtxCalls.compactions.length, 0, scenario.name);
+      assert.equal(restoredCtxCalls.newSessions.length, 1, scenario.name);
+      assert.match(
+        String(restoredCtxCalls.replacementUserMessages[0].content),
+        /# ralph-works Phase: Red Team Pass/,
+        scenario.name,
+      );
+      assert.equal(
+        findSessionBoundaryEvent(
+          latestSetupState(restoredCtxCalls),
+          boundary.id,
+        )?.status,
+        "created",
+        scenario.name,
+      );
+    }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("retryable boundary states can be continued after restore", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-handoff-"));
   try {
@@ -458,6 +1143,63 @@ test("completed boundary states stay stale and do not duplicate prompts", async 
       assert.match(ctxCalls.notifications.at(-1).message, /stale|handled/i);
       assert.match(ctxCalls.notifications.at(-1).message, new RegExp(status));
     }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("explicit review change-request markers use assistant handoff", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-handoff-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+    await advanceToReview(piCalls, ctx, ctxCalls);
+
+    const newSessionsBeforeMarker = ctxCalls.newSessions.length;
+    const compactionsBeforeMarker = ctxCalls.compactions.length;
+    const messagesBeforeMarker = piCalls.userMessages.length;
+
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      [
+        "Please address the review findings.",
+        "RALPH_REVIEW_CHANGES_REQUESTED",
+      ].join("\n"),
+    );
+
+    const boundary = latestBoundary(piCalls);
+    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
+    assert.equal(latestState(piCalls).loopbackCount, 1);
+    assert.equal(boundary.boundaryType, "phase");
+    assert.equal(boundary.reason, "review requested changes");
+    assert.equal(boundary.fromPhase, "review");
+    assert.equal(boundary.toPhase, "tdd_implement");
+    assert.match(boundary.reviewFeedback, /Please address/);
+    assert.doesNotMatch(
+      boundary.reviewFeedback,
+      /RALPH_REVIEW_CHANGES_REQUESTED/,
+    );
+    assert.equal(ctxCalls.newSessions.length, newSessionsBeforeMarker);
+    assert.equal(ctxCalls.compactions.length, compactionsBeforeMarker);
+    assert.equal(piCalls.userMessages.length, messagesBeforeMarker + 1);
+    assert.deepEqual(piCalls.userMessages.at(-1), {
+      content: `/ralph-works continue-boundary ${boundary.id}`,
+      options: { deliverAs: "followUp" },
+    });
+
+    await continueBoundary(piCalls, ctx, boundary.id);
+
+    assert.equal(ctxCalls.newSessions.length, newSessionsBeforeMarker + 1);
+    assert.match(
+      String(ctxCalls.replacementUserMessages.at(-1).content),
+      /Review requested changes/,
+    );
+    assert.match(
+      String(ctxCalls.replacementUserMessages.at(-1).content),
+      /# ralph-works Phase: Red-Green TDD Implement/,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
