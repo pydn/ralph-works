@@ -278,6 +278,7 @@ test("harden spec completion pauses for explicit user approval", async () => {
     assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
     assert.equal(piCalls.userMessages.length, messagesBeforeHardenCompletion);
     assert.match(ctxCalls.notifications.at(-1).message, /Approve the hardened spec/);
+    assert.match(ctxCalls.notifications.at(-1).message, /approve --render-html/);
 
     await piCalls.commands.get("ralph-works").handler("approve", ctx);
     await completeLatestCompaction(ctxCalls);
@@ -315,6 +316,38 @@ test("ralph-works approve is the only command that advances from harden spec", a
   }
 });
 
+test("ralph-works approve can enter optional HTML render before task creation", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await startPipeline(piCalls, ctx);
+    await finishAssistantTurn(piCalls, ctx, "Spec complete.\nRALPH_PHASE_COMPLETE");
+    await completeLatestCompaction(ctxCalls);
+    await finishAssistantTurn(piCalls, ctx, "Red team complete.\nRALPH_PHASE_COMPLETE");
+    await completeLatestCompaction(ctxCalls);
+    await finishAssistantTurn(piCalls, ctx, "Hardened spec complete.\nRALPH_PHASE_COMPLETE");
+    assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
+
+    const messagesBeforeApprove = piCalls.userMessages.length;
+
+    await piCalls.commands.get("ralph-works").handler("approve --render-html", ctx);
+
+    assert.equal(latestState(piCalls).currentPhase, "render_html_optional");
+    assert.equal(piCalls.userMessages.length, messagesBeforeApprove);
+
+    await completeLatestCompaction(ctxCalls);
+
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Optional HTML Render/);
+    assert.match(String(piCalls.userMessages.at(-1).content), /docs\/feature-a-hardened-spec\.html/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("ralph-works next from harden spec pauses for explicit approval", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
@@ -331,6 +364,7 @@ test("ralph-works next from harden spec pauses for explicit approval", async () 
     assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
     assert.equal(piCalls.userMessages.length, messagesBeforeNext);
     assert.match(ctxCalls.notifications.at(-1).message, /Approve the hardened spec/);
+    assert.match(ctxCalls.notifications.at(-1).message, /approve --render-html/);
 
     await piCalls.commands.get("ralph-works").handler("next", ctx);
 
@@ -338,6 +372,7 @@ test("ralph-works next from harden spec pauses for explicit approval", async () 
     assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
     assert.equal(piCalls.userMessages.length, messagesBeforeNext);
     assert.match(ctxCalls.notifications.at(-1).message, /approve/i);
+    assert.match(ctxCalls.notifications.at(-1).message, /approve --render-html/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

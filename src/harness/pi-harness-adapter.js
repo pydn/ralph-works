@@ -41,6 +41,8 @@ import { updateRalphWorksTui } from "./pi-tui-updater.js";
 const DEFAULT_EXTENSION_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const NO_ACTIVE_PIPELINE_MESSAGE =
   "No active ralph-works pipeline. Start one with /ralph-works start <feature> [prompt].";
+const HARDEN_APPROVAL_MESSAGE =
+  "Approve the hardened spec with /ralph-works approve to continue to implementation planning, or /ralph-works approve --render-html to render HTML first.";
 const HELP_MESSAGE = [
   "Commands:",
   "/ralph-works start <feature> [prompt]",
@@ -52,6 +54,7 @@ const HELP_MESSAGE = [
   "/ralph-works artifact <key> <path>",
   "/ralph-works loopback [reason]",
   "/ralph-works approve",
+  "/ralph-works approve --render-html",
   "/ralph-works reset",
   "/ralph-works help",
 ].join("\n");
@@ -170,7 +173,7 @@ export function registerRalphWorksExtension(
 
     if (state.phaseStatus === HARDEN_APPROVAL_STATUS) {
       ctx.ui?.notify?.(
-        "Hardened spec is waiting for approval. Run /ralph-works approve before implementation planning continues.",
+        `Hardened spec is waiting for approval. ${HARDEN_APPROVAL_MESSAGE}`,
         "warning",
       );
       return state;
@@ -193,7 +196,7 @@ export function registerRalphWorksExtension(
       "hardened spec awaiting approval",
     );
     ctx.ui?.notify?.(
-      "Approve the hardened spec with /ralph-works approve before implementation planning continues.",
+      HARDEN_APPROVAL_MESSAGE,
       "warning",
     );
     return state;
@@ -469,12 +472,13 @@ export function registerRalphWorksExtension(
     }
   }
 
-  async function approveHardenedSpec(ctx) {
+  async function approveHardenedSpec(ctx, commandArgs = []) {
     if (state?.currentPhase !== "harden_spec") {
       return false;
     }
 
     const nextState = advancePhase(state, {
+      renderHtml: commandArgs.includes("--render-html"),
       reason: "hardened spec approved",
     });
     await enterPhase(ctx, nextState, {
@@ -523,7 +527,7 @@ export function registerRalphWorksExtension(
         notifyNoActivePipeline(ctx);
         return;
       }
-      if (await approveHardenedSpec(ctx)) {
+      if (await approveHardenedSpec(ctx, commandArgs)) {
         return;
       }
       if (state.currentPhase === "review") {
@@ -584,6 +588,7 @@ export function registerRalphWorksExtension(
         "artifact",
         "loopback",
         "approve",
+        "approve --render-html",
         "reset",
         "help",
       ];
