@@ -61,14 +61,14 @@ export function buildCompactionSummary(
   return lines.join("\n");
 }
 
-export function recordCompactionEvent(
+export function recordFallbackCompactionEvent(
   state,
   { boundary, reason, now = () => new Date().toISOString() } = {},
 ) {
   return {
     ...state,
     compactionEvents: [
-      ...state.compactionEvents,
+      ...(Array.isArray(state.compactionEvents) ? state.compactionEvents : []),
       {
         boundary,
         reason,
@@ -76,4 +76,8 @@ export function recordCompactionEvent(
       },
     ],
   };
+}
+
+export function recordCompactionEvent(state, options) {
+  return recordFallbackCompactionEvent(state, options);
 }

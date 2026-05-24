@@ -1,8 +1,7 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordArtifact } from "../artifacts/artifact-tracker.js";
-import { recordCompactionEvent } from "../artifacts/compaction-summary.js";
 import { requiredGatesPassed } from "../gates/gate-result.js";
 import { buildPhasePrompt } from "../prompts/phase-prompt-builder.js";
 import {
@@ -14,25 +13,38 @@ import {
 } from "../state/phase-completion.js";
 import { createPhaseState } from "../state/phase-state.js";
 import { advancePhase, transitionToPhase } from "../state/phase-transitions.js";
+import {
+  appendSessionBoundaryEvent,
+  createSessionBoundaryEvent,
+  findPendingSessionBoundaryEvent,
+  findSessionBoundaryEvent,
+} from "../state/session-boundaries.js";
 import { parseTaskList } from "../tasks/task-list-loader.js";
 import { selectNextTask } from "../tasks/task-selector.js";
 import {
+  buildImplementationStatusDocument,
   createImplementationStatus,
   markTaskComplete,
 } from "../tasks/task-status-updater.js";
 import { splitCommandArgs } from "./pi-argument-parser.js";
-import { triggerRalphWorksCompaction } from "./pi-compaction-trigger.js";
 import { runPiConfiguredGates } from "./pi-gate-runner.js";
 import {
+  applyModelTargetToCurrentSession,
   getActivePhaseModelName,
-  routeModelForCurrentPhase,
+  resolveModelTargetForCurrentPhase,
 } from "./pi-model-router.js";
+import { launchPiSessionBoundary } from "./pi-session-boundary-launcher.js";
 import {
   persistRalphWorksState,
   restoreRalphWorksState,
 } from "./pi-state-persistence.js";
 import { createToolResult } from "./pi-tool-result.js";
 import { updateRalphWorksTui } from "./pi-tui-updater.js";
+import { formatSessionBoundaryDiagnostic } from "./session-boundary-diagnostics.js";
+import {
+  buildSessionBoundaryPlan,
+  normalizeReviewFeedback,
+} from "./session-boundary-plan.js";
 
 const DEFAULT_EXTENSION_ROOT = fileURLToPath(
   new URL("../../", import.meta.url),
@@ -41,6 +53,7 @@ const NO_ACTIVE_PIPELINE_MESSAGE =
   "No active ralph-works pipeline. Start one with /ralph-works start <feature> [prompt].";
 const HARDEN_APPROVAL_MESSAGE =
   "Approve the hardened spec with /ralph-works approve to continue to implementation planning, or /ralph-works approve --render-html to render HTML first.";
+const CONTINUE_BOUNDARY_COMMAND = "continue-boundary";
 const HELP_MESSAGE = [
   "Commands:",
   "/ralph-works start <feature> [prompt]",
@@ -88,12 +101,81 @@ function readTaskList(ctx, workflowState) {
   }
 }
 
+function phaseArtifactPath(workflowState, phaseId) {
+  return workflowState.phases.find((phase) => phase.id === phaseId)
+    ?.artifactPath;
+}
+
+function implementationStatusArtifactPath(workflowState) {
+  return phaseArtifactPath(workflowState, "tdd_implement");
+}
+
+function ensureImplementationStatusArtifact(workflowState) {
+  const artifactPath = implementationStatusArtifactPath(workflowState);
+  if (!artifactPath) {
+    return workflowState;
+  }
+
+  if (workflowState.artifacts?.implementationStatus === artifactPath) {
+    return workflowState;
+  }
+
+  return recordArtifact(workflowState, "implementationStatus", artifactPath);
+}
+
+function readJsonDocument(absolutePath) {
+  try {
+    return JSON.parse(readFileSync(absolutePath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeImplementationStatusArtifact(ctx, workflowState, status) {
+  const artifactPath = implementationStatusArtifactPath(workflowState);
+  if (!artifactPath) {
+    return workflowState;
+  }
+
+  const absolutePath = path.resolve(ctx.cwd ?? process.cwd(), artifactPath);
+  const document = buildImplementationStatusDocument(status, {
+    feature: workflowState.feature,
+    workflowStatus:
+      workflowState.pipelineStatus === "completed"
+        ? "completed"
+        : "in_progress",
+    previous: readJsonDocument(absolutePath),
+  });
+
+  mkdirSync(path.dirname(absolutePath), { recursive: true });
+  writeFileSync(absolutePath, `${JSON.stringify(document, null, 2)}\n`);
+
+  return {
+    ...ensureImplementationStatusArtifact(workflowState),
+    implementationStatus: document,
+  };
+}
+
 export function registerRalphWorksExtension(
   pi,
   { extensionRoot = DEFAULT_EXTENSION_ROOT } = {},
 ) {
   let state;
   let implementationStatus = createImplementationStatus();
+  let boundarySequence = 0;
+
+  function createBoundaryId(boundaryType, phaseId) {
+    boundarySequence += 1;
+    const safePhaseId = String(phaseId ?? "workflow").replace(
+      /[^a-zA-Z0-9_-]+/g,
+      "-",
+    );
+    return `rw-${boundaryType}-${safePhaseId}-${boundarySequence}`;
+  }
+
+  function buildContinueBoundaryCommand(boundaryId) {
+    return `/ralph-works ${CONTINUE_BOUNDARY_COMMAND} ${boundaryId}`;
+  }
 
   function notifyNoActivePipeline(ctx) {
     ctx.ui?.notify?.(NO_ACTIVE_PIPELINE_MESSAGE, "info");
@@ -114,64 +196,314 @@ export function registerRalphWorksExtension(
     return state;
   }
 
-  async function launchCurrentPhase(ctx, { prefixText, delivery } = {}) {
-    if (!state) {
-      return undefined;
+  function enqueueBoundaryLauncher(ctx, boundaryId) {
+    if (typeof pi.sendUserMessage !== "function") {
+      ctx.ui?.notify?.(
+        `ralph-works could not enqueue boundary launcher ${boundaryId}; follow-up messages are unavailable.`,
+        "error",
+      );
+      return false;
     }
 
-    const activeModel = await routeModelForCurrentPhase(pi, ctx, state);
-    state = {
-      ...state,
-      pipelineStatus: "running",
-      phaseStatus: "executing",
-    };
-    persistRalphWorksState(pi, state);
-    updateRalphWorksTui(ctx, state, activeModel);
+    pi.sendUserMessage(buildContinueBoundaryCommand(boundaryId), {
+      deliverAs: "followUp",
+    });
+    return true;
+  }
 
-    const prompt = buildPhasePrompt(state, { extensionRoot });
-    const content = prefixText ? `${prefixText}\n\n${prompt}` : prompt;
-    pi.sendUserMessage?.(
-      content,
-      delivery ? { deliverAs: delivery } : undefined,
+  async function persistAndEnqueueBoundary(
+    ctx,
+    nextState,
+    {
+      boundaryType,
+      reason,
+      fromPhase,
+      toPhase,
+      taskId,
+      nextTaskId,
+      reviewFeedback,
+    } = {},
+  ) {
+    const boundaryState =
+      nextState.currentPhase === "tdd_implement"
+        ? ensureImplementationStatusArtifact(nextState)
+        : nextState;
+    const boundaryId = createBoundaryId(
+      boundaryType,
+      boundaryState.currentPhase,
     );
+    const boundaryEvent = createSessionBoundaryEvent({
+      id: boundaryId,
+      boundaryType,
+      reason,
+      fromPhase,
+      toPhase,
+      taskId,
+      nextTaskId,
+      reviewFeedback,
+    });
+    state = appendSessionBoundaryEvent(boundaryState, boundaryEvent);
+    persistRalphWorksState(pi, state);
+    updateRalphWorksTui(ctx, state, await getActivePhaseModelName(ctx, state));
+    enqueueBoundaryLauncher(ctx, boundaryId);
     return state;
   }
 
-  async function enterPhase(ctx, nextState, { reason, prefixText } = {}) {
-    state = recordCompactionEvent(nextState, {
-      boundary: "phase",
-      reason,
-    });
-    persistRalphWorksState(pi, state);
-    updateRalphWorksTui(ctx, state, await getActivePhaseModelName(ctx, state));
+  function promptWithOptionalPrefix(prompt, prefixText) {
+    if (!prompt) {
+      return undefined;
+    }
+    return prefixText ? `${prefixText}\n\n${prompt}` : prompt;
+  }
 
-    let launched = false;
-    const launchAfterCompaction = async () => {
-      if (launched) {
-        return state;
-      }
-      launched = true;
-      return launchCurrentPhase(ctx, {
-        prefixText,
-        delivery: "followUp",
-      });
-    };
+  function reviewLoopbackPrefix(reviewFeedback) {
+    const lines = ["Review requested changes; return to TDD implementation."];
+    if (reviewFeedback) {
+      lines.push("", "Review context:", reviewFeedback);
+    }
+    return lines.join("\n");
+  }
 
-    const compactStarted = triggerRalphWorksCompaction(
-      ctx,
-      state,
-      "phase",
-      reason,
-      {
-        onComplete: launchAfterCompaction,
-        onError: launchAfterCompaction,
-      },
-    );
-    if (!compactStarted) {
-      return launchAfterCompaction();
+  function selectNextTddTask(ctx, workflowState) {
+    const tasks = readTaskList(ctx, workflowState);
+    return tasks.length > 0
+      ? selectNextTask(tasks, implementationStatus)
+      : undefined;
+  }
+
+  function resolveBoundaryAction(ctx, boundaryEvent) {
+    if (
+      state?.pipelineStatus === "completed" ||
+      state?.currentPhase === "complete"
+    ) {
+      return { nextActionType: "completion" };
     }
 
+    if (
+      state?.currentPhase === "harden_spec" &&
+      state?.phaseStatus === HARDEN_APPROVAL_STATUS
+    ) {
+      return { nextActionType: "approval_pause" };
+    }
+
+    const phasePrompt = buildPhasePrompt(state, { extensionRoot });
+
+    if (boundaryEvent.boundaryType === "task") {
+      const task = selectNextTddTask(ctx, state);
+      return {
+        nextActionType: "tdd_task_prompt",
+        kickoffPrompt: promptWithOptionalPrefix(
+          phasePrompt,
+          "Continue TDD implementation with the next incomplete task.",
+        ),
+        task,
+      };
+    }
+
+    if (
+      state.currentPhase === "tdd_implement" &&
+      boundaryEvent.reason === "review requested changes"
+    ) {
+      const reviewFeedback = normalizeReviewFeedback(
+        boundaryEvent.reviewFeedback,
+      );
+      return {
+        nextActionType: "review_loopback",
+        kickoffPrompt: promptWithOptionalPrefix(
+          phasePrompt,
+          reviewLoopbackPrefix(reviewFeedback),
+        ),
+        task: selectNextTddTask(ctx, state),
+        reviewFeedback,
+      };
+    }
+
+    return {
+      nextActionType: "phase_prompt",
+      kickoffPrompt: phasePrompt,
+    };
+  }
+
+  function persistBoundaryLaunchState(boundaryId, nextState) {
+    state = nextState;
+    const boundaryEvent = findSessionBoundaryEvent(state, boundaryId);
+    if (!boundaryEvent?.freshSessionCreated) {
+      persistRalphWorksState(pi, state);
+    }
+  }
+
+  async function continueBoundary(ctx, boundaryId) {
+    if (!state) {
+      state = restoreRalphWorksState(ctx);
+      implementationStatus =
+        state?.implementationStatus ?? createImplementationStatus();
+    }
+    if (!state) {
+      notifyNoActivePipeline(ctx);
+      return undefined;
+    }
+
+    const boundaryEvent = findSessionBoundaryEvent(state, boundaryId);
+    const pendingBoundary = findPendingSessionBoundaryEvent(state, boundaryId);
+    if (!pendingBoundary) {
+      ctx.ui?.notify?.(
+        `ralph-works ${formatSessionBoundaryDiagnostic({
+          boundaryId,
+          reason: boundaryEvent?.reason ?? "no matching pending boundary",
+        })} is stale, already handled, or not retryable.`,
+        "info",
+      );
+      return state;
+    }
+
+    const action = resolveBoundaryAction(ctx, pendingBoundary);
+    const selectedModelTarget = action.kickoffPrompt
+      ? await resolveModelTargetForCurrentPhase(ctx, state)
+      : undefined;
+    const activeModel =
+      selectedModelTarget?.raw ?? (await getActivePhaseModelName(ctx, state));
+    const plan = buildSessionBoundaryPlan(state, {
+      boundaryId: pendingBoundary.id,
+      boundaryType: pendingBoundary.boundaryType,
+      reason: pendingBoundary.reason,
+      nextActionType: action.nextActionType,
+      kickoffPrompt: action.kickoffPrompt,
+      selectedModelTarget,
+      task: action.task,
+      gateResults: state.gateResults,
+      reviewFeedback: action.reviewFeedback,
+    });
+
+    const result = await launchPiSessionBoundary(ctx, state, plan, {
+      onStateChange(nextState) {
+        persistBoundaryLaunchState(pendingBoundary.id, nextState);
+      },
+      async sendFallbackPrompt(content, options) {
+        pi.sendUserMessage?.(content, options);
+      },
+      async applyFallbackModel() {
+        await applyModelTargetToCurrentSession(pi, ctx, selectedModelTarget);
+      },
+      async onReplacementReady(replacementCtx, replacementState) {
+        updateRalphWorksTui(replacementCtx, replacementState, activeModel);
+      },
+    });
+    state = result.state;
+    if (!result.freshSessionCreated) {
+      persistRalphWorksState(pi, state);
+    }
     return state;
+  }
+
+  function buildBoundaryAction(ctx, boundaryEvent, { prefixText } = {}) {
+    const action = resolveBoundaryAction(ctx, boundaryEvent);
+    return {
+      ...action,
+      kickoffPrompt: promptWithOptionalPrefix(action.kickoffPrompt, prefixText),
+    };
+  }
+
+  async function launchSessionBoundary(
+    ctx,
+    nextState,
+    {
+      boundaryType,
+      reason,
+      fromPhase,
+      toPhase,
+      taskId,
+      nextTaskId,
+      reviewFeedback,
+    } = {},
+    { prefixText } = {},
+  ) {
+    const boundaryState =
+      nextState.currentPhase === "tdd_implement"
+        ? ensureImplementationStatusArtifact(nextState)
+        : nextState;
+    const boundaryId = createBoundaryId(
+      boundaryType,
+      boundaryState.currentPhase,
+    );
+    const boundaryEvent = createSessionBoundaryEvent({
+      id: boundaryId,
+      boundaryType,
+      reason,
+      fromPhase,
+      toPhase,
+      taskId,
+      nextTaskId,
+      reviewFeedback,
+    });
+    state = appendSessionBoundaryEvent(boundaryState, boundaryEvent);
+    const action = buildBoundaryAction(ctx, boundaryEvent, { prefixText });
+    const selectedModelTarget = action.kickoffPrompt
+      ? await resolveModelTargetForCurrentPhase(ctx, state)
+      : undefined;
+    const activeModel =
+      selectedModelTarget?.raw ?? (await getActivePhaseModelName(ctx, state));
+    persistRalphWorksState(pi, state);
+    updateRalphWorksTui(ctx, state, activeModel);
+
+    const plan = buildSessionBoundaryPlan(state, {
+      boundaryId,
+      boundaryType,
+      reason,
+      nextActionType: action.nextActionType,
+      kickoffPrompt: action.kickoffPrompt,
+      selectedModelTarget,
+      task: action.task,
+      gateResults: state.gateResults,
+      reviewFeedback: action.reviewFeedback,
+    });
+
+    const result = await launchPiSessionBoundary(ctx, state, plan, {
+      onStateChange(nextState) {
+        persistBoundaryLaunchState(boundaryId, nextState);
+      },
+      async sendFallbackPrompt(content, options) {
+        pi.sendUserMessage?.(content, options);
+      },
+      async applyFallbackModel() {
+        await applyModelTargetToCurrentSession(pi, ctx, selectedModelTarget);
+      },
+      async onReplacementReady(replacementCtx, replacementState) {
+        updateRalphWorksTui(replacementCtx, replacementState, activeModel);
+      },
+    });
+    state = result.state;
+    if (!result.freshSessionCreated) {
+      persistRalphWorksState(pi, state);
+    }
+    return state;
+  }
+
+  function getLatestTransition(nextState) {
+    return Array.isArray(nextState.transitionHistory)
+      ? nextState.transitionHistory.at(-1)
+      : undefined;
+  }
+
+  async function enterPhase(ctx, nextState, { reason, prefixText } = {}) {
+    const transition = getLatestTransition(nextState);
+    const phaseEntryState = {
+      ...nextState,
+      pipelineStatus: "running",
+      phaseStatus: "executing",
+    };
+    return launchSessionBoundary(
+      ctx,
+      nextState.currentPhase === "tdd_implement"
+        ? ensureImplementationStatusArtifact(phaseEntryState)
+        : phaseEntryState,
+      {
+        boundaryType: "phase",
+        reason,
+        fromPhase: transition?.from,
+        toPhase: nextState.currentPhase,
+      },
+      { prefixText },
+    );
   }
 
   async function pauseForHardenApproval(ctx) {
@@ -187,27 +519,20 @@ export function registerRalphWorksExtension(
       return state;
     }
 
-    state = recordCompactionEvent(state, {
-      boundary: "phase",
-      reason: "hardened spec awaiting approval",
-    });
-    state = {
-      ...state,
-      phaseStatus: HARDEN_APPROVAL_STATUS,
-    };
-    persistRalphWorksState(pi, state);
-    updateRalphWorksTui(ctx, state, await getActivePhaseModelName(ctx, state));
-    triggerRalphWorksCompaction(
+    notifyHardenApproval(ctx);
+    return launchSessionBoundary(
       ctx,
-      state,
-      "phase",
-      "hardened spec awaiting approval",
       {
-        onComplete: () => notifyHardenApproval(ctx),
+        ...state,
+        phaseStatus: HARDEN_APPROVAL_STATUS,
+      },
+      {
+        boundaryType: "phase",
+        reason: "hardened spec awaiting approval",
+        fromPhase: "harden_spec",
+        toPhase: "harden_spec",
       },
     );
-    notifyHardenApproval(ctx);
-    return state;
   }
 
   async function advanceToNextPhase(ctx, commandArgs, reason) {
@@ -217,6 +542,13 @@ export function registerRalphWorksExtension(
 
     if (state.currentPhase === "harden_spec") {
       return pauseForHardenApproval(ctx);
+    }
+
+    if (
+      state.currentPhase === "tdd_implement" &&
+      !(await runReviewAdvancementGates(ctx))
+    ) {
+      return state;
     }
 
     const nextState = advancePhase(state, {
@@ -247,27 +579,46 @@ export function registerRalphWorksExtension(
       promptText: promptParts.join(" ") || undefined,
     });
     implementationStatus = createImplementationStatus();
-    return launchCurrentPhase(ctx);
+    return launchSessionBoundary(ctx, state, {
+      boundaryType: "phase",
+      reason: "start",
+      toPhase: state.currentPhase,
+    });
   }
 
-  async function completePipeline(ctx, reason) {
+  async function completePipeline(ctx, reason, { handoff = false } = {}) {
     if (!state) {
       return undefined;
     }
 
-    state =
+    const fromPhase = state.currentPhase;
+    const completedState =
       state.currentPhase === "complete"
         ? state
         : transitionToPhase(state, "complete", { reason });
-    state = {
-      ...state,
+    const nextState = {
+      ...completedState,
       pipelineStatus: "completed",
       phaseStatus: "post_hook",
     };
-    persistRalphWorksState(pi, state);
-    updateRalphWorksTui(ctx, state, await getActivePhaseModelName(ctx, state));
+
+    if (handoff) {
+      ctx.ui?.notify?.("ralph-works pipeline complete.", "info");
+      return persistAndEnqueueBoundary(ctx, nextState, {
+        boundaryType: "phase",
+        reason,
+        fromPhase,
+        toPhase: "complete",
+      });
+    }
+
     ctx.ui?.notify?.("ralph-works pipeline complete.", "info");
-    return state;
+    return launchSessionBoundary(ctx, nextState, {
+      boundaryType: "phase",
+      reason,
+      fromPhase,
+      toPhase: "complete",
+    });
   }
 
   async function advanceWorkflow(ctx, commandArgs) {
@@ -308,7 +659,23 @@ export function registerRalphWorksExtension(
     return gateResults;
   }
 
-  async function continueAfterTddTaskCompaction(ctx) {
+  async function runReviewAdvancementGates(ctx) {
+    const gateResults = await runGates(ctx);
+    if (!requiredGatesPassed(gateResults)) {
+      ctx.ui?.notify?.(
+        "ralph-works gates failed; review phase will not start.",
+        "error",
+      );
+      return false;
+    }
+    return true;
+  }
+
+  async function continueAfterCompletedTddTask(
+    ctx,
+    taskId,
+    { handoff = false } = {},
+  ) {
     if (!state || state.currentPhase !== "tdd_implement") {
       return state;
     }
@@ -320,22 +687,35 @@ export function registerRalphWorksExtension(
         : undefined;
 
     if (tasks.length === 0 || nextTask) {
-      return launchCurrentPhase(ctx, {
-        prefixText:
-          "Continue TDD implementation with the next incomplete task.",
-        delivery: "followUp",
-      });
+      const boundary = {
+        boundaryType: "task",
+        reason: `completed ${taskId}`,
+        fromPhase: "tdd_implement",
+        taskId,
+        nextTaskId: nextTask?.id,
+      };
+      return handoff
+        ? persistAndEnqueueBoundary(ctx, state, boundary)
+        : launchSessionBoundary(ctx, state, boundary);
     }
 
+    const fromPhase = state.currentPhase;
     const nextState = advancePhase(state, {
       reason: "completed tdd_implement",
     });
-    return enterPhase(ctx, nextState, {
+    const boundary = {
+      boundaryType: "phase",
       reason: `entered ${nextState.currentPhase}`,
-    });
+      fromPhase,
+      toPhase: nextState.currentPhase,
+      taskId,
+    };
+    return handoff
+      ? persistAndEnqueueBoundary(ctx, nextState, boundary)
+      : launchSessionBoundary(ctx, nextState, boundary);
   }
 
-  async function completeTddTask(ctx, taskId) {
+  async function completeTddTask(ctx, taskId, { handoff = false } = {}) {
     if (!state) {
       notifyNoActivePipeline(ctx);
       return undefined;
@@ -353,40 +733,20 @@ export function registerRalphWorksExtension(
     implementationStatus = markTaskComplete(implementationStatus, taskId, {
       gateResults,
     });
-    state = {
-      ...state,
-      tddCompletedTasks: state.tddCompletedTasks + 1,
-      implementationStatus,
-    };
-    state = recordCompactionEvent(state, {
-      boundary: "task",
-      reason: `completed ${taskId}`,
-    });
-    persistRalphWorksState(pi, state);
-    await showStatus(ctx);
-
-    let continued = false;
-    const continueOnce = async () => {
-      if (continued) {
-        return state;
-      }
-      continued = true;
-      return continueAfterTddTaskCompaction(ctx);
-    };
-    const compactStarted = triggerRalphWorksCompaction(
+    state = writeImplementationStatusArtifact(
       ctx,
-      state,
-      "task",
-      `completed ${taskId}`,
       {
-        onComplete: continueOnce,
-        onError: continueOnce,
+        ...state,
+        tddCompletedTasks: state.tddCompletedTasks + 1,
+        implementationStatus,
       },
+      implementationStatus,
     );
-    if (!compactStarted) {
-      return continueOnce();
-    }
-    return state;
+    implementationStatus = state.implementationStatus ?? implementationStatus;
+    persistRalphWorksState(pi, state);
+    updateRalphWorksTui(ctx, state, await getActivePhaseModelName(ctx, state));
+
+    return continueAfterCompletedTddTask(ctx, taskId, { handoff });
   }
 
   async function handlePhaseCompleteSignal(ctx) {
@@ -395,7 +755,7 @@ export function registerRalphWorksExtension(
     }
 
     if (state.currentPhase === "complete") {
-      return completePipeline(ctx, "LGTM");
+      return completePipeline(ctx, "LGTM", { handoff: true });
     }
 
     if (state.currentPhase === "review") {
@@ -407,35 +767,43 @@ export function registerRalphWorksExtension(
     }
 
     if (state.currentPhase === "harden_spec") {
-      return pauseForHardenApproval(ctx);
-    }
-
-    if (state.currentPhase === "tdd_implement") {
-      const gateResults = await runPiConfiguredGates(pi, ctx);
-      state = {
-        ...state,
-        gateResults,
-      };
-      persistRalphWorksState(pi, state);
-      updateRalphWorksTui(
-        ctx,
-        state,
-        await getActivePhaseModelName(ctx, state),
-      );
-      if (!requiredGatesPassed(gateResults)) {
-        ctx.ui?.notify?.(
-          "ralph-works gates failed; review phase will not start.",
-          "error",
+      if (state.phaseStatus === HARDEN_APPROVAL_STATUS) {
+        notifyHardenApproval(
+          ctx,
+          `Hardened spec is waiting for approval. ${HARDEN_APPROVAL_MESSAGE}`,
         );
         return state;
       }
+
+      const nextState = {
+        ...state,
+        phaseStatus: HARDEN_APPROVAL_STATUS,
+      };
+      notifyHardenApproval(ctx);
+      return persistAndEnqueueBoundary(ctx, nextState, {
+        boundaryType: "phase",
+        reason: "hardened spec awaiting approval",
+        fromPhase: "harden_spec",
+        toPhase: "harden_spec",
+      });
     }
 
+    if (
+      state.currentPhase === "tdd_implement" &&
+      !(await runReviewAdvancementGates(ctx))
+    ) {
+      return state;
+    }
+
+    const fromPhase = state.currentPhase;
     const nextState = advancePhase(state, {
       reason: `completed ${state.currentPhase}`,
     });
-    return enterPhase(ctx, nextState, {
+    return persistAndEnqueueBoundary(ctx, nextState, {
+      boundaryType: "phase",
       reason: `entered ${nextState.currentPhase}`,
+      fromPhase,
+      toPhase: nextState.currentPhase,
     });
   }
 
@@ -445,17 +813,22 @@ export function registerRalphWorksExtension(
     }
 
     if (isLgtmReview(assistantText)) {
-      await completePipeline(ctx, "review LGTM");
+      await completePipeline(ctx, "review LGTM", { handoff: true });
       return true;
     }
 
     if (requestsReviewLoopback(assistantText)) {
+      const fromPhase = state.currentPhase;
+      const reviewFeedback = normalizeReviewFeedback(assistantText);
       const nextState = transitionToPhase(state, "tdd_implement", {
         reason: "review requested changes",
       });
-      await enterPhase(ctx, nextState, {
+      await persistAndEnqueueBoundary(ctx, nextState, {
+        boundaryType: "phase",
         reason: "review requested changes",
-        prefixText: "Review requested changes; return to TDD implementation.",
+        fromPhase,
+        toPhase: "tdd_implement",
+        reviewFeedback,
       });
       return true;
     }
@@ -482,7 +855,7 @@ export function registerRalphWorksExtension(
         ? getTddTaskCompletionMarkerTaskId(assistantText)
         : undefined;
     if (tddTaskId) {
-      await completeTddTask(ctx, tddTaskId);
+      await completeTddTask(ctx, tddTaskId, { handoff: true });
       return;
     }
 
@@ -519,6 +892,14 @@ export function registerRalphWorksExtension(
     }
     if (command === "help") {
       ctx.ui?.notify?.(HELP_MESSAGE, "info");
+      return;
+    }
+    if (command === CONTINUE_BOUNDARY_COMMAND) {
+      const boundaryId = commandArgs[0];
+      if (!boundaryId) {
+        throw new Error("Usage: /ralph-works continue-boundary <boundary-id>");
+      }
+      await continueBoundary(ctx, boundaryId);
       return;
     }
     if (command === "next") {

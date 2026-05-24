@@ -5,6 +5,7 @@ import { recordArtifact } from "../src/artifacts/artifact-tracker.js";
 import {
   buildCompactionSummary,
   recordCompactionEvent,
+  recordFallbackCompactionEvent,
 } from "../src/artifacts/compaction-summary.js";
 import { HARDEN_APPROVAL_STATUS } from "../src/state/phase-completion.js";
 import { createPhaseState } from "../src/state/phase-state.js";
@@ -28,15 +29,38 @@ test("compaction summary restores RalphWorks state and artifact references", () 
   assert.match(summary, /Boundary: phase/);
 });
 
-test("recordCompactionEvent stores phase and task boundaries", () => {
+test("fallback compaction events remain available as legacy compatibility state", () => {
   const state = createPhaseState();
-  const next = recordCompactionEvent(state, {
+  const next = recordFallbackCompactionEvent(state, {
     boundary: "task",
     reason: "completed T001",
+    now: () => "2026-05-24T00:00:00.000Z",
   });
 
-  assert.equal(next.compactionEvents.length, 1);
-  assert.equal(next.compactionEvents[0].boundary, "task");
+  assert.deepEqual(next.compactionEvents, [
+    {
+      boundary: "task",
+      reason: "completed T001",
+      at: "2026-05-24T00:00:00.000Z",
+    },
+  ]);
+});
+
+test("recordCompactionEvent remains as a compatibility alias", () => {
+  const state = createPhaseState();
+  const next = recordCompactionEvent(state, {
+    boundary: "phase",
+    reason: "legacy caller",
+    now: () => "2026-05-24T00:00:01.000Z",
+  });
+
+  assert.deepEqual(next.compactionEvents, [
+    {
+      boundary: "phase",
+      reason: "legacy caller",
+      at: "2026-05-24T00:00:01.000Z",
+    },
+  ]);
 });
 
 test("compaction summary preserves harden approval action after compaction", () => {

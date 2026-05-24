@@ -1,5 +1,21 @@
 {
-  "gates": [],
+  "gates": [
+    {
+      "name": "unit_tests",
+      "command": "npm test",
+      "required": true
+    },
+    {
+      "name": "lint",
+      "command": "npm run lint",
+      "required": true
+    },
+    {
+      "name": "format",
+      "command": "npm run format:check",
+      "required": true
+    }
+  ],
   "run_after_phase": ["tdd_implement"],
   "fail_behavior": "block_transition"
 }
