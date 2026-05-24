@@ -1,0 +1,7 @@
+{
+  "gates": [],
+  "run_after_phase": [
+    "tdd_implement"
+  ],
+  "fail_behavior": "block_transition"
+}

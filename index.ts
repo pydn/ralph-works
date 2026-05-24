@@ -1,3 +1,1 @@
-import registerExtension from "./src/extension";
-
-export default registerExtension;
+export { default } from "./src/extension-entry.js";

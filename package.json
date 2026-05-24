@@ -1,47 +1,15 @@
 {
   "name": "ralph-works",
   "version": "0.1.0",
-  "description": "Full dev-cycle pipeline for Pi — spec, red team, harden, TDD implement, and review.",
-  "license": "MIT",
-  "author": "pydn",
-  "keywords": [
-    "pi-extension"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/pydn/ralph-works.git"
+  "private": true,
+  "type": "module",
+  "description": "Lightweight RalphWorks workflow coordinator for the Pi agent harness.",
+  "scripts": {
+    "test": "node --test"
   },
-  "bugs": "https://github.com/pydn/ralph-works/issues",
-  "homepage": "https://github.com/pydn/ralph-works#readme",
   "pi": {
     "extensions": [
-      "index.ts"
+      "./index.ts"
     ]
-  },
-  "scripts": {
-    "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
-    "lint": "node ./node_modules/eslint/bin/eslint.js .",
-    "lint:fix": "node ./node_modules/eslint/bin/eslint.js . --fix",
-    "format": "node ./node_modules/prettier/bin/prettier.cjs --write .",
-    "format:check": "node ./node_modules/prettier/bin/prettier.cjs --check .",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm test",
-    "test": "node ./node_modules/vitest/vitest.mjs run",
-    "test:watch": "node ./node_modules/vitest/vitest.mjs"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
-  },
-  "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.74.0",
-    "@eslint/js": "^10.0.1",
-    "@vitest/ui": "^4.1.6",
-    "eslint": "^10.4.0",
-    "eslint-config-prettier": "^10.1.8",
-    "globals": "^17.6.0",
-    "prettier": "^3.8.3",
-    "typebox": "^1.0.0",
-    "typescript": "^6.0.3",
-    "typescript-eslint": "^8.59.3",
-    "vitest": "^4.1.6"
   }
 }

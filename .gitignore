@@ -1,8 +1,0 @@
-.ruff_cache/
-.venv/
-__pycache__/
-.ralph/*
-!.ralph/gate-config.json
-node_modules
-node_modules/
-package-lock.json
