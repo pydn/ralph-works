@@ -19,10 +19,7 @@ export function validateGateConfig(config) {
       if (typeof gate.command !== "string" || gate.command.trim() === "") {
         errors.push(`gates[${index}].command must be a non-empty string.`);
       }
-      if (
-        gate.required !== undefined &&
-        typeof gate.required !== "boolean"
-      ) {
+      if (gate.required !== undefined && typeof gate.required !== "boolean") {
         errors.push(`gates[${index}].required must be a boolean.`);
       }
     });

@@ -16,14 +16,20 @@ test("generate-spec skill requires a multi-round interview before drafting", () 
 });
 
 test("generate-spec skill gates drafting on a readiness checklist", () => {
-  assert.match(skill, /Before drafting the specification, verify the readiness checklist/);
+  assert.match(
+    skill,
+    /Before drafting the specification, verify the readiness checklist/,
+  );
   assert.match(skill, /Goal and user value are clear/);
   assert.match(skill, /Acceptance criteria are testable/);
   assert.match(skill, /Remaining assumptions are explicitly named/);
 });
 
 test("generate-spec skill allows bounded follow-up rounds for unresolved material unknowns", () => {
-  assert.match(skill, /Additional rounds are required when material unknowns remain/);
+  assert.match(
+    skill,
+    /Additional rounds are required when material unknowns remain/,
+  );
   assert.match(skill, /Normal interviews should stop after four rounds/);
   assert.match(skill, /explicitly accepted the assumptions/);
 });

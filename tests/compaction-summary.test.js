@@ -42,7 +42,9 @@ test("recordCompactionEvent stores phase and task boundaries", () => {
 test("compaction summary preserves harden approval action after compaction", () => {
   let state = createPhaseState();
   state = transitionToPhase(state, "red_team", { reason: "spec-complete" });
-  state = transitionToPhase(state, "harden_spec", { reason: "red-team-complete" });
+  state = transitionToPhase(state, "harden_spec", {
+    reason: "red-team-complete",
+  });
   state = {
     ...state,
     phaseStatus: HARDEN_APPROVAL_STATUS,

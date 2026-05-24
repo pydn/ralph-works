@@ -6,7 +6,9 @@ import test from "node:test";
 
 import { registerRalphWorksExtension } from "../src/harness/pi-harness-adapter.js";
 
-function createFakePi({ exec = async () => ({ code: 0, stdout: "ok", stderr: "" }) } = {}) {
+function createFakePi({
+  exec = async () => ({ code: 0, stdout: "ok", stderr: "" }),
+} = {}) {
   const calls = {
     commands: new Map(),
     events: new Map(),
@@ -86,15 +88,15 @@ function createFakeContext(cwd) {
   };
 }
 
-function stripAnsi(value) {
-  return value.replace(/\u001b\[[0-9;]*m/g, "");
-}
-
 function latestState(piCalls) {
   return piCalls.appended.at(-1)?.data;
 }
 
-async function startPipeline(piCalls, ctx, args = "start feature-a Build feature A") {
+async function startPipeline(
+  piCalls,
+  ctx,
+  args = "start feature-a Build feature A",
+) {
   await piCalls.commands.get("ralph-works").handler(args, ctx);
 }
 
@@ -155,7 +157,10 @@ test("extension registers ralph-works command, tools, and skill discovery", asyn
   });
 
   assert.equal(calls.commands.has("ralph-works"), true);
-  assert.equal(calls.tools.some((tool) => tool.name === "ralph_works_status"), true);
+  assert.equal(
+    calls.tools.some((tool) => tool.name === "ralph_works_status"),
+    true,
+  );
 
   const resources = await calls.events.get("resources_discover")(
     { reason: "startup" },
@@ -177,7 +182,8 @@ test("ralph-works does not render TUI before the pipeline starts", async () => {
     assert.equal(ctxCalls.statuses.length, 0);
     assert.equal(ctxCalls.widgets.length, 0);
     assert.deepEqual(ctxCalls.notifications.at(-1), {
-      message: "No active ralph-works pipeline. Start one with /ralph-works start <feature> [prompt].",
+      message:
+        "No active ralph-works pipeline. Start one with /ralph-works start <feature> [prompt].",
       level: "info",
     });
   } finally {
@@ -198,7 +204,10 @@ test("/ralph-works help lists commands without requiring an active pipeline", as
     assert.equal(ctxCalls.widgets.length, 0);
     assert.equal(ctxCalls.notifications.length, 1);
     assert.equal(ctxCalls.notifications[0].level, "info");
-    assert.match(ctxCalls.notifications[0].message, /\/ralph-works start <feature> \[prompt\]/);
+    assert.match(
+      ctxCalls.notifications[0].message,
+      /\/ralph-works start <feature> \[prompt\]/,
+    );
     assert.match(ctxCalls.notifications[0].message, /\/ralph-works help/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -222,10 +231,22 @@ test("/ralph-works start launches the first phase with skill and artifact contex
     assert.equal(state.currentPhase, "generate_spec");
     assert.equal(ctxCalls.widgets.length, 1);
     assert.equal(piCalls.userMessages.length, 1);
-    assert.match(String(piCalls.userMessages[0].content), /# ralph-works Phase: Generate Spec/);
-    assert.match(String(piCalls.userMessages[0].content), /<ralph-skill-instructions>/);
-    assert.match(String(piCalls.userMessages[0].content), /docs\/feature-a-generated-spec\.md/);
-    assert.match(String(piCalls.userMessages[0].content), /RALPH_PHASE_COMPLETE/);
+    assert.match(
+      String(piCalls.userMessages[0].content),
+      /# ralph-works Phase: Generate Spec/,
+    );
+    assert.match(
+      String(piCalls.userMessages[0].content),
+      /<ralph-skill-instructions>/,
+    );
+    assert.match(
+      String(piCalls.userMessages[0].content),
+      /docs\/feature-a-generated-spec\.md/,
+    );
+    assert.match(
+      String(piCalls.userMessages[0].content),
+      /RALPH_PHASE_COMPLETE/,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -239,7 +260,11 @@ test("phase completion automatically launches the next phase prompt", async () =
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
     await startPipeline(piCalls, ctx);
-    await finishAssistantTurn(piCalls, ctx, "Spec complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Spec complete.\nRALPH_PHASE_COMPLETE",
+    );
 
     assert.equal(latestState(piCalls).currentPhase, "red_team");
     assert.equal(latestState(piCalls).phaseStatus, "executing");
@@ -251,9 +276,18 @@ test("phase completion automatically launches the next phase prompt", async () =
     assert.equal(latestState(piCalls).currentPhase, "red_team");
     assert.equal(latestState(piCalls).phaseStatus, "executing");
     assert.equal(piCalls.userMessages.length, 2);
-    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Red Team Pass/);
-    assert.match(String(piCalls.userMessages.at(-1).content), /docs\/feature-a-generated-spec\.md/);
-    assert.match(String(piCalls.userMessages.at(-1).content), /docs\/feature-a-red-team-findings\.md/);
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /# ralph-works Phase: Red Team Pass/,
+    );
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /docs\/feature-a-generated-spec\.md/,
+    );
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /docs\/feature-a-red-team-findings\.md/,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -267,20 +301,44 @@ test("harden spec completion pauses for explicit user approval", async () => {
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
     await startPipeline(piCalls, ctx);
-    await finishAssistantTurn(piCalls, ctx, "Spec complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Spec complete.\nRALPH_PHASE_COMPLETE",
+    );
     await completeLatestCompaction(ctxCalls);
-    await finishAssistantTurn(piCalls, ctx, "Red team complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Red team complete.\nRALPH_PHASE_COMPLETE",
+    );
     await completeLatestCompaction(ctxCalls);
     const messagesBeforeHardenCompletion = piCalls.userMessages.length;
-    await finishAssistantTurn(piCalls, ctx, "Hardened spec complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Hardened spec complete.\nRALPH_PHASE_COMPLETE",
+    );
 
     assert.equal(latestState(piCalls).currentPhase, "harden_spec");
     assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
     assert.equal(piCalls.userMessages.length, messagesBeforeHardenCompletion);
-    assert.match(ctxCalls.notifications.at(-1).message, /Approve the hardened spec/);
-    assert.match(ctxCalls.notifications.at(-1).message, /approve --render-html/);
-    assert.match(ctxCalls.compactions.at(-1).customInstructions, /## Action Required/);
-    assert.match(ctxCalls.compactions.at(-1).customInstructions, /\/ralph-works approve\b/);
+    assert.match(
+      ctxCalls.notifications.at(-1).message,
+      /Approve the hardened spec/,
+    );
+    assert.match(
+      ctxCalls.notifications.at(-1).message,
+      /approve --render-html/,
+    );
+    assert.match(
+      ctxCalls.compactions.at(-1).customInstructions,
+      /## Action Required/,
+    );
+    assert.match(
+      ctxCalls.compactions.at(-1).customInstructions,
+      /\/ralph-works approve\b/,
+    );
     assert.match(
       ctxCalls.compactions.at(-1).customInstructions,
       /\/ralph-works approve --render-html\b/,
@@ -294,15 +352,24 @@ test("harden spec completion pauses for explicit user approval", async () => {
       ctxCalls.notifications.length,
       notificationsBeforeCompactionComplete + 1,
     );
-    assert.match(ctxCalls.notifications.at(-1).message, /Approve the hardened spec/);
+    assert.match(
+      ctxCalls.notifications.at(-1).message,
+      /Approve the hardened spec/,
+    );
 
     await piCalls.commands.get("ralph-works").handler("approve", ctx);
     await completeLatestCompaction(ctxCalls);
 
     assert.equal(latestState(piCalls).currentPhase, "create_tasks");
     assert.equal(latestState(piCalls).phaseStatus, "executing");
-    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Task Creation/);
-    assert.match(String(piCalls.userMessages.at(-1).content), /docs\/feature-a-hardened-spec\.md/);
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /# ralph-works Phase: Task Creation/,
+    );
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /docs\/feature-a-hardened-spec\.md/,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -326,7 +393,10 @@ test("ralph-works approve is the only command that advances from harden spec", a
 
     await completeLatestCompaction(ctxCalls);
 
-    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Task Creation/);
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /# ralph-works Phase: Task Creation/,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -340,16 +410,30 @@ test("ralph-works approve can enter optional HTML render before task creation", 
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
     await startPipeline(piCalls, ctx);
-    await finishAssistantTurn(piCalls, ctx, "Spec complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Spec complete.\nRALPH_PHASE_COMPLETE",
+    );
     await completeLatestCompaction(ctxCalls);
-    await finishAssistantTurn(piCalls, ctx, "Red team complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Red team complete.\nRALPH_PHASE_COMPLETE",
+    );
     await completeLatestCompaction(ctxCalls);
-    await finishAssistantTurn(piCalls, ctx, "Hardened spec complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Hardened spec complete.\nRALPH_PHASE_COMPLETE",
+    );
     assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
 
     const messagesBeforeApprove = piCalls.userMessages.length;
 
-    await piCalls.commands.get("ralph-works").handler("approve --render-html", ctx);
+    await piCalls.commands
+      .get("ralph-works")
+      .handler("approve --render-html", ctx);
 
     assert.equal(latestState(piCalls).currentPhase, "render_html_optional");
     assert.equal(piCalls.userMessages.length, messagesBeforeApprove);
@@ -357,8 +441,14 @@ test("ralph-works approve can enter optional HTML render before task creation", 
     await completeLatestCompaction(ctxCalls);
 
     assert.equal(latestState(piCalls).phaseStatus, "executing");
-    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Optional HTML Render/);
-    assert.match(String(piCalls.userMessages.at(-1).content), /docs\/feature-a-hardened-spec\.html/);
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /# ralph-works Phase: Optional HTML Render/,
+    );
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /docs\/feature-a-hardened-spec\.html/,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -379,8 +469,14 @@ test("ralph-works next from harden spec pauses for explicit approval", async () 
     assert.equal(latestState(piCalls).currentPhase, "harden_spec");
     assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
     assert.equal(piCalls.userMessages.length, messagesBeforeNext);
-    assert.match(ctxCalls.notifications.at(-1).message, /Approve the hardened spec/);
-    assert.match(ctxCalls.notifications.at(-1).message, /approve --render-html/);
+    assert.match(
+      ctxCalls.notifications.at(-1).message,
+      /Approve the hardened spec/,
+    );
+    assert.match(
+      ctxCalls.notifications.at(-1).message,
+      /approve --render-html/,
+    );
 
     await piCalls.commands.get("ralph-works").handler("next", ctx);
 
@@ -388,7 +484,10 @@ test("ralph-works next from harden spec pauses for explicit approval", async () 
     assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
     assert.equal(piCalls.userMessages.length, messagesBeforeNext);
     assert.match(ctxCalls.notifications.at(-1).message, /approve/i);
-    assert.match(ctxCalls.notifications.at(-1).message, /approve --render-html/);
+    assert.match(
+      ctxCalls.notifications.at(-1).message,
+      /approve --render-html/,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -413,7 +512,10 @@ test("ralph_works_transition from harden spec pauses for explicit approval", asy
     assert.equal(result.details.state.phaseStatus, "awaiting_harden_approval");
     assert.equal(latestState(piCalls).currentPhase, "harden_spec");
     assert.equal(piCalls.userMessages.length, messagesBeforeTransition);
-    assert.match(ctxCalls.notifications.at(-1).message, /Approve the hardened spec/);
+    assert.match(
+      ctxCalls.notifications.at(-1).message,
+      /Approve the hardened spec/,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -427,28 +529,61 @@ test("TDD and review automatically loop until review is LGTM", async () => {
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
     await startPipeline(piCalls, ctx);
-    await finishAssistantTurn(piCalls, ctx, "Spec complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Spec complete.\nRALPH_PHASE_COMPLETE",
+    );
     await completeLatestCompaction(ctxCalls);
-    await finishAssistantTurn(piCalls, ctx, "Red team complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Red team complete.\nRALPH_PHASE_COMPLETE",
+    );
     await completeLatestCompaction(ctxCalls);
-    await finishAssistantTurn(piCalls, ctx, "Hardened spec complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Hardened spec complete.\nRALPH_PHASE_COMPLETE",
+    );
     await piCalls.commands.get("ralph-works").handler("approve", ctx);
     await completeLatestCompaction(ctxCalls);
-    await finishAssistantTurn(piCalls, ctx, "Tasks complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Tasks complete.\nRALPH_PHASE_COMPLETE",
+    );
     await completeLatestCompaction(ctxCalls);
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
 
-    await finishAssistantTurn(piCalls, ctx, "Implementation complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Implementation complete.\nRALPH_PHASE_COMPLETE",
+    );
     await completeLatestCompaction(ctxCalls);
     assert.equal(latestState(piCalls).currentPhase, "review");
-    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Review/);
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /# ralph-works Phase: Review/,
+    );
 
-    await finishAssistantTurn(piCalls, ctx, "[CRITICAL] Missing regression test.");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "[CRITICAL] Missing regression test.",
+    );
     await completeLatestCompaction(ctxCalls);
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
     assert.equal(latestState(piCalls).loopbackCount, 1);
-    assert.match(String(piCalls.userMessages.at(-1).content), /Review requested changes/);
-    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Red-Green TDD Implement/);
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /Review requested changes/,
+    );
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /# ralph-works Phase: Red-Green TDD Implement/,
+    );
 
     await finishAssistantTurn(piCalls, ctx, "Fixed.\nRALPH_PHASE_COMPLETE");
     await completeLatestCompaction(ctxCalls);
@@ -470,19 +605,43 @@ test("review completion requires LGTM instead of the generic phase marker", asyn
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
     await startPipeline(piCalls, ctx);
-    await finishAssistantTurn(piCalls, ctx, "Spec complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Spec complete.\nRALPH_PHASE_COMPLETE",
+    );
     await completeLatestCompaction(ctxCalls);
-    await finishAssistantTurn(piCalls, ctx, "Red team complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Red team complete.\nRALPH_PHASE_COMPLETE",
+    );
     await completeLatestCompaction(ctxCalls);
-    await finishAssistantTurn(piCalls, ctx, "Hardened spec complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Hardened spec complete.\nRALPH_PHASE_COMPLETE",
+    );
     await piCalls.commands.get("ralph-works").handler("approve", ctx);
     await completeLatestCompaction(ctxCalls);
-    await finishAssistantTurn(piCalls, ctx, "Tasks complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Tasks complete.\nRALPH_PHASE_COMPLETE",
+    );
     await completeLatestCompaction(ctxCalls);
-    await finishAssistantTurn(piCalls, ctx, "Implementation complete.\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "Implementation complete.\nRALPH_PHASE_COMPLETE",
+    );
     await completeLatestCompaction(ctxCalls);
 
-    await finishAssistantTurn(piCalls, ctx, "looks good to me\nRALPH_PHASE_COMPLETE");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "looks good to me\nRALPH_PHASE_COMPLETE",
+    );
 
     assert.equal(latestState(piCalls).currentPhase, "review");
     assert.equal(latestState(piCalls).pipelineStatus, "running");
@@ -540,7 +699,10 @@ test("ralph_works_transition tool stores state and compacts phase boundaries", a
     assert.equal(result.details.state.currentPhase, "red_team");
     assert.equal(piCalls.appended.at(-1).data.currentPhase, "red_team");
     assert.equal(ctxCalls.compactions.length, 1);
-    assert.equal(ctxCalls.compactions[0].customInstructions.includes("Boundary: phase"), true);
+    assert.equal(
+      ctxCalls.compactions[0].customInstructions.includes("Boundary: phase"),
+      true,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -564,7 +726,9 @@ test("ralph-works loopback routes the TDD model", async () => {
 
     await advanceToReviewWithApproval(piCalls, ctx);
     const modelSelectionsBeforeLoopback = piCalls.models.length;
-    await piCalls.commands.get("ralph-works").handler("loopback critical bugs", ctx);
+    await piCalls.commands
+      .get("ralph-works")
+      .handler("loopback critical bugs", ctx);
     await completeLatestCompaction(ctxCalls);
 
     assert.equal(piCalls.models.length, modelSelectionsBeforeLoopback + 1);
@@ -600,7 +764,10 @@ test("ralph-works tdd-complete runs gates, records task completion, and compacts
       piCalls.appended.at(-1).data.implementationStatus.completedTaskIds[0],
       "T001",
     );
-    assert.equal(ctxCalls.compactions.at(-1).customInstructions.includes("Boundary: task"), true);
+    assert.equal(
+      ctxCalls.compactions.at(-1).customInstructions.includes("Boundary: task"),
+      true,
+    );
     assert.match(ctxCalls.widgets.at(-1).value.join("\n"), /unit_tests/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -664,7 +831,11 @@ test("TDD task marker runs gates, records completion, compacts, and continues TD
     await advanceToTddWithApproval(piCalls, ctx);
     const userMessagesBeforeMarker = piCalls.userMessages.length;
 
-    await finishAssistantTurn(piCalls, ctx, "T001 done.\nRALPH_TDD_TASK_COMPLETE T001");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "T001 done.\nRALPH_TDD_TASK_COMPLETE T001",
+    );
 
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
     assert.equal(latestState(piCalls).tddCompletedTasks, 1);
@@ -672,7 +843,10 @@ test("TDD task marker runs gates, records completion, compacts, and continues TD
       latestState(piCalls).implementationStatus.completedTaskIds[0],
       "T001",
     );
-    assert.equal(ctxCalls.compactions.at(-1).customInstructions.includes("Boundary: task"), true);
+    assert.equal(
+      ctxCalls.compactions.at(-1).customInstructions.includes("Boundary: task"),
+      true,
+    );
     assert.match(ctxCalls.widgets.at(-1).value.join("\n"), /unit_tests/);
     assert.equal(piCalls.userMessages.length, userMessagesBeforeMarker);
 
@@ -680,8 +854,14 @@ test("TDD task marker runs gates, records completion, compacts, and continues TD
 
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
     assert.equal(piCalls.userMessages.length, userMessagesBeforeMarker + 1);
-    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Red-Green TDD Implement/);
-    assert.match(String(piCalls.userMessages.at(-1).content), /RALPH_TDD_TASK_COMPLETE <task-id>/);
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /# ralph-works Phase: Red-Green TDD Implement/,
+    );
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /RALPH_TDD_TASK_COMPLETE <task-id>/,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -708,7 +888,11 @@ test("TDD task marker blocks completion when required gates fail", async () => {
     await advanceToTddWithApproval(piCalls, ctx);
     const compactionsBefore = ctxCalls.compactions.length;
 
-    await finishAssistantTurn(piCalls, ctx, "T001 done.\nRALPH_TDD_TASK_COMPLETE T001");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "T001 done.\nRALPH_TDD_TASK_COMPLETE T001",
+    );
 
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
     assert.equal(latestState(piCalls).tddCompletedTasks, 0);
@@ -734,18 +918,33 @@ test("TDD task marker advances to review after final task compaction", async () 
 
     await advanceToTddWithApproval(piCalls, ctx);
 
-    await finishAssistantTurn(piCalls, ctx, "T001 done.\nRALPH_TDD_TASK_COMPLETE T001");
+    await finishAssistantTurn(
+      piCalls,
+      ctx,
+      "T001 done.\nRALPH_TDD_TASK_COMPLETE T001",
+    );
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
-    assert.equal(ctxCalls.compactions.at(-1).customInstructions.includes("Boundary: task"), true);
+    assert.equal(
+      ctxCalls.compactions.at(-1).customInstructions.includes("Boundary: task"),
+      true,
+    );
 
     await completeLatestCompaction(ctxCalls);
 
     assert.equal(latestState(piCalls).currentPhase, "review");
-    assert.equal(ctxCalls.compactions.at(-1).customInstructions.includes("Boundary: phase"), true);
+    assert.equal(
+      ctxCalls.compactions
+        .at(-1)
+        .customInstructions.includes("Boundary: phase"),
+      true,
+    );
 
     await completeLatestCompaction(ctxCalls);
 
-    assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Review/);
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /# ralph-works Phase: Review/,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

@@ -14,7 +14,9 @@ export const RALPH_WORKS_PHASES = [
   },
 ];
 
-export const RALPH_WORKS_PHASE_IDS = RALPH_WORKS_PHASES.map((phase) => phase.id);
+export const RALPH_WORKS_PHASE_IDS = RALPH_WORKS_PHASES.map(
+  (phase) => phase.id,
+);
 
 export function isRalphWorksPhase(value) {
   return RALPH_WORKS_PHASE_IDS.includes(value);

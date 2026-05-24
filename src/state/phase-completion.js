@@ -23,9 +23,7 @@ export function getTddTaskCompletionMarkerTaskId(text) {
 
 export function isLgtmReview(text) {
   const value = String(text ?? "");
-  if (
-    /(?:^|\n)\s*(?:[-*]\s*)?(?:\[CRITICAL\]|\bCRITICAL\b\s*:)/i.test(value)
-  ) {
+  if (/(?:^|\n)\s*(?:[-*]\s*)?(?:\[CRITICAL\]|\bCRITICAL\b\s*:)/i.test(value)) {
     return false;
   }
   return /\bLGTM\b/i.test(value);

@@ -35,9 +35,10 @@ export function transitionToPhase(
     );
   }
 
-  const kind = fromPhase === "review" && toPhase === "tdd_implement"
-    ? "loopback"
-    : "advance";
+  const kind =
+    fromPhase === "review" && toPhase === "tdd_implement"
+      ? "loopback"
+      : "advance";
   const completedPhases = state.completedPhases.includes(fromPhase)
     ? [...state.completedPhases]
     : [...state.completedPhases, fromPhase];
@@ -56,9 +57,8 @@ export function transitionToPhase(
         at: now(),
       },
     ],
-    loopbackCount: kind === "loopback"
-      ? state.loopbackCount + 1
-      : state.loopbackCount,
+    loopbackCount:
+      kind === "loopback" ? state.loopbackCount + 1 : state.loopbackCount,
   };
 }
 
@@ -66,9 +66,10 @@ export function advancePhase(
   state,
   { renderHtml = false, reason = "advance", now } = {},
 ) {
-  const nextPhase = state.currentPhase === "harden_spec" && renderHtml === false
-    ? "create_tasks"
-    : getLegalNextPhases(state.currentPhase)[0];
+  const nextPhase =
+    state.currentPhase === "harden_spec" && renderHtml === false
+      ? "create_tasks"
+      : getLegalNextPhases(state.currentPhase)[0];
 
   if (!nextPhase) {
     throw new Error(`No next RalphWorks phase from ${state.currentPhase}`);

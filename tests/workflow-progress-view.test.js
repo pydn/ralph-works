@@ -5,8 +5,13 @@ import { createPhaseState } from "../src/state/phase-state.js";
 import { transitionToPhase } from "../src/state/phase-transitions.js";
 import { renderWorkflowProgress } from "../src/tui/workflow-progress-view.js";
 
+// biome-ignore lint/complexity/useRegexLiterals: String construction avoids Biome control-character regex diagnostics for intentional ANSI assertions.
+const ANSI_PATTERN = new RegExp("\\u001b\\[[0-9;]*m", "g");
+// biome-ignore lint/complexity/useRegexLiterals: String construction avoids Biome control-character regex diagnostics for intentional ANSI assertions.
+const ANSI_COLOR_PATTERN = new RegExp("\\u001b\\[38;2;");
+
 function stripAnsi(value) {
-  return value.replace(/\u001b\[[0-9;]*m/g, "");
+  return value.replace(ANSI_PATTERN, "");
 }
 
 test("workflow progress view uses the compact ralph-works widget look", () => {
@@ -21,12 +26,9 @@ test("workflow progress view uses the compact ralph-works widget look", () => {
     plainLines[0],
     "ralph-works · RUNNING · model anthropic/claude-review",
   );
-  assert.equal(
-    plainLines[1],
-    "▶ 1/8 Generate Spec · [▶ · · · · · · ·]",
-  );
+  assert.equal(plainLines[1], "▶ 1/8 Generate Spec · [▶ · · · · · · ·]");
   assert.equal(plainLines[2], "Loopbacks · 0");
-  assert.match(lines.join("\n"), /\u001b\[38;2;/);
+  assert.match(lines.join("\n"), ANSI_COLOR_PATTERN);
 });
 
 test("workflow progress view makes review loopback visible", () => {
@@ -48,7 +50,10 @@ test("workflow progress view makes review loopback visible", () => {
   const text = lines.join("\n");
 
   assert.match(text, /Loopbacks · 1/);
-  assert.match(text, /Review -> Red-Green TDD Implement · review-critical-bugs/);
+  assert.match(
+    text,
+    /Review -> Red-Green TDD Implement · review-critical-bugs/,
+  );
 });
 
 test("workflow progress view shows required gate status", () => {
@@ -73,7 +78,10 @@ test("workflow progress view shows required gate status", () => {
   const lines = renderWorkflowProgress(state, { color: false });
 
   assert.match(lines.join("\n"), /Gates/);
-  assert.match(lines.join("\n"), /✗ fail · unit_tests · required · blocks transition/);
+  assert.match(
+    lines.join("\n"),
+    /✗ fail · unit_tests · required · blocks transition/,
+  );
   assert.match(lines.join("\n"), /✓ pass · lint · optional/);
 });
 

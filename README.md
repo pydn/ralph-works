@@ -102,3 +102,15 @@ Use `provider/model-id` values when you want the extension to call `pi.setModel(
 ```sh
 npm test
 ```
+
+## Development Checks
+
+Biome is the repo formatter and linter:
+
+```sh
+npm run check
+npm run check:write
+npm run lint
+npm run format
+npm run format:check
+```

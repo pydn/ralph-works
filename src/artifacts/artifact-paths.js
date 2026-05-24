@@ -16,11 +16,12 @@ export function sanitizeArtifactPrefix(feature) {
 }
 
 function sanitizeArtifactFileName(artifactName) {
-  const rawName = String(artifactName ?? "")
-    .replace(/\\/g, "/")
-    .split("/")
-    .filter(Boolean)
-    .at(-1) ?? "artifact.md";
+  const rawName =
+    String(artifactName ?? "")
+      .replace(/\\/g, "/")
+      .split("/")
+      .filter(Boolean)
+      .at(-1) ?? "artifact.md";
   const match = rawName.match(/^(.+?)(\.[^.]+)?$/);
   const stem = sanitizeArtifactPrefix(match?.[1]);
   const extension = String(match?.[2] ?? ".md")

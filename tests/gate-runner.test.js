@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-import { runConfiguredGates } from "../src/gates/gate-runner.js";
 import { requiredGatesPassed } from "../src/gates/gate-result.js";
+import { runConfiguredGates } from "../src/gates/gate-runner.js";
 
 test("gate runner executes gates serially through the supplied executor", async () => {
   const calls = [];
