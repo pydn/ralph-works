@@ -21,9 +21,11 @@ Keep the work lightweight, explicit, and easy to understand. The goal is not to 
 
 ## Process
 
-Start by reading the prompt carefully and identifying ambiguity. Ask clarifying questions when unknowns would materially affect implementation. Do not ask broad or decorative questions. Ask only what is needed to produce a working feature specification that can support review and implementation planning.
+Start by reading the prompt carefully and identifying ambiguity. You must interview the user before drafting the specification, even when the prompt appears clear. Do not produce the spec on the first generate-spec turn. Ask targeted clarifying questions that confirm the user's intent, constraints, acceptance criteria, workflow expectations, and any risky assumptions.
 
-Resolve unknowns that change behavior, boundaries, expected outputs, gate expectations, artifacts, user-visible workflow, or implementation scope. If the prompt is already clear enough, proceed without unnecessary interview loops. If the prompt is incomplete, interview the user with targeted questions before drafting.
+Keep the interview concise. Prefer one focused set of questions, normally three to seven questions. Do not ask broad or decorative questions. If a topic is already strongly implied, ask for confirmation rather than leaving it unstated. The questions should cover only what is needed to produce a working feature specification that can support review and implementation planning.
+
+Resolve unknowns that change behavior, boundaries, expected outputs, gate expectations, artifacts, user-visible workflow, or implementation scope. After the user answers the interview questions, proceed to draft the spec unless the answers expose a new blocker that truly requires one more short follow-up.
 
 Translate the resolved user intent into concrete requirements. The spec should explain what must be built, what the extension or feature should do, and what output later phases should expect. It should be detailed enough that a red-team pass can evaluate scalability concerns, tampering risks, security-sensitive failure modes, missing requirements, unclear boundaries, brittle assumptions, and other common red-team concerns.
 
@@ -43,4 +45,6 @@ Do not implement code in this phase unless explicitly asked outside the Ralph lo
 
 ## Output
 
-Produce a complete working feature specification. The suggested runtime artifact for this phase is `generated-spec.md`. The output should be clear enough that the red-team phase can evaluate it without needing to re-interview the user about basic intent.
+First output: interview questions only. Do not include a partial spec, proposed task list, implementation plan, or acceptance criteria draft in the interview turn.
+
+After the user answers, produce a complete working feature specification. The suggested runtime artifact for this phase is `generated-spec.md`. The output should be clear enough that the red-team phase can evaluate it without needing to re-interview the user about basic intent.
