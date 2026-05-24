@@ -175,7 +175,7 @@ test("/ralph-works start launches the first phase with skill and artifact contex
     assert.equal(piCalls.userMessages.length, 1);
     assert.match(String(piCalls.userMessages[0].content), /# ralph-works Phase: Generate Spec/);
     assert.match(String(piCalls.userMessages[0].content), /<ralph-skill-instructions>/);
-    assert.match(String(piCalls.userMessages[0].content), /generated-spec\.md/);
+    assert.match(String(piCalls.userMessages[0].content), /docs\/feature-a-generated-spec\.md/);
     assert.match(String(piCalls.userMessages[0].content), /RALPH_PHASE_COMPLETE/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -203,8 +203,8 @@ test("phase completion automatically launches the next phase prompt", async () =
     assert.equal(latestState(piCalls).phaseStatus, "executing");
     assert.equal(piCalls.userMessages.length, 2);
     assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Red Team Pass/);
-    assert.match(String(piCalls.userMessages.at(-1).content), /generated-spec\.md/);
-    assert.match(String(piCalls.userMessages.at(-1).content), /red-team-findings\.md/);
+    assert.match(String(piCalls.userMessages.at(-1).content), /docs\/feature-a-generated-spec\.md/);
+    assert.match(String(piCalls.userMessages.at(-1).content), /docs\/feature-a-red-team-findings\.md/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -236,7 +236,7 @@ test("harden spec completion pauses for explicit user approval", async () => {
     assert.equal(latestState(piCalls).currentPhase, "create_tasks");
     assert.equal(latestState(piCalls).phaseStatus, "executing");
     assert.match(String(piCalls.userMessages.at(-1).content), /# ralph-works Phase: Task Creation/);
-    assert.match(String(piCalls.userMessages.at(-1).content), /hardened-spec\.md/);
+    assert.match(String(piCalls.userMessages.at(-1).content), /docs\/feature-a-hardened-spec\.md/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

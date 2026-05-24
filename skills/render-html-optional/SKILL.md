@@ -42,4 +42,4 @@ Do not perform hardening in this phase. Do not create the implementation task li
 
 ## Output
 
-Produce a human-readable HTML version of the hardened specification. The suggested runtime artifact for this phase is `hardened-spec.html`. The output should preserve the substance of `hardened-spec.md` and support human review without blocking task creation unless configured to do so.
+Produce a human-readable HTML version of the hardened specification at the current output path supplied in the phase context, typically `docs/<feature>-hardened-spec.html`. The output should preserve the substance of `docs/<feature>-hardened-spec.md` and support human review without blocking task creation unless configured to do so.

@@ -43,4 +43,4 @@ If critical bugs are found, create or update implementation tasks describing the
 
 ## Output
 
-Produce either `LGTM` or a set of critical bugs that re-enter TDD implementation. The suggested runtime artifact for critical findings is `review-findings.md`.
+Produce either `LGTM` or a set of critical bugs that re-enter TDD implementation. The suggested runtime artifact for critical findings is the current output path supplied in the phase context, typically `docs/<feature>-review-findings.md`.

@@ -33,7 +33,7 @@ After the relevant test passes, run configured gates from `gate.config.json`. Th
 
 If a required gate fails, repair the implementation or tests until the gate passes. Do not mark the item complete while required tests or lint gates are failing. Optional or non-required behavior should still be reported clearly, but required gates control completion.
 
-Mark the item complete only when the relevant tests and required gates pass. Update implementation status so later implementation work and review can understand what has been claimed and completed. The suggested runtime artifact for this status is `implementation-status.json`, but keep artifact tracking minimal and workflow-oriented.
+Mark the item complete only when the relevant tests and required gates pass. Update implementation status so later implementation work and review can understand what has been claimed and completed. The suggested runtime artifact for this status is the current output path supplied in the phase context, typically `docs/<feature>-implementation-status.json`, but keep artifact tracking minimal and workflow-oriented.
 
 Repeat this process until all to-do items are complete or a blocking gate failure requires repair. When all items are complete and gates are passing, the workflow can move to review.
 

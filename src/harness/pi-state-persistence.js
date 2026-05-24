@@ -15,10 +15,11 @@ export function restoreRalphWorksState(ctx) {
     return undefined;
   }
 
+  const baseState = createPhaseState({ feature: restored.data.feature });
   return {
-    ...createPhaseState(),
+    ...baseState,
     ...restored.data,
-    phases: createPhaseState().phases,
+    phases: baseState.phases,
   };
 }
 

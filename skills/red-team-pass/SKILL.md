@@ -42,4 +42,4 @@ Do not rewrite the spec in this phase. Do not create the task list. Do not imple
 
 ## Output
 
-Produce a clear list of critical findings, risks, and recommended changes. The suggested runtime artifact for this phase is `red-team-findings.md`. The output should be ready for the harden-spec phase to apply directly to the original specification.
+Produce a clear list of critical findings, risks, and recommended changes at the current output path supplied in the phase context, typically `docs/<feature>-red-team-findings.md`. The output should be ready for the harden-spec phase to apply directly to the original specification.

@@ -41,4 +41,4 @@ Do not create the implementation to-do list yet. Do not implement code. Do not p
 
 ## Output
 
-Produce the hardened version of the specification. The suggested runtime artifact for this phase is `hardened-spec.md`. The output should be ready for optional HTML rendering and task creation.
+Produce the hardened version of the specification at the current output path supplied in the phase context, typically `docs/<feature>-hardened-spec.md`. The output should be ready for optional HTML rendering and task creation.

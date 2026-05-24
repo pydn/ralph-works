@@ -1,3 +1,5 @@
+import { buildArtifactPath } from "./artifact-paths.js";
+
 export function recordArtifact(state, artifactKey, artifactPath) {
   if (typeof artifactKey !== "string" || artifactKey.trim() === "") {
     throw new Error("artifactKey must be a non-empty string.");
@@ -10,7 +12,7 @@ export function recordArtifact(state, artifactKey, artifactPath) {
     ...state,
     artifacts: {
       ...state.artifacts,
-      [artifactKey]: artifactPath,
+      [artifactKey]: buildArtifactPath(state.feature, artifactPath),
     },
   };
 }

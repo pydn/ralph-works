@@ -40,4 +40,4 @@ Use the hardened spec as the authority. Do not create tasks for speculative impr
 
 ## Output
 
-Produce a prioritized to-do list. The suggested runtime artifact for this phase is `task-list.md`. The list should be ready for the `tdd_implement` phase to select the most important unclaimed item and begin red-green TDD.
+Produce a prioritized to-do list at the current output path supplied in the phase context, typically `docs/<feature>-task-list.md`. The list should be ready for the `tdd_implement` phase to select the most important unclaimed item and begin red-green TDD.

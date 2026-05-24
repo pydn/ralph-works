@@ -34,7 +34,7 @@ Use `/ralph-works` as the command prefix:
 /ralph-works next --render-html
 /ralph-works gates
 /ralph-works tdd-complete T001
-/ralph-works artifact generatedSpec generated-spec.md
+/ralph-works artifact generatedSpec docs/feature-name-generated-spec.md
 /ralph-works loopback critical review findings
 /ralph-works approve
 /ralph-works reset
@@ -45,6 +45,8 @@ before using the command. Extension commands require the leading slash; `ralph-w
 is treated as ordinary chat input.
 
 The normal workflow is marker-driven after `/ralph-works start`: each non-review phase prompt includes the relevant `SKILL.md`, expected artifacts, prior artifact paths, and the required `RALPH_PHASE_COMPLETE` final-line marker. When the agent emits that marker, the extension validates the boundary, updates state, and launches the next phase prompt automatically.
+
+Artifacts are written under `docs/` with a filesystem-safe feature prefix. For example, `/ralph-works start hello-world "Write a hello world script."` produces artifact paths such as `docs/hello-world-generated-spec.md`, `docs/hello-world-red-team-findings.md`, and `docs/hello-world-task-list.md`.
 
 After `harden_spec`, the pipeline pauses with a `WAITING` TUI status. Review the hardened spec and run `/ralph-works approve` to continue into task creation and TDD. The `tdd_implement` phase automatically advances to `review` after its completion marker and passing required gates. Review automatically loops back to `tdd_implement` when the review reports critical findings, and completes the pipeline when review is LGTM.
 

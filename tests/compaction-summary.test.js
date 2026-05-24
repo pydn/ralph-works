@@ -22,8 +22,8 @@ test("compaction summary restores RalphWorks state and artifact references", () 
 
   assert.match(summary, /ralph-works/);
   assert.match(summary, /Current phase: red_team/);
-  assert.match(summary, /generatedSpec: generated-spec.md/);
-  assert.match(summary, /redTeamFindings: red-team-findings.md/);
+  assert.match(summary, /generatedSpec: docs\/feature-generated-spec.md/);
+  assert.match(summary, /redTeamFindings: docs\/feature-red-team-findings.md/);
   assert.match(summary, /Boundary: phase/);
 });
 

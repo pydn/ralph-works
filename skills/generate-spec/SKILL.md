@@ -37,7 +37,7 @@ Respect the RalphWorks responsibility boundary. The extension should remain a sm
 
 The specification should describe the requested feature in a way that can be used for task planning. Include the purpose, expected behavior, important inputs and outputs, constraints, phase or workflow effects, and acceptance criteria. If the feature affects gates, mention how `gate.config.json` should be considered. If it affects per-phase models, mention how `model.config.json` should be considered. If it affects terminal display, describe what the TUI should make visible.
 
-When relevant, describe runtime artifacts in minimal, workflow-oriented terms. Suggested RalphWorks artifacts include `generated-spec.md`, `red-team-findings.md`, `hardened-spec.md`, `hardened-spec.html`, `task-list.md`, `implementation-status.json`, and `review-findings.md`. Do not invent artifact tracking beyond what is useful for phase transitions, TUI display, and the next phase of work.
+When relevant, describe runtime artifacts in minimal, workflow-oriented terms. RalphWorks artifacts are written under `docs/` with the sanitized feature name as a filename prefix, such as `docs/<feature>-generated-spec.md`, `docs/<feature>-red-team-findings.md`, `docs/<feature>-hardened-spec.md`, `docs/<feature>-hardened-spec.html`, `docs/<feature>-task-list.md`, `docs/<feature>-implementation-status.json`, and `docs/<feature>-review-findings.md`. Use the exact current output path supplied in the phase context. Do not invent artifact tracking beyond what is useful for phase transitions, TUI display, and the next phase of work.
 
 ## Boundaries
 
@@ -47,4 +47,4 @@ Do not implement code in this phase unless explicitly asked outside the Ralph lo
 
 First output: interview questions only. Do not include a partial spec, proposed task list, implementation plan, or acceptance criteria draft in the interview turn.
 
-After the user answers, produce a complete working feature specification. The suggested runtime artifact for this phase is `generated-spec.md`. The output should be clear enough that the red-team phase can evaluate it without needing to re-interview the user about basic intent.
+After the user answers, produce a complete working feature specification at the current output path supplied in the phase context, typically `docs/<feature>-generated-spec.md`. The output should be clear enough that the red-team phase can evaluate it without needing to re-interview the user about basic intent.
