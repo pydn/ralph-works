@@ -402,7 +402,7 @@ function inferNextExpectedAction(state, { boundary, targetPhase }) {
   }
 
   if (boundary === "task" && targetPhase === "tdd_implement") {
-    return "Continue TDD implementation with the next incomplete task.";
+    return "Inspect task list and implementation status artifacts, then continue TDD implementation with the next incomplete task.";
   }
 
   if (boundary === "review_loopback" && targetPhase === "tdd_implement") {

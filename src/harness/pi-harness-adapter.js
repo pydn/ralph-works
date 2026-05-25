@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordArtifact } from "../artifacts/artifact-tracker.js";
@@ -25,8 +24,6 @@ import {
   isHandoffFailedState,
   validatePendingSessionHandoff,
 } from "../state/session-handoff-state.js";
-import { parseTaskList } from "../tasks/task-list-loader.js";
-import { selectNextTask } from "../tasks/task-selector.js";
 import {
   createImplementationStatus,
   markTaskComplete,
@@ -52,6 +49,8 @@ const NO_ACTIVE_PIPELINE_MESSAGE =
   "No active ralph-works pipeline. Start one with /ralph-works start <feature> [prompt].";
 const HARDEN_APPROVAL_MESSAGE =
   "Approve the hardened spec with /ralph-works approve to continue to implementation planning, or /ralph-works approve --render-html to render HTML first.";
+const TDD_PHASE_COMPLETION_MESSAGE =
+  "TDD review transition requires RALPH_PHASE_COMPLETE from the agent and passing gates.";
 const HANDOFF_PHASE_BOUNDARIES = new Set([
   "generate_spec->red_team",
   "red_team->harden_spec",
@@ -88,44 +87,6 @@ function extractMessageText(content) {
     .map((part) => part.text)
     .join("\n")
     .trim();
-}
-
-function getTaskListPath(workflowState) {
-  return (
-    workflowState.artifacts?.taskList ??
-    workflowState.phases.find((phase) => phase.id === "create_tasks")
-      ?.artifactPath
-  );
-}
-
-function readTaskList(ctx, workflowState) {
-  const taskListPath = getTaskListPath(workflowState);
-  if (!taskListPath) {
-    return {
-      tasks: [],
-      errorMessage: "RalphWorks task list artifact path is missing.",
-    };
-  }
-
-  try {
-    const absolutePath = path.resolve(ctx.cwd ?? process.cwd(), taskListPath);
-    const tasks = parseTaskList(readFileSync(absolutePath, "utf8"));
-    if (tasks.length === 0) {
-      return {
-        taskListPath,
-        tasks,
-        errorMessage: `RalphWorks task list at ${taskListPath} does not contain parseable implementation tasks.`,
-      };
-    }
-
-    return { taskListPath, tasks };
-  } catch (error) {
-    return {
-      taskListPath,
-      tasks: [],
-      errorMessage: `RalphWorks task list at ${taskListPath} could not be read: ${error.message}`,
-    };
-  }
 }
 
 function latestTransition(state) {
@@ -341,6 +302,11 @@ export function registerRalphWorksExtension(
       return pauseForHardenApproval(ctx);
     }
 
+    if (state.currentPhase === "tdd_implement") {
+      ctx.ui?.notify?.(TDD_PHASE_COMPLETION_MESSAGE, "warning");
+      return state;
+    }
+
     const nextState = advancePhase(state, {
       renderHtml: commandArgs.includes("--render-html"),
       reason,
@@ -482,19 +448,6 @@ export function registerRalphWorksExtension(
     notifyWorkflowBlockedByHandoff(ctx, "task completion");
   }
 
-  function getIncompleteTddTasks(tasks, status) {
-    const completedTaskIds = new Set(status?.completedTaskIds ?? []);
-    return tasks.filter(
-      (task) => !task.completed && !completedTaskIds.has(task.id),
-    );
-  }
-
-  function formatTaskIds(tasks) {
-    const visibleTaskIds = tasks.slice(0, 5).map((task) => task.id);
-    const suffix = tasks.length > visibleTaskIds.length ? ", ..." : "";
-    return `${visibleTaskIds.join(", ")}${suffix}`;
-  }
-
   async function completeTddPhase(ctx) {
     if (isHandoffBlockingState(state)) {
       notifyWorkflowBlockedByHandoff(ctx, "phase completion");
@@ -506,24 +459,6 @@ export function registerRalphWorksExtension(
       ctx.ui?.notify?.(
         "ralph-works gates failed; review phase will not start.",
         "error",
-      );
-      return state;
-    }
-
-    const taskList = readTaskList(ctx, state);
-    if (taskList.errorMessage) {
-      ctx.ui?.notify?.(taskList.errorMessage, "error");
-      return state;
-    }
-
-    const incompleteTasks = getIncompleteTddTasks(
-      taskList.tasks,
-      state.implementationStatus ?? implementationStatus,
-    );
-    if (incompleteTasks.length > 0) {
-      ctx.ui?.notify?.(
-        `RalphWorks cannot start review; incomplete TDD tasks remain: ${formatTaskIds(incompleteTasks)}.`,
-        "warning",
       );
       return state;
     }
@@ -581,22 +516,6 @@ export function registerRalphWorksExtension(
       return state;
     }
 
-    const taskList = readTaskList(ctx, state);
-    if (taskList.errorMessage) {
-      ctx.ui?.notify?.(taskList.errorMessage, "error");
-      return state;
-    }
-
-    const listedTask = taskList.tasks.find(
-      (task) => task.id === normalizedTaskId,
-    );
-    if (!listedTask) {
-      ctx.ui?.notify?.(
-        `RalphWorks task ${normalizedTaskId} is not listed in ${taskList.taskListPath}.`,
-        "error",
-      );
-      return state;
-    }
     implementationStatus = markTaskComplete(
       implementationStatus,
       normalizedTaskId,
@@ -609,18 +528,12 @@ export function registerRalphWorksExtension(
       tddCompletedTasks: (state.tddCompletedTasks ?? 0) + 1,
       implementationStatus,
     };
-    const nextTask = selectNextTask(taskList.tasks, implementationStatus);
-    const nextState = nextTask
-      ? completedState
-      : advancePhase(completedState, {
-          reason: "completed tdd_implement",
-        });
 
-    return requestSessionHandoff(ctx, nextState, {
+    return requestSessionHandoff(ctx, completedState, {
       boundary: "task",
       reason: `completed ${normalizedTaskId}`,
       sourcePhase: "tdd_implement",
-      targetPhase: nextState.currentPhase,
+      targetPhase: "tdd_implement",
       taskId: normalizedTaskId,
     });
   }

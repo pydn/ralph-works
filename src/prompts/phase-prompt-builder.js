@@ -57,6 +57,7 @@ function phaseRules(phaseId) {
 
   if (phaseId === "tdd_implement") {
     return [
+      "- Inspect the task list and implementation status artifacts to choose the next incomplete task; RalphWorks does not parse the task list for you.",
       `- When one implementation task is complete and required gates pass, end the final assistant message with exactly \`${TDD_TASK_COMPLETE_MARKER} <task-id>\` on its own line.`,
       `- When all implementation tasks are complete and the phase is ready for review, end the final assistant message with exactly \`${PHASE_COMPLETE_MARKER}\` on its own line.`,
     ];

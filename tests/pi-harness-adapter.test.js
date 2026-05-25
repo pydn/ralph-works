@@ -206,7 +206,12 @@ async function advanceToTddWithApproval(piCalls, ctx) {
 
 async function advanceToReviewWithApproval(piCalls, ctx) {
   await advanceToTddWithApproval(piCalls, ctx);
-  await piCalls.commands.get("ralph-works").handler("next", ctx);
+  await finishAssistantTurn(
+    piCalls,
+    ctx,
+    "Implementation complete.\nRALPH_PHASE_COMPLETE",
+  );
+  await completeLatestHandoff(ctx.calls, piCalls, ctx);
   assert.equal(latestState(piCalls).currentPhase, "review");
 }
 
@@ -1823,11 +1828,28 @@ test("end-to-end lifecycle restores replacement state across fresh sessions thro
       "T001 done.\nRALPH_TDD_TASK_COMPLETE T001",
     );
     runtime = await runActiveLifecycleHandoff(harness);
-    assert.equal(latestState(runtime.piCalls).currentPhase, "review");
+    assert.equal(latestState(runtime.piCalls).currentPhase, "tdd_implement");
     assert.equal(latestState(runtime.piCalls).phaseStatus, "executing");
     assert.equal(
       latestState(runtime.piCalls).sessionHandoffEvents.at(-1).boundary,
       "task",
+    );
+    assert.match(
+      String(runtime.piCalls.userMessages.at(-1).content),
+      /# ralph-works Phase: Red-Green TDD Implement/,
+    );
+
+    await finishAssistantTurn(
+      runtime.piCalls,
+      runtime.ctx,
+      "Implementation complete.\nRALPH_PHASE_COMPLETE",
+    );
+    runtime = await runActiveLifecycleHandoff(harness);
+    assert.equal(latestState(runtime.piCalls).currentPhase, "review");
+    assert.equal(latestState(runtime.piCalls).phaseStatus, "executing");
+    assert.equal(
+      latestState(runtime.piCalls).sessionHandoffEvents.at(-1).boundary,
+      "phase",
     );
     assert.match(
       String(runtime.piCalls.userMessages.at(-1).content),
@@ -1843,9 +1865,9 @@ test("end-to-end lifecycle restores replacement state across fresh sessions thro
     assert.equal(runtime.ctxCalls.newSessions.length, newSessionsBeforeLgtm);
     assert.deepEqual(
       completedState.sessionHandoffEvents.map((event) => event.boundary),
-      ["phase", "phase", "approval", "approval", "phase", "task"],
+      ["phase", "phase", "approval", "approval", "phase", "task", "phase"],
     );
-    assert.equal(harness.runtimes.length, 7);
+    assert.equal(harness.runtimes.length, 8);
     assert.equal(
       harness.runtimes
         .slice(0, -1)
@@ -2188,7 +2210,7 @@ test("ralph-works loopback routes the TDD model", async () => {
   }
 });
 
-test("ralph-works tdd-complete runs gates, records task completion, and creates a task handoff session", async () => {
+test("ralph-works tdd-complete records task completion without parsing the task list", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     await writeFile(
@@ -2203,8 +2225,8 @@ test("ralph-works tdd-complete runs gates, records task completion, and creates 
     await writeFile(
       path.join(tempDir, "docs/feature-a-task-list.md"),
       [
-        "- [ ] T001 P0 Build phase state",
-        "- [ ] T002 P1 Render task progress",
+        "### T001 [ ] Build phase state",
+        "### T002 [ ] Render task progress",
       ].join("\n"),
     );
 
@@ -2243,6 +2265,14 @@ test("ralph-works tdd-complete runs gates, records task completion, and creates 
     assert.match(
       String(piCalls.userMessages.at(-1).content),
       /# ralph-works Phase: Red-Green TDD Implement/,
+    );
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /Prior Task Creation: docs\/feature-a-task-list\.md/,
+    );
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /Current output: docs\/feature-a-implementation-status\.json/,
     );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -2289,7 +2319,7 @@ test("ralph-works tdd-complete blocks task completion when required gates fail",
   }
 });
 
-test("ralph-works tdd-complete blocks automatic advancement when task list is missing", async () => {
+test("ralph-works tdd-complete does not require a task list artifact to be present", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     const { pi, calls: piCalls } = createFakePi();
@@ -2303,11 +2333,14 @@ test("ralph-works tdd-complete blocks automatic advancement when task list is mi
     await piCalls.commands.get("ralph-works").handler("tdd-complete T001", ctx);
 
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
-    assert.equal(latestState(piCalls).tddCompletedTasks, 0);
+    assert.equal(latestState(piCalls).tddCompletedTasks, 1);
     assert.equal(latestState(piCalls).pendingHandoff, undefined);
-    assert.equal(ctxCalls.newSessions.length, newSessionsBefore);
-    assert.equal(piCalls.userMessages.length, userMessagesBefore);
-    assert.match(ctxCalls.notifications.at(-1).message, /task list/i);
+    assert.equal(ctxCalls.newSessions.length, newSessionsBefore + 1);
+    assert.equal(piCalls.userMessages.length, userMessagesBefore + 1);
+    assert.deepEqual(
+      latestState(piCalls).implementationStatus.completedTaskIds,
+      ["T001"],
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -2328,8 +2361,8 @@ test("TDD task marker runs gates, records completion, and hands off to the next 
     await writeFile(
       path.join(tempDir, "docs/feature-a-task-list.md"),
       [
-        "- [ ] T001 P0 Build phase state",
-        "- [ ] T002 P1 Render task progress",
+        "### T001 [ ] Build phase state",
+        "### T002 [ ] Render task progress",
       ].join("\n"),
     );
 
@@ -2468,13 +2501,13 @@ test("TDD task marker blocks completion when required gates fail", async () => {
   }
 });
 
-test("TDD task marker hands the final task directly to review with one new session", async () => {
+test("TDD task marker keeps TDD active so the agent chooses the next task", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     await mkdir(path.join(tempDir, "docs"));
     await writeFile(
       path.join(tempDir, "docs/feature-a-task-list.md"),
-      "- [ ] T001 P0 Build phase state\n",
+      "### T001 [ ] Build phase state\n",
     );
 
     const { pi, calls: piCalls } = createFakePi();
@@ -2490,7 +2523,7 @@ test("TDD task marker hands the final task directly to review with one new sessi
       "T001 done.\nRALPH_TDD_TASK_COMPLETE T001",
     );
 
-    assert.equal(latestState(piCalls).currentPhase, "review");
+    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
     assert.equal(latestState(piCalls).phaseStatus, "executing");
     assert.equal(
       latestState(piCalls).sessionHandoffEvents.at(-1).boundary,
@@ -2506,29 +2539,46 @@ test("TDD task marker hands the final task directly to review with one new sessi
     );
     assert.equal(
       latestState(piCalls).sessionHandoffEvents.at(-1).targetPhase,
-      "review",
+      "tdd_implement",
     );
     assert.deepEqual(
       latestState(piCalls).implementationStatus.completedTaskIds,
       ["T001"],
     );
     assert.equal(ctxCalls.newSessions.length, newSessionsBefore + 1);
-    assert.equal(
-      latestState(piCalls).sessionHandoffEvents.filter(
-        (event) => event.boundary === "task" && event.targetPhase === "review",
-      ).length,
-      1,
-    );
     assert.match(
       String(piCalls.userMessages.at(-1).content),
-      /# ralph-works Phase: Review/,
+      /# ralph-works Phase: Red-Green TDD Implement/,
     );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
 });
 
-test("TDD phase marker blocks review when the task list is missing", async () => {
+test("ralph-works next does not advance from TDD to review without the phase marker", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await advanceToTddWithApproval(piCalls, ctx);
+    const newSessionsBefore = ctxCalls.newSessions.length;
+    const userMessagesBefore = piCalls.userMessages.length;
+
+    await piCalls.commands.get("ralph-works").handler("next", ctx);
+
+    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
+    assert.equal(latestState(piCalls).pendingHandoff, undefined);
+    assert.equal(ctxCalls.newSessions.length, newSessionsBefore);
+    assert.equal(piCalls.userMessages.length, userMessagesBefore);
+    assert.match(ctxCalls.notifications.at(-1).message, /RALPH_PHASE_COMPLETE/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("TDD phase marker starts review when gates pass without requiring a task list", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     const { pi, calls: piCalls } = createFakePi();
@@ -2545,17 +2595,20 @@ test("TDD phase marker blocks review when the task list is missing", async () =>
       "Implementation complete.\nRALPH_PHASE_COMPLETE",
     );
 
-    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
-    assert.equal(latestState(piCalls).pendingHandoff, undefined);
-    assert.equal(ctxCalls.newSessions.length, newSessionsBefore);
-    assert.equal(piCalls.userMessages.length, userMessagesBefore);
-    assert.match(ctxCalls.notifications.at(-1).message, /task list/i);
+    assert.equal(latestState(piCalls).currentPhase, "review");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(ctxCalls.newSessions.length, newSessionsBefore + 1);
+    assert.equal(piCalls.userMessages.length, userMessagesBefore + 1);
+    assert.match(
+      String(piCalls.userMessages.at(-1).content),
+      /# ralph-works Phase: Review/,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
 });
 
-test("TDD phase marker blocks review when the task list is unparseable", async () => {
+test("TDD phase marker starts review with an unparseable human task list", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     await writeFeatureTaskList(tempDir, "No implementation tasks here.\n");
@@ -2573,17 +2626,16 @@ test("TDD phase marker blocks review when the task list is unparseable", async (
       "Implementation complete.\nRALPH_PHASE_COMPLETE",
     );
 
-    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
-    assert.equal(latestState(piCalls).pendingHandoff, undefined);
-    assert.equal(ctxCalls.newSessions.length, newSessionsBefore);
-    assert.equal(piCalls.userMessages.length, userMessagesBefore);
-    assert.match(ctxCalls.notifications.at(-1).message, /parseable/i);
+    assert.equal(latestState(piCalls).currentPhase, "review");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(ctxCalls.newSessions.length, newSessionsBefore + 1);
+    assert.equal(piCalls.userMessages.length, userMessagesBefore + 1);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
 });
 
-test("TDD phase marker blocks review while known tasks remain incomplete", async () => {
+test("TDD phase marker trusts the agent instead of parsing incomplete markdown tasks", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     await writeFeatureTaskList(
@@ -2607,12 +2659,10 @@ test("TDD phase marker blocks review while known tasks remain incomplete", async
       "Implementation complete.\nRALPH_PHASE_COMPLETE",
     );
 
-    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
-    assert.equal(latestState(piCalls).pendingHandoff, undefined);
-    assert.equal(ctxCalls.newSessions.length, newSessionsBefore);
-    assert.equal(piCalls.userMessages.length, userMessagesBefore);
-    assert.match(ctxCalls.notifications.at(-1).message, /incomplete/i);
-    assert.match(ctxCalls.notifications.at(-1).message, /T002/);
+    assert.equal(latestState(piCalls).currentPhase, "review");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(ctxCalls.newSessions.length, newSessionsBefore + 1);
+    assert.equal(piCalls.userMessages.length, userMessagesBefore + 1);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -2657,16 +2707,9 @@ test("TDD phase marker blocks review when required gates fail", async () => {
   }
 });
 
-test("TDD phase marker hands all-complete work to review with one new session", async () => {
+test("TDD phase marker hands work to review with one new session", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
-    await writeFeatureTaskList(
-      tempDir,
-      [
-        "- [x] T001 P0 Build phase state",
-        "- [x] T002 P1 Render task progress",
-      ].join("\n"),
-    );
     const { pi, calls: piCalls } = createFakePi();
     const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });

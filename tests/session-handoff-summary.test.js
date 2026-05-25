@@ -238,6 +238,33 @@ test("session handoff summary keeps harden approval instructions when approval i
   );
 });
 
+test("session handoff summary tells task-boundary TDD sessions to inspect artifacts", () => {
+  let state = createPhaseState({ feature: "hello-world" });
+  for (const phase of [
+    "red_team",
+    "harden_spec",
+    "create_tasks",
+    "tdd_implement",
+  ]) {
+    state = transitionToPhase(state, phase, { reason: `test:${phase}` });
+  }
+  state = createPendingSessionHandoff(state, {
+    id: "task-handoff",
+    boundary: "task",
+    reason: "completed T001",
+    sourcePhase: "tdd_implement",
+    targetPhase: "tdd_implement",
+    taskId: "T001",
+  });
+
+  const summary = buildSessionHandoffSummary(state);
+
+  assert.match(
+    summary,
+    /Next expected action: Inspect task list and implementation status artifacts, then continue TDD implementation with the next incomplete task\./,
+  );
+});
+
 test("session handoff summary surfaces review loopback reason", () => {
   const summary = buildSessionHandoffSummary(
     createPhaseState({ feature: "handoff" }),

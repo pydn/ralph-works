@@ -23,7 +23,7 @@ The extension coordinates phase tracking, TUI display, gate coordination, model 
 
 ## Process
 
-Select the most important unclaimed to-do item. Use the priority or ordering provided by the task list. Do not skip higher-priority unclaimed work without a clear reason. If this phase was reached from review because critical bugs were found, treat the critical bug tasks as implementation work that must be addressed before returning to review.
+Select the most important unclaimed to-do item by inspecting the task list artifact and the implementation status artifact supplied in the phase context. Use the priority or ordering provided by the task list. RalphWorks records completed task markers but does not parse the task list to choose work for you. Do not skip higher-priority unclaimed work without a clear reason. If this phase was reached from review because critical bugs were found, treat the critical bug tasks as implementation work that must be addressed before returning to review.
 
 For the selected item, write or update a failing test that captures the expected behavior. The failing test is the red step. It should be specific to the item and should demonstrate the behavior required by the hardened spec or review finding. Do not mark the item complete before there is test coverage for the expected behavior.
 
