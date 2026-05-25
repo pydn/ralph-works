@@ -57,6 +57,7 @@ function phaseRules(phaseId) {
 
   if (phaseId === "tdd_implement") {
     return [
+      "- Inspect the task list and implementation status artifacts to choose the next incomplete task; RalphWorks does not parse the task list for you.",
       `- When one implementation task is complete and required gates pass, end the final assistant message with exactly \`${TDD_TASK_COMPLETE_MARKER} <task-id>\` on its own line.`,
       `- When all implementation tasks are complete and the phase is ready for review, end the final assistant message with exactly \`${PHASE_COMPLETE_MARKER}\` on its own line.`,
     ];
@@ -64,6 +65,36 @@ function phaseRules(phaseId) {
 
   return [
     `- When this phase is complete, end the final assistant message with exactly \`${PHASE_COMPLETE_MARKER}\` on its own line.`,
+  ];
+}
+
+function latestReviewLoopbackTransition(state) {
+  const transition = state.transitionHistory.at(-1);
+  if (
+    state.currentPhase === "tdd_implement" &&
+    transition?.from === "review" &&
+    transition.to === "tdd_implement" &&
+    transition.kind === "loopback"
+  ) {
+    return transition;
+  }
+
+  return undefined;
+}
+
+function reviewLoopbackContextLines(state) {
+  const transition = latestReviewLoopbackTransition(state);
+  if (!transition) {
+    return [];
+  }
+
+  return [
+    "## Review Loopback Context",
+    "- Review requested changes; return to TDD implementation.",
+    `- Loopback count: ${state.loopbackCount ?? 0}`,
+    `- Review loopback reason: ${transition.reason}`,
+    "- Address the review findings before returning to review.",
+    "",
   ];
 }
 
@@ -89,6 +120,7 @@ export function buildPhasePrompt(state, { extensionRoot }) {
       ? artifacts.join("\n")
       : "- No phase artifacts are configured.",
     "",
+    ...reviewLoopbackContextLines(state),
     "## Skill Context",
     "<ralph-skill-instructions>",
     readSkill(extensionRoot, phase),

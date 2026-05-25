@@ -10,7 +10,8 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
-    "test": "node --test"
+    "test": "node --test",
+    "test:e2e:pi": "RALPH_WORKS_PI_E2E=1 node --test tests/pi-real-session-handoff.e2e.test.js"
   },
   "pi": {
     "extensions": [

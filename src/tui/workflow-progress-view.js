@@ -1,9 +1,17 @@
 import { HARDEN_APPROVAL_STATUS } from "../state/phase-completion.js";
 import { getPhaseLabel } from "../state/phase-state.js";
+import {
+  HANDOFF_PHASE_FAILED_STATUS,
+  HANDOFF_PHASE_PENDING_STATUS,
+  isHandoffFailedState,
+  isHandoffPendingState,
+} from "../state/session-handoff-state.js";
 import { colorText } from "./calm-terminal-palette.js";
 import { renderGateStatus } from "./gate-status-view.js";
 
 const MAX_MODEL_LENGTH = 44;
+const MAX_HANDOFF_ID_LENGTH = 48;
+const MAX_HANDOFF_ERROR_LENGTH = 96;
 // biome-ignore lint/complexity/useRegexLiterals: String construction avoids Biome control-character regex diagnostics for intentional TUI sanitization.
 const CONTROL_CHARACTER_PATTERN = new RegExp(
   "[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f]",
@@ -97,6 +105,12 @@ function resolveStatus(state) {
   if (state.currentPhase === "complete") {
     return { label: "COMPLETE", tone: "sage" };
   }
+  if (isHandoffFailedState(state)) {
+    return { label: "HANDOFF FAILED", tone: "rose" };
+  }
+  if (isHandoffPendingState(state)) {
+    return { label: "HANDOFF PENDING", tone: "amber" };
+  }
   if (state.phaseStatus === HARDEN_APPROVAL_STATUS) {
     return { label: "WAITING", tone: "amber" };
   }
@@ -108,6 +122,81 @@ function resolveStatus(state) {
     return { label: "BLOCKED", tone: "rose" };
   }
   return { label: "RUNNING", tone: "seafoam" };
+}
+
+function handoffPhaseStatus(state) {
+  if (isHandoffFailedState(state)) {
+    return HANDOFF_PHASE_FAILED_STATUS;
+  }
+  if (isHandoffPendingState(state)) {
+    return HANDOFF_PHASE_PENDING_STATUS;
+  }
+  return undefined;
+}
+
+function handoffTone(status) {
+  return status === HANDOFF_PHASE_FAILED_STATUS ? "rose" : "amber";
+}
+
+function formatHandoffValue(value, { maxLength = 40 } = {}) {
+  const normalized = truncateTuiText(value, maxLength);
+  return normalized.length === 0 ? "unknown" : normalized;
+}
+
+function renderHandoffDetails(state, { color }) {
+  const status = handoffPhaseStatus(state);
+  if (!status) {
+    return [];
+  }
+
+  const handoff = state.pendingHandoff ?? {};
+  const targetPhase = handoff.targetPhase
+    ? getPhaseLabel(handoff.targetPhase)
+    : "unknown";
+  const lines = [
+    [
+      colorText("Handoff", "mist", color),
+      colorText(" · ", "muted", color),
+      colorText(status, handoffTone(status), color),
+      colorText(" · ", "muted", color),
+      `id ${formatHandoffValue(handoff.id, {
+        maxLength: MAX_HANDOFF_ID_LENGTH,
+      })}`,
+      colorText(" · ", "muted", color),
+      `boundary ${formatHandoffValue(handoff.boundary)}`,
+      colorText(" · ", "muted", color),
+      `target ${formatHandoffValue(targetPhase)}`,
+    ].join(""),
+  ];
+
+  const error = handoff.errorMessage ?? handoff.error;
+  if (error) {
+    lines.push(
+      [
+        colorText("Handoff error", "rose", color),
+        colorText(" · ", "muted", color),
+        truncateTuiText(error, MAX_HANDOFF_ERROR_LENGTH),
+      ].join(""),
+    );
+  }
+
+  return lines;
+}
+
+function renderHardenApprovalDetails(state, { color }) {
+  if (state.phaseStatus !== HARDEN_APPROVAL_STATUS) {
+    return [];
+  }
+
+  return [
+    [
+      colorText("Approval", "mist", color),
+      colorText(" · ", "muted", color),
+      colorText("/ralph-works approve", "amber", color),
+      colorText(" or ", "muted", color),
+      colorText("/ralph-works approve --render-html", "amber", color),
+    ].join(""),
+  ];
 }
 
 export function renderWorkflowProgress(
@@ -171,6 +260,8 @@ export function renderWorkflowProgress(
     );
   }
 
+  lines.push(...renderHardenApprovalDetails(state, { color }));
+  lines.push(...renderHandoffDetails(state, { color }));
   lines.push(...renderGateStatus(state.gateResults, { color }));
 
   return lines;
