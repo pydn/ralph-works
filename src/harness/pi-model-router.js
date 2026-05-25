@@ -16,7 +16,40 @@ export async function getActivePhaseModelName(ctx, state) {
     ?.raw;
 }
 
-export async function routeModelForCurrentPhase(pi, ctx, state) {
+function rawOnlyModelTarget(modelRef) {
+  return { raw: modelRef.raw };
+}
+
+function appendableModelTarget(modelRef) {
+  return {
+    provider: modelRef.provider,
+    id: modelRef.id,
+    raw: modelRef.raw,
+  };
+}
+
+function notifyMissingModel(ctx, rawModel) {
+  ctx.ui?.notify?.(`Configured model not found: ${rawModel}`, "warning");
+}
+
+function notifyMissingAuth(ctx, rawModel) {
+  ctx.ui?.notify?.(`No API key available for model: ${rawModel}`, "error");
+}
+
+function findConfiguredModel(ctx, modelTarget) {
+  if (!modelTarget?.provider) {
+    return undefined;
+  }
+
+  const modelId = modelTarget.id ?? modelTarget.modelId;
+  if (!modelId) {
+    return undefined;
+  }
+
+  return ctx.modelRegistry?.find?.(modelTarget.provider, modelId);
+}
+
+export async function resolveModelTargetForCurrentPhase(ctx, state) {
   const modelRef = resolvePhaseModel(
     await loadValidModelConfig(ctx),
     state.currentPhase,
@@ -26,22 +59,61 @@ export async function routeModelForCurrentPhase(pi, ctx, state) {
   }
 
   if (!modelRef.provider) {
-    return modelRef.raw;
+    return rawOnlyModelTarget(modelRef);
   }
 
   const model = ctx.modelRegistry?.find?.(modelRef.provider, modelRef.id);
   if (!model) {
-    ctx.ui?.notify?.(`Configured model not found: ${modelRef.raw}`, "warning");
-    return modelRef.raw;
+    notifyMissingModel(ctx, modelRef.raw);
+    return rawOnlyModelTarget(modelRef);
   }
 
-  const selected = await pi.setModel?.(model);
-  if (selected === false) {
+  if (
+    typeof ctx.modelRegistry?.hasConfiguredAuth === "function" &&
+    !ctx.modelRegistry.hasConfiguredAuth(model)
+  ) {
+    notifyMissingAuth(ctx, modelRef.raw);
+    return rawOnlyModelTarget(modelRef);
+  }
+
+  return appendableModelTarget(modelRef);
+}
+
+export async function applyModelTargetToCurrentSession(pi, ctx, modelTarget) {
+  if (!modelTarget) {
+    return undefined;
+  }
+
+  if (!modelTarget.provider) {
+    return modelTarget.raw;
+  }
+
+  const model = findConfiguredModel(ctx, modelTarget);
+  if (!model) {
+    notifyMissingModel(ctx, modelTarget.raw);
+    return modelTarget.raw;
+  }
+
+  try {
+    const selected = await pi.setModel?.(model);
+    if (selected === false) {
+      notifyMissingAuth(ctx, modelTarget.raw);
+    }
+  } catch (error) {
+    notifyMissingAuth(ctx, modelTarget.raw);
     ctx.ui?.notify?.(
-      `No API key available for model: ${modelRef.raw}`,
+      `Model routing failed for ${modelTarget.raw}: ${error.message}`,
       "error",
     );
   }
 
-  return modelRef.raw;
+  return modelTarget.raw;
+}
+
+export async function routeModelForCurrentPhase(pi, ctx, state) {
+  return applyModelTargetToCurrentSession(
+    pi,
+    ctx,
+    await resolveModelTargetForCurrentPhase(ctx, state),
+  );
 }

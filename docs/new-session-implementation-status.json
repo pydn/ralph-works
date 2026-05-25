@@ -1,0 +1,521 @@
+{
+  "feature": "new-session",
+  "status": "in_progress",
+  "updatedAt": "2026-05-24T18:44:29Z",
+  "completedTaskIds": [
+    "T001",
+    "T002",
+    "T003",
+    "T004",
+    "T005",
+    "T006",
+    "T007",
+    "T008",
+    "T009",
+    "T010",
+    "T011",
+    "T012",
+    "T013",
+    "T014"
+  ],
+  "claimedTaskIds": [],
+  "tasks": {
+    "T001": {
+      "status": "completed",
+      "completedAt": "2026-05-24T16:40:28Z",
+      "summary": "Added session-boundary state primitives, default state shape, and backward-compatible state restoration for older compaction-only sessions.",
+      "tests": [
+        "tests/session-boundaries.test.js",
+        "tests/pi-state-persistence.test.js"
+      ],
+      "filesChanged": [
+        "src/state/session-boundaries.js",
+        "src/state/phase-state.js",
+        "src/harness/pi-state-persistence.js",
+        "tests/session-boundaries.test.js",
+        "tests/pi-state-persistence.test.js"
+      ]
+    },
+    "T002": {
+      "status": "completed",
+      "completedAt": "2026-05-24T16:46:10Z",
+      "summary": "Added plain JSON-compatible session boundary plans, bounded resume context, visible custom-message payloads, task/model/artifact fields, and bounded gate summaries that omit raw long output.",
+      "tests": ["tests/session-boundary-plan.test.js"],
+      "filesChanged": [
+        "src/harness/session-boundary-plan.js",
+        "tests/session-boundary-plan.test.js"
+      ]
+    },
+    "T003": {
+      "status": "completed",
+      "completedAt": "2026-05-24T16:53:18Z",
+      "summary": "Added a command-context fresh-session boundary launcher that waits for idle, calls ctx.newSession with parentSession/setup/withSession, seeds RalphWorks state and visible resume messages, sends kickoff prompts only from replacement context, and falls back to existing compaction only when fresh sessions are unavailable or fail before replacement.",
+      "tests": ["tests/pi-session-boundary-launcher.test.js"],
+      "filesChanged": [
+        "src/harness/pi-session-boundary-launcher.js",
+        "tests/pi-session-boundary-launcher.test.js"
+      ]
+    },
+    "T004": {
+      "status": "completed",
+      "completedAt": "2026-05-24T17:10:47Z",
+      "summary": "Added the internal /ralph-works continue-boundary command, changed assistant-driven phase/TDD/review markers to persist pending session-boundary events and enqueue that command, and routed validated pending boundaries through the fresh-session launcher with idempotent stale-boundary handling.",
+      "tests": [
+        "tests/pi-boundary-handoff.test.js",
+        "tests/pi-harness-adapter.test.js"
+      ],
+      "filesChanged": [
+        "src/harness/pi-harness-adapter.js",
+        "src/harness/session-boundary-plan.js",
+        "tests/pi-boundary-handoff.test.js",
+        "tests/pi-harness-adapter.test.js"
+      ]
+    },
+    "T005": {
+      "status": "completed",
+      "completedAt": "2026-05-24T17:26:22Z",
+      "summary": "Routed command-capable RalphWorks phase boundaries through the fresh-session launcher, including pipeline start, /next transitions, harden approval pauses, approval continuation with and without HTML render, render-to-task continuation, command loopback, and final completion without unnecessary kickoff prompts.",
+      "tests": [
+        "tests/pi-command-boundary-sessions.test.js",
+        "tests/pi-harness-adapter.test.js",
+        "tests/pi-boundary-handoff.test.js"
+      ],
+      "filesChanged": [
+        "src/harness/pi-harness-adapter.js",
+        "tests/pi-command-boundary-sessions.test.js",
+        "tests/pi-harness-adapter.test.js",
+        "tests/pi-boundary-handoff.test.js"
+      ]
+    },
+    "T006": {
+      "status": "completed",
+      "completedAt": "2026-05-24T17:36:37Z",
+      "summary": "Persisted TDD implementation status to the feature implementation-status artifact, recorded the implementationStatus artifact when entering TDD, sanitized per-task gate evidence, seeded completed task status into replacement sessions, routed command TDD completions through fresh task/review boundaries, and avoided a redundant task boundary for final-task review transitions.",
+      "tests": [
+        "tests/pi-command-boundary-sessions.test.js",
+        "tests/pi-harness-adapter.test.js",
+        "tests/pi-boundary-handoff.test.js",
+        "tests/task-selector.test.js"
+      ],
+      "filesChanged": [
+        "src/harness/pi-harness-adapter.js",
+        "src/tasks/task-status-updater.js",
+        "tests/pi-command-boundary-sessions.test.js"
+      ]
+    },
+    "T007": {
+      "status": "completed",
+      "completedAt": "2026-05-24T17:42:48Z",
+      "summary": "Preserved gate blocking on fresh-session paths by running configured gates before command/tool-driven advancement from tdd_implement to review, leaving failed TDD task and review-advancement attempts in place with persisted visible gate results and no fresh-session or compaction boundary, and verifying successful review boundaries carry bounded gate summaries without raw command output.",
+      "tests": [
+        "tests/pi-command-boundary-sessions.test.js",
+        "tests/pi-harness-adapter.test.js",
+        "tests/session-boundary-plan.test.js",
+        "tests/pi-boundary-handoff.test.js"
+      ],
+      "filesChanged": [
+        "src/harness/pi-harness-adapter.js",
+        "tests/pi-command-boundary-sessions.test.js"
+      ]
+    },
+    "T008": {
+      "status": "completed",
+      "completedAt": "2026-05-24T17:50:36Z",
+      "summary": "Resolved phase model targets before replacement as plain provider/model identifiers, seeded valid replacement sessions with appendModelChange through the session setup path, avoided old pi.setModel on successful fresh-session boundaries, retained fallback model routing for compaction fallback, and preserved warning/error behavior for missing models and unavailable API keys.",
+      "tests": [
+        "tests/pi-command-boundary-sessions.test.js",
+        "tests/pi-harness-adapter.test.js",
+        "tests/pi-session-boundary-launcher.test.js",
+        "tests/pi-boundary-handoff.test.js",
+        "tests/model-config-loader.test.js",
+        "tests/phase-model-resolver.test.js"
+      ],
+      "filesChanged": [
+        "src/harness/pi-model-router.js",
+        "src/harness/pi-harness-adapter.js",
+        "src/harness/pi-session-boundary-launcher.js",
+        "tests/pi-command-boundary-sessions.test.js"
+      ]
+    },
+    "T009": {
+      "status": "completed",
+      "completedAt": "2026-05-24T17:57:32Z",
+      "summary": "Hydrated restored RalphWorks state from replacement-session custom entries and durable implementation status artifacts, preserving phase, phase status, artifacts, gates, transition/boundary history, and legacy compaction events while using artifact-backed TDD status for next-task selection after session_start without previous chat history.",
+      "tests": [
+        "tests/pi-state-persistence.test.js",
+        "tests/pi-command-boundary-sessions.test.js"
+      ],
+      "filesChanged": [
+        "src/harness/pi-state-persistence.js",
+        "tests/pi-state-persistence.test.js",
+        "tests/pi-command-boundary-sessions.test.js"
+      ]
+    },
+    "T010": {
+      "status": "completed",
+      "completedAt": "2026-05-24T18:07:11Z",
+      "summary": "Preserved review-loopback and LGTM semantics on fresh-session boundaries by persisting sanitized bounded review feedback with review loopback boundary events, carrying it into replacement-session resume context and kickoff prompts, keeping RALPH_PHASE_COMPLETE ignored during review, and verifying LGTM completion creates a fresh completion session without starting a new agent turn.",
+      "tests": [
+        "tests/pi-command-boundary-sessions.test.js",
+        "tests/pi-boundary-handoff.test.js",
+        "tests/pi-harness-adapter.test.js",
+        "tests/session-boundary-plan.test.js",
+        "tests/session-boundaries.test.js",
+        "tests/pi-session-boundary-launcher.test.js"
+      ],
+      "filesChanged": [
+        "src/harness/pi-harness-adapter.js",
+        "src/harness/session-boundary-plan.js",
+        "src/harness/pi-session-boundary-launcher.js",
+        "src/state/session-boundaries.js",
+        "tests/pi-command-boundary-sessions.test.js"
+      ]
+    },
+    "T011": {
+      "status": "completed",
+      "completedAt": "2026-05-24T18:17:24Z",
+      "summary": "Added replacement-session TUI refreshes from the replacement context for prompt, pause, and completion boundaries; strengthened visible custom-message assertions; and centralized sanitized boundary diagnostics so fallback, cancellation, stale-boundary, and follow-up-failure notifications include boundary ID and reason without leaking prompts, raw gate output, or credentials.",
+      "tests": [
+        "tests/pi-session-boundary-launcher.test.js",
+        "tests/pi-command-boundary-sessions.test.js",
+        "tests/pi-boundary-handoff.test.js"
+      ],
+      "filesChanged": [
+        "src/harness/session-boundary-diagnostics.js",
+        "src/harness/pi-session-boundary-launcher.js",
+        "src/harness/pi-harness-adapter.js",
+        "tests/pi-session-boundary-launcher.test.js",
+        "tests/pi-command-boundary-sessions.test.js",
+        "tests/pi-boundary-handoff.test.js"
+      ]
+    },
+    "T012": {
+      "status": "completed",
+      "completedAt": "2026-05-24T18:22:29Z",
+      "summary": "Removed remaining compaction-first state assumptions by making compactionEvents explicit fallback-compatibility state, preserving recordCompactionEvent as a legacy alias, recording compactionEvents only when fallback compaction actually starts, renaming fallback-oriented coverage, and asserting normal fresh-session launches keep compactionEvents empty while fallback/unavailable paths remain distinct.",
+      "tests": [
+        "tests/compaction-summary.test.js",
+        "tests/pi-session-boundary-launcher.test.js",
+        "tests/pi-harness-adapter.test.js"
+      ],
+      "filesChanged": [
+        "src/artifacts/compaction-summary.js",
+        "src/harness/pi-session-boundary-launcher.js",
+        "tests/compaction-summary.test.js",
+        "tests/pi-session-boundary-launcher.test.js",
+        "tests/pi-harness-adapter.test.js"
+      ]
+    },
+    "T013": {
+      "status": "completed",
+      "completedAt": "2026-05-24T18:31:04Z",
+      "summary": "Added an end-to-end fresh-session regression that exercises pipeline start, phase transitions, harden approval pause, approval with optional render, optional render continuation, TDD next-task boundaries, final TDD-to-review, review loopback, post-loopback review, and final completion while asserting no normal-path compaction or stale old-session phase prompts. Strengthened follow-up failure regression coverage so failed replacement prompts append a durable followup_failed RalphWorks state entry through the replacement session context.",
+      "tests": [
+        "tests/pi-command-boundary-sessions.test.js",
+        "tests/pi-session-boundary-launcher.test.js"
+      ],
+      "filesChanged": [
+        "src/harness/pi-session-boundary-launcher.js",
+        "tests/pi-command-boundary-sessions.test.js",
+        "tests/pi-session-boundary-launcher.test.js"
+      ]
+    },
+    "T014": {
+      "status": "completed",
+      "completedAt": "2026-05-24T18:44:29Z",
+      "summary": "Made retryable session-boundary states resumable by treating launching, cancelled, fallback_unavailable, and followup_failed as pending retry states and allowing continue-boundary to relaunch them after restore while keeping created/fallback-completed boundaries stale to avoid duplicate prompts.",
+      "tests": [
+        "tests/session-boundaries.test.js",
+        "tests/pi-boundary-handoff.test.js"
+      ],
+      "filesChanged": [
+        "src/state/session-boundaries.js",
+        "src/harness/pi-harness-adapter.js",
+        "tests/session-boundaries.test.js",
+        "tests/pi-boundary-handoff.test.js"
+      ]
+    }
+  },
+  "gateResultsByTask": {
+    "T001": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "passed": true
+      }
+    ],
+    "T002": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "passed": true
+      }
+    ],
+    "T003": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "passed": true
+      }
+    ],
+    "T004": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "passed": true
+      }
+    ],
+    "T005": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "passed": true
+      }
+    ],
+    "T006": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "passed": true
+      }
+    ],
+    "T007": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "passed": true
+      }
+    ],
+    "T008": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "passed": true
+      }
+    ],
+    "T009": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "passed": true
+      }
+    ],
+    "T010": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "passed": true
+      }
+    ],
+    "T011": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "passed": true
+      }
+    ],
+    "T012": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "passed": true
+      }
+    ],
+    "T013": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "passed": true
+      }
+    ],
+    "T014": [
+      {
+        "name": "unit_tests",
+        "command": "npm test",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "required": true,
+        "passed": true
+      },
+      {
+        "name": "format",
+        "command": "npm run format:check",
+        "required": true,
+        "passed": true
+      }
+    ]
+  }
+}
