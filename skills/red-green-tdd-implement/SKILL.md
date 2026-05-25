@@ -33,7 +33,7 @@ After the relevant test passes, run configured gates from `gate.config.json`. Th
 
 If a required gate fails, repair the implementation or tests until the gate passes. Do not mark the item complete while required tests or lint gates are failing. Optional or non-required behavior should still be reported clearly, but required gates control completion.
 
-Mark the item complete only when the relevant tests and required gates pass. End the final assistant message for that item with exactly `RALPH_TDD_TASK_COMPLETE <task-id>` on its own line, replacing `<task-id>` with the completed task identifier such as `T001`. RalphWorks will run the configured gates, record the completed task in implementation status, trigger task-level compaction, and continue with the next task after compaction.
+Mark the item complete only when the relevant tests and required gates pass. End the final assistant message for that item with exactly `RALPH_TDD_TASK_COMPLETE <task-id>` on its own line, replacing `<task-id>` with the completed task identifier such as `T001`. RalphWorks will run the configured gates, record the completed task in implementation status, create a fresh Pi session handoff with durable workflow state and generated artifact context, and continue with the next task in the replacement session.
 
 Update implementation status so later implementation work and review can understand what has been claimed and completed. The suggested runtime artifact for this status is the current output path supplied in the phase context, typically `docs/<feature>-implementation-status.json`, but keep artifact tracking minimal and workflow-oriented.
 
@@ -45,4 +45,4 @@ Do not rewrite the hardened spec unless the workflow has explicitly returned to 
 
 ## Output
 
-Produce completed implementation items with relevant tests and required gates passing. For each completed item, end with `RALPH_TDD_TASK_COMPLETE <task-id>` so RalphWorks can compact at the task boundary. When all items are complete and the implementation is ready for review, end with `RALPH_PHASE_COMPLETE` on its own line instead of a task marker.
+Produce completed implementation items with relevant tests and required gates passing. For each completed item, end with `RALPH_TDD_TASK_COMPLETE <task-id>` so RalphWorks can hand off at the task boundary through a fresh Pi session. When all items are complete and the implementation is ready for review, end with `RALPH_PHASE_COMPLETE` on its own line instead of a task marker.

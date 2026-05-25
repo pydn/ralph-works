@@ -66,6 +66,6 @@ export function createPhaseState({
     gateResults: [],
     artifacts: {},
     tddCompletedTasks: 0,
-    compactionEvents: [],
+    sessionHandoffEvents: [],
   };
 }

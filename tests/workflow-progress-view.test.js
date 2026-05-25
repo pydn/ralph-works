@@ -97,3 +97,73 @@ test("workflow progress view shows harden approval waiting state", () => {
   assert.match(lines[0], /ralph-works · WAITING/);
   assert.match(lines.join("\n"), /Harden Spec/);
 });
+
+test("workflow progress view shows pending handoff details", () => {
+  const state = {
+    ...createPhaseState(),
+    currentPhase: "red_team",
+    phaseStatus: "handoff_pending",
+    pendingHandoff: {
+      id: "handoff-123",
+      status: "pending",
+      boundary: "phase",
+      sourcePhase: "generate_spec",
+      targetPhase: "red_team",
+    },
+  };
+
+  const lines = renderWorkflowProgress(state, { color: false });
+  const text = lines.join("\n");
+
+  assert.match(lines[0], /ralph-works · HANDOFF PENDING/);
+  assert.match(text, /Handoff · handoff_pending/);
+  assert.match(text, /id handoff-123/);
+  assert.match(text, /boundary phase/);
+  assert.match(text, /target Red Team/);
+});
+
+test("workflow progress view shows failed handoff details and error", () => {
+  const state = {
+    ...createPhaseState(),
+    currentPhase: "review",
+    phaseStatus: "handoff_failed",
+    pendingHandoff: {
+      id: "handoff-failed",
+      status: "failed",
+      boundary: "task",
+      sourcePhase: "tdd_implement",
+      targetPhase: "review",
+      errorMessage: "session switch cancelled by user",
+    },
+  };
+
+  const lines = renderWorkflowProgress(state, { color: false });
+  const text = lines.join("\n");
+
+  assert.match(lines[0], /ralph-works · HANDOFF FAILED/);
+  assert.match(text, /Handoff · handoff_failed/);
+  assert.match(text, /id handoff-failed/);
+  assert.match(text, /boundary task/);
+  assert.match(text, /target Review/);
+  assert.match(text, /Handoff error · session switch cancelled by user/);
+});
+
+test("workflow progress view shows complete state", () => {
+  let state = createPhaseState();
+  for (const phase of [
+    "red_team",
+    "harden_spec",
+    "create_tasks",
+    "tdd_implement",
+    "review",
+    "complete",
+  ]) {
+    state = transitionToPhase(state, phase, { reason: "test" });
+  }
+
+  const lines = renderWorkflowProgress(state, { color: false });
+  const text = lines.join("\n");
+
+  assert.match(lines[0], /ralph-works · COMPLETE/);
+  assert.match(text, /✓ 8\/8 Complete/);
+});

@@ -67,6 +67,36 @@ function phaseRules(phaseId) {
   ];
 }
 
+function latestReviewLoopbackTransition(state) {
+  const transition = state.transitionHistory.at(-1);
+  if (
+    state.currentPhase === "tdd_implement" &&
+    transition?.from === "review" &&
+    transition.to === "tdd_implement" &&
+    transition.kind === "loopback"
+  ) {
+    return transition;
+  }
+
+  return undefined;
+}
+
+function reviewLoopbackContextLines(state) {
+  const transition = latestReviewLoopbackTransition(state);
+  if (!transition) {
+    return [];
+  }
+
+  return [
+    "## Review Loopback Context",
+    "- Review requested changes; return to TDD implementation.",
+    `- Loopback count: ${state.loopbackCount ?? 0}`,
+    `- Review loopback reason: ${transition.reason}`,
+    "- Address the review findings before returning to review.",
+    "",
+  ];
+}
+
 export function buildPhasePrompt(state, { extensionRoot }) {
   const phase = state.phases.find(
     (candidate) => candidate.id === state.currentPhase,
@@ -89,6 +119,7 @@ export function buildPhasePrompt(state, { extensionRoot }) {
       ? artifacts.join("\n")
       : "- No phase artifacts are configured.",
     "",
+    ...reviewLoopbackContextLines(state),
     "## Skill Context",
     "<ralph-skill-instructions>",
     readSkill(extensionRoot, phase),

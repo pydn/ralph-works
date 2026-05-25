@@ -1,8 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordArtifact } from "../artifacts/artifact-tracker.js";
-import { recordCompactionEvent } from "../artifacts/compaction-summary.js";
 import { requiredGatesPassed } from "../gates/gate-result.js";
 import { buildPhasePrompt } from "../prompts/phase-prompt-builder.js";
 import {
@@ -14,6 +14,17 @@ import {
 } from "../state/phase-completion.js";
 import { createPhaseState } from "../state/phase-state.js";
 import { advancePhase, transitionToPhase } from "../state/phase-transitions.js";
+import {
+  completeSessionHandoff,
+  createPendingSessionHandoff,
+  failSessionHandoff,
+  HANDOFF_PHASE_FAILED_STATUS,
+  HANDOFF_PHASE_PENDING_STATUS,
+  HANDOFF_STATUS_READY_IN_NEW_SESSION,
+  isHandoffBlockingState,
+  isHandoffFailedState,
+  validatePendingSessionHandoff,
+} from "../state/session-handoff-state.js";
 import { parseTaskList } from "../tasks/task-list-loader.js";
 import { selectNextTask } from "../tasks/task-selector.js";
 import {
@@ -21,12 +32,12 @@ import {
   markTaskComplete,
 } from "../tasks/task-status-updater.js";
 import { splitCommandArgs } from "./pi-argument-parser.js";
-import { triggerRalphWorksCompaction } from "./pi-compaction-trigger.js";
 import { runPiConfiguredGates } from "./pi-gate-runner.js";
 import {
   getActivePhaseModelName,
   routeModelForCurrentPhase,
 } from "./pi-model-router.js";
+import { executeRalphWorksSessionHandoff } from "./pi-session-handoff.js";
 import {
   persistRalphWorksState,
   restoreRalphWorksState,
@@ -41,6 +52,13 @@ const NO_ACTIVE_PIPELINE_MESSAGE =
   "No active ralph-works pipeline. Start one with /ralph-works start <feature> [prompt].";
 const HARDEN_APPROVAL_MESSAGE =
   "Approve the hardened spec with /ralph-works approve to continue to implementation planning, or /ralph-works approve --render-html to render HTML first.";
+const HANDOFF_PHASE_BOUNDARIES = new Set([
+  "generate_spec->red_team",
+  "red_team->harden_spec",
+  "render_html_optional->create_tasks",
+  "create_tasks->tdd_implement",
+]);
+
 const HELP_MESSAGE = [
   "Commands:",
   "/ralph-works start <feature> [prompt]",
@@ -72,20 +90,59 @@ function extractMessageText(content) {
     .trim();
 }
 
+function getTaskListPath(workflowState) {
+  return (
+    workflowState.artifacts?.taskList ??
+    workflowState.phases.find((phase) => phase.id === "create_tasks")
+      ?.artifactPath
+  );
+}
+
 function readTaskList(ctx, workflowState) {
-  const taskListPath = workflowState.phases.find(
-    (phase) => phase.id === "create_tasks",
-  )?.artifactPath;
+  const taskListPath = getTaskListPath(workflowState);
   if (!taskListPath) {
-    return [];
+    return {
+      tasks: [],
+      errorMessage: "RalphWorks task list artifact path is missing.",
+    };
   }
 
   try {
     const absolutePath = path.resolve(ctx.cwd ?? process.cwd(), taskListPath);
-    return parseTaskList(readFileSync(absolutePath, "utf8"));
-  } catch {
-    return [];
+    const tasks = parseTaskList(readFileSync(absolutePath, "utf8"));
+    if (tasks.length === 0) {
+      return {
+        taskListPath,
+        tasks,
+        errorMessage: `RalphWorks task list at ${taskListPath} does not contain parseable implementation tasks.`,
+      };
+    }
+
+    return { taskListPath, tasks };
+  } catch (error) {
+    return {
+      taskListPath,
+      tasks: [],
+      errorMessage: `RalphWorks task list at ${taskListPath} could not be read: ${error.message}`,
+    };
   }
+}
+
+function latestTransition(state) {
+  return state.transitionHistory.at(-1);
+}
+
+function shouldHandoffPhaseBoundary(nextState) {
+  const transition = latestTransition(nextState);
+  if (!transition?.from || !transition.to) {
+    return false;
+  }
+
+  return HANDOFF_PHASE_BOUNDARIES.has(`${transition.from}->${transition.to}`);
+}
+
+function createSessionHandoffId() {
+  return `handoff-${randomUUID()}`;
 }
 
 export function registerRalphWorksExtension(
@@ -114,6 +171,14 @@ export function registerRalphWorksExtension(
     return state;
   }
 
+  async function sendUserMessageForContext(ctx, content, options) {
+    if (typeof ctx?.sendUserMessage === "function") {
+      return ctx.sendUserMessage(content, options);
+    }
+
+    return pi.sendUserMessage?.(content, options);
+  }
+
   async function launchCurrentPhase(ctx, { prefixText, delivery } = {}) {
     if (!state) {
       return undefined;
@@ -130,48 +195,61 @@ export function registerRalphWorksExtension(
 
     const prompt = buildPhasePrompt(state, { extensionRoot });
     const content = prefixText ? `${prefixText}\n\n${prompt}` : prompt;
-    pi.sendUserMessage?.(
+    await sendUserMessageForContext(
+      ctx,
       content,
       delivery ? { deliverAs: delivery } : undefined,
     );
     return state;
   }
 
-  async function enterPhase(ctx, nextState, { reason, prefixText } = {}) {
-    state = recordCompactionEvent(nextState, {
-      boundary: "phase",
-      reason,
+  async function queueInternalHandoffCommand(ctx, handoffId) {
+    await sendUserMessageForContext(ctx, `/ralph-works handoff ${handoffId}`, {
+      deliverAs: "followUp",
+    });
+  }
+
+  async function requestSessionHandoff(
+    ctx,
+    nextState,
+    { boundary = "phase", reason, sourcePhase, targetPhase, taskId } = {},
+  ) {
+    const transition = latestTransition(nextState);
+    state = createPendingSessionHandoff(nextState, {
+      id: createSessionHandoffId(),
+      boundary,
+      reason: reason ?? `entered ${nextState.currentPhase}`,
+      sourcePhase: sourcePhase ?? transition?.from ?? nextState.currentPhase,
+      targetPhase: targetPhase ?? transition?.to ?? nextState.currentPhase,
+      taskId,
     });
     persistRalphWorksState(pi, state);
     updateRalphWorksTui(ctx, state, await getActivePhaseModelName(ctx, state));
+    await queueInternalHandoffCommand(ctx, state.pendingHandoff.id);
+    return state;
+  }
 
-    let launched = false;
-    const launchAfterCompaction = async () => {
-      if (launched) {
-        return state;
-      }
-      launched = true;
-      return launchCurrentPhase(ctx, {
-        prefixText,
-        delivery: "followUp",
-      });
-    };
-
-    const compactStarted = triggerRalphWorksCompaction(
-      ctx,
-      state,
-      "phase",
+  async function requestPhaseHandoff(ctx, nextState, { reason } = {}) {
+    return requestSessionHandoff(ctx, nextState, {
+      boundary: "phase",
       reason,
-      {
-        onComplete: launchAfterCompaction,
-        onError: launchAfterCompaction,
-      },
-    );
-    if (!compactStarted) {
-      return launchAfterCompaction();
+    });
+  }
+
+  async function enterPhase(ctx, nextState, { reason, prefixText } = {}) {
+    if (shouldHandoffPhaseBoundary(nextState)) {
+      return requestPhaseHandoff(ctx, nextState, { reason });
     }
 
-    return state;
+    state = nextState;
+    if (state.currentPhase === "complete") {
+      return completePipeline(ctx, reason ?? "workflow complete");
+    }
+
+    return launchCurrentPhase(ctx, {
+      prefixText,
+      delivery: "followUp",
+    });
   }
 
   async function pauseForHardenApproval(ctx) {
@@ -187,32 +265,21 @@ export function registerRalphWorksExtension(
       return state;
     }
 
-    state = recordCompactionEvent(state, {
-      boundary: "phase",
+    return requestSessionHandoff(ctx, state, {
+      boundary: "approval",
       reason: "hardened spec awaiting approval",
+      sourcePhase: "harden_spec",
+      targetPhase: "harden_spec",
     });
-    state = {
-      ...state,
-      phaseStatus: HARDEN_APPROVAL_STATUS,
-    };
-    persistRalphWorksState(pi, state);
-    updateRalphWorksTui(ctx, state, await getActivePhaseModelName(ctx, state));
-    triggerRalphWorksCompaction(
-      ctx,
-      state,
-      "phase",
-      "hardened spec awaiting approval",
-      {
-        onComplete: () => notifyHardenApproval(ctx),
-      },
-    );
-    notifyHardenApproval(ctx);
-    return state;
   }
 
   async function advanceToNextPhase(ctx, commandArgs, reason) {
     if (!state) {
       return undefined;
+    }
+
+    if (blockIfHandoffActive(ctx, "phase advancement")) {
+      return state;
     }
 
     if (state.currentPhase === "harden_spec") {
@@ -230,6 +297,10 @@ export function registerRalphWorksExtension(
 
   async function startWorkflow(ctx, commandArgs) {
     const [feature, ...promptParts] = commandArgs;
+    if (blockIfHandoffActive(ctx, "workflow start")) {
+      return state;
+    }
+
     if (!feature) {
       ctx.ui?.notify?.("Usage: /ralph-works start <feature> [prompt]", "error");
       return undefined;
@@ -285,6 +356,10 @@ export function registerRalphWorksExtension(
       return undefined;
     }
 
+    if (blockIfHandoffActive(ctx, "artifact recording")) {
+      return state;
+    }
+
     const [artifactKey, artifactPath] = commandArgs;
     state = recordArtifact(state, artifactKey, artifactPath);
     persistRalphWorksState(pi, state);
@@ -298,6 +373,10 @@ export function registerRalphWorksExtension(
       return [];
     }
 
+    if (blockIfHandoffActive(ctx, "gate execution")) {
+      return state.gateResults ?? [];
+    }
+
     const gateResults = await runPiConfiguredGates(pi, ctx);
     state = {
       ...state,
@@ -308,30 +387,100 @@ export function registerRalphWorksExtension(
     return gateResults;
   }
 
-  async function continueAfterTddTaskCompaction(ctx) {
-    if (!state || state.currentPhase !== "tdd_implement") {
+  function getBlockingHandoffStatus() {
+    return isHandoffFailedState(state)
+      ? HANDOFF_PHASE_FAILED_STATUS
+      : HANDOFF_PHASE_PENDING_STATUS;
+  }
+
+  function formatBlockingHandoffMessage(action) {
+    const handoffId = state?.pendingHandoff?.id ?? "unknown";
+    return `RalphWorks ${action} is blocked because session handoff ${handoffId} is ${getBlockingHandoffStatus()}.`;
+  }
+
+  function notifyWorkflowBlockedByHandoff(ctx, action) {
+    const status = getBlockingHandoffStatus();
+    const level = status === HANDOFF_PHASE_FAILED_STATUS ? "error" : "warning";
+    ctx.ui?.notify?.(formatBlockingHandoffMessage(action), level);
+  }
+
+  function blockIfHandoffActive(ctx, action) {
+    if (!isHandoffBlockingState(state)) {
+      return false;
+    }
+
+    notifyWorkflowBlockedByHandoff(ctx, action);
+    return true;
+  }
+
+  function formatTransitionToolResultText() {
+    if (isHandoffBlockingState(state)) {
+      return `ralph-works ${getBlockingHandoffStatus()}: ${state.pendingHandoff?.id ?? "unknown"}`;
+    }
+
+    return state
+      ? `ralph-works phase: ${state.currentPhase}`
+      : "ralph-works pipeline not started";
+  }
+
+  function notifyTaskCompletionBlockedByHandoff(ctx) {
+    notifyWorkflowBlockedByHandoff(ctx, "task completion");
+  }
+
+  function getIncompleteTddTasks(tasks, status) {
+    const completedTaskIds = new Set(status?.completedTaskIds ?? []);
+    return tasks.filter(
+      (task) => !task.completed && !completedTaskIds.has(task.id),
+    );
+  }
+
+  function formatTaskIds(tasks) {
+    const visibleTaskIds = tasks.slice(0, 5).map((task) => task.id);
+    const suffix = tasks.length > visibleTaskIds.length ? ", ..." : "";
+    return `${visibleTaskIds.join(", ")}${suffix}`;
+  }
+
+  async function completeTddPhase(ctx) {
+    if (isHandoffBlockingState(state)) {
+      notifyWorkflowBlockedByHandoff(ctx, "phase completion");
       return state;
     }
 
-    const tasks = readTaskList(ctx, state);
-    const nextTask =
-      tasks.length > 0
-        ? selectNextTask(tasks, implementationStatus)
-        : undefined;
+    const gateResults = await runGates(ctx);
+    if (!requiredGatesPassed(gateResults)) {
+      ctx.ui?.notify?.(
+        "ralph-works gates failed; review phase will not start.",
+        "error",
+      );
+      return state;
+    }
 
-    if (tasks.length === 0 || nextTask) {
-      return launchCurrentPhase(ctx, {
-        prefixText:
-          "Continue TDD implementation with the next incomplete task.",
-        delivery: "followUp",
-      });
+    const taskList = readTaskList(ctx, state);
+    if (taskList.errorMessage) {
+      ctx.ui?.notify?.(taskList.errorMessage, "error");
+      return state;
+    }
+
+    const incompleteTasks = getIncompleteTddTasks(
+      taskList.tasks,
+      state.implementationStatus ?? implementationStatus,
+    );
+    if (incompleteTasks.length > 0) {
+      ctx.ui?.notify?.(
+        `RalphWorks cannot start review; incomplete TDD tasks remain: ${formatTaskIds(incompleteTasks)}.`,
+        "warning",
+      );
+      return state;
     }
 
     const nextState = advancePhase(state, {
       reason: "completed tdd_implement",
     });
-    return enterPhase(ctx, nextState, {
-      reason: `entered ${nextState.currentPhase}`,
+    return requestSessionHandoff(ctx, nextState, {
+      boundary: "phase",
+      reason: "completed tdd_implement",
+      sourcePhase: "tdd_implement",
+      targetPhase: "review",
     });
   }
 
@@ -339,6 +488,33 @@ export function registerRalphWorksExtension(
     if (!state) {
       notifyNoActivePipeline(ctx);
       return undefined;
+    }
+
+    if (isHandoffBlockingState(state)) {
+      notifyTaskCompletionBlockedByHandoff(ctx);
+      return state;
+    }
+
+    const normalizedTaskId = String(taskId ?? "").trim();
+    if (!normalizedTaskId) {
+      ctx.ui?.notify?.("Usage: /ralph-works tdd-complete <task-id>", "error");
+      return state;
+    }
+
+    if (state.currentPhase !== "tdd_implement") {
+      ctx.ui?.notify?.(
+        "TDD task completion is only available during tdd_implement.",
+        "warning",
+      );
+      return state;
+    }
+
+    if (implementationStatus.completedTaskIds.includes(normalizedTaskId)) {
+      ctx.ui?.notify?.(
+        `RalphWorks task ${normalizedTaskId} is already completed.`,
+        "info",
+      );
+      return state;
     }
 
     const gateResults = await runGates(ctx);
@@ -350,48 +526,57 @@ export function registerRalphWorksExtension(
       return state;
     }
 
-    implementationStatus = markTaskComplete(implementationStatus, taskId, {
-      gateResults,
-    });
-    state = {
-      ...state,
-      tddCompletedTasks: state.tddCompletedTasks + 1,
-      implementationStatus,
-    };
-    state = recordCompactionEvent(state, {
-      boundary: "task",
-      reason: `completed ${taskId}`,
-    });
-    persistRalphWorksState(pi, state);
-    await showStatus(ctx);
+    const taskList = readTaskList(ctx, state);
+    if (taskList.errorMessage) {
+      ctx.ui?.notify?.(taskList.errorMessage, "error");
+      return state;
+    }
 
-    let continued = false;
-    const continueOnce = async () => {
-      if (continued) {
-        return state;
-      }
-      continued = true;
-      return continueAfterTddTaskCompaction(ctx);
-    };
-    const compactStarted = triggerRalphWorksCompaction(
-      ctx,
-      state,
-      "task",
-      `completed ${taskId}`,
+    const listedTask = taskList.tasks.find(
+      (task) => task.id === normalizedTaskId,
+    );
+    if (!listedTask) {
+      ctx.ui?.notify?.(
+        `RalphWorks task ${normalizedTaskId} is not listed in ${taskList.taskListPath}.`,
+        "error",
+      );
+      return state;
+    }
+    implementationStatus = markTaskComplete(
+      implementationStatus,
+      normalizedTaskId,
       {
-        onComplete: continueOnce,
-        onError: continueOnce,
+        gateResults,
       },
     );
-    if (!compactStarted) {
-      return continueOnce();
-    }
-    return state;
+    const completedState = {
+      ...state,
+      tddCompletedTasks: (state.tddCompletedTasks ?? 0) + 1,
+      implementationStatus,
+    };
+    const nextTask = selectNextTask(taskList.tasks, implementationStatus);
+    const nextState = nextTask
+      ? completedState
+      : advancePhase(completedState, {
+          reason: "completed tdd_implement",
+        });
+
+    return requestSessionHandoff(ctx, nextState, {
+      boundary: "task",
+      reason: `completed ${normalizedTaskId}`,
+      sourcePhase: "tdd_implement",
+      targetPhase: nextState.currentPhase,
+      taskId: normalizedTaskId,
+    });
   }
 
   async function handlePhaseCompleteSignal(ctx) {
     if (!state) {
       return undefined;
+    }
+
+    if (blockIfHandoffActive(ctx, "phase completion")) {
+      return state;
     }
 
     if (state.currentPhase === "complete") {
@@ -411,24 +596,7 @@ export function registerRalphWorksExtension(
     }
 
     if (state.currentPhase === "tdd_implement") {
-      const gateResults = await runPiConfiguredGates(pi, ctx);
-      state = {
-        ...state,
-        gateResults,
-      };
-      persistRalphWorksState(pi, state);
-      updateRalphWorksTui(
-        ctx,
-        state,
-        await getActivePhaseModelName(ctx, state),
-      );
-      if (!requiredGatesPassed(gateResults)) {
-        ctx.ui?.notify?.(
-          "ralph-works gates failed; review phase will not start.",
-          "error",
-        );
-        return state;
-      }
+      return completeTddPhase(ctx);
     }
 
     const nextState = advancePhase(state, {
@@ -439,9 +607,40 @@ export function registerRalphWorksExtension(
     });
   }
 
+  async function requestReviewLoopback(ctx, reason) {
+    if (!state) {
+      notifyNoActivePipeline(ctx);
+      return undefined;
+    }
+
+    if (blockIfHandoffActive(ctx, "review loopback")) {
+      return state;
+    }
+
+    if (state.currentPhase !== "review") {
+      ctx.ui?.notify?.(
+        "Review loopback is only available during review.",
+        "warning",
+      );
+      return state;
+    }
+
+    const nextState = transitionToPhase(state, "tdd_implement", { reason });
+    return requestSessionHandoff(ctx, nextState, {
+      boundary: "review_loopback",
+      reason,
+      sourcePhase: "review",
+      targetPhase: "tdd_implement",
+    });
+  }
+
   async function handleReviewTurn(ctx, assistantText) {
     if (!state || state.currentPhase !== "review") {
       return false;
+    }
+
+    if (blockIfHandoffActive(ctx, "review completion")) {
+      return true;
     }
 
     if (isLgtmReview(assistantText)) {
@@ -450,13 +649,7 @@ export function registerRalphWorksExtension(
     }
 
     if (requestsReviewLoopback(assistantText)) {
-      const nextState = transitionToPhase(state, "tdd_implement", {
-        reason: "review requested changes",
-      });
-      await enterPhase(ctx, nextState, {
-        reason: "review requested changes",
-        prefixText: "Review requested changes; return to TDD implementation.",
-      });
+      await requestReviewLoopback(ctx, "review requested changes");
       return true;
     }
 
@@ -465,6 +658,10 @@ export function registerRalphWorksExtension(
 
   async function handleAgentEnd(event, ctx) {
     if (!state || state.pipelineStatus !== "running") {
+      return;
+    }
+
+    if (blockIfHandoffActive(ctx, "automatic advancement")) {
       return;
     }
 
@@ -492,7 +689,10 @@ export function registerRalphWorksExtension(
   }
 
   async function approveHardenedSpec(ctx, commandArgs = []) {
-    if (state?.currentPhase !== "harden_spec") {
+    if (
+      state?.currentPhase !== "harden_spec" ||
+      state.phaseStatus !== HARDEN_APPROVAL_STATUS
+    ) {
       return false;
     }
 
@@ -500,25 +700,191 @@ export function registerRalphWorksExtension(
       renderHtml: commandArgs.includes("--render-html"),
       reason: "hardened spec approved",
     });
-    await enterPhase(ctx, nextState, {
+    await requestSessionHandoff(ctx, nextState, {
+      boundary: "approval",
       reason: `entered ${nextState.currentPhase}`,
     });
     return true;
   }
 
+  async function executePendingHandoff(ctx, handoffId) {
+    if (!state) {
+      notifyNoActivePipeline(ctx);
+      return undefined;
+    }
+
+    if (isHandoffFailedState(state)) {
+      notifyWorkflowBlockedByHandoff(ctx, "session handoff");
+      return state;
+    }
+
+    try {
+      return await executeRalphWorksSessionHandoff(ctx, state, {
+        handoffId,
+        onStateChange: async (nextState) => {
+          state = nextState;
+          persistRalphWorksState(pi, state);
+          updateRalphWorksTui(
+            ctx,
+            state,
+            await getActivePhaseModelName(ctx, state),
+          );
+        },
+      });
+    } catch (error) {
+      ctx.ui?.notify?.(error.message, "error");
+      return state;
+    }
+  }
+
+  function validateResumeHandoff(handoffId) {
+    const descriptor = validatePendingSessionHandoff(state, handoffId, {
+      expectedStatus: HANDOFF_STATUS_READY_IN_NEW_SESSION,
+    });
+
+    if (state.phaseStatus !== HANDOFF_PHASE_PENDING_STATUS) {
+      throw new Error(
+        `RalphWorks handoff phase status mismatch: expected ${HANDOFF_PHASE_PENDING_STATUS}, found ${state.phaseStatus}.`,
+      );
+    }
+
+    if (descriptor.targetPhase !== state.currentPhase) {
+      throw new Error(
+        `RalphWorks handoff target phase mismatch: expected current phase ${state.currentPhase}, found ${descriptor.targetPhase}.`,
+      );
+    }
+
+    return descriptor;
+  }
+
+  async function failResumeHandoff(ctx, handoffId, error, sourceState = state) {
+    if (!sourceState?.pendingHandoff) {
+      ctx.ui?.notify?.(error.message, "error");
+      return state;
+    }
+
+    state = failSessionHandoff(
+      sourceState,
+      sourceState.pendingHandoff.id ?? handoffId,
+      {
+        error,
+      },
+    );
+    persistRalphWorksState(pi, state);
+    updateRalphWorksTui(ctx, state, await getActivePhaseModelName(ctx, state));
+    ctx.ui?.notify?.(state.pendingHandoff.errorMessage, "error");
+    return state;
+  }
+
+  function isHardenApprovalResume(descriptor) {
+    return (
+      ["approval", "phase"].includes(descriptor.boundary) &&
+      descriptor.sourcePhase === "harden_spec" &&
+      descriptor.targetPhase === "harden_spec"
+    );
+  }
+
+  async function resumeHandoff(ctx, handoffId) {
+    if (!state) {
+      notifyNoActivePipeline(ctx);
+      return undefined;
+    }
+
+    let descriptor;
+    try {
+      descriptor = validateResumeHandoff(handoffId);
+    } catch (error) {
+      return failResumeHandoff(ctx, handoffId, error);
+    }
+
+    const readyState = state;
+    const phaseStatus = isHardenApprovalResume(descriptor)
+      ? HARDEN_APPROVAL_STATUS
+      : "executing";
+    state = completeSessionHandoff(readyState, descriptor.id, { phaseStatus });
+    persistRalphWorksState(pi, state);
+
+    if (phaseStatus === HARDEN_APPROVAL_STATUS) {
+      updateRalphWorksTui(
+        ctx,
+        state,
+        await getActivePhaseModelName(ctx, state),
+      );
+      notifyHardenApproval(ctx);
+      return state;
+    }
+
+    try {
+      const activeModel = await routeModelForCurrentPhase(pi, ctx, state);
+      updateRalphWorksTui(ctx, state, activeModel);
+      await sendUserMessageForContext(
+        ctx,
+        buildPhasePrompt(state, { extensionRoot }),
+        {
+          deliverAs: "followUp",
+        },
+      );
+      return state;
+    } catch (error) {
+      return failResumeHandoff(ctx, descriptor.id, error, readyState);
+    }
+  }
+
+  async function queueReadyHandoffResume(ctx) {
+    if (state?.pendingHandoff?.status !== HANDOFF_STATUS_READY_IN_NEW_SESSION) {
+      return;
+    }
+
+    await sendUserMessageForContext(
+      ctx,
+      `/ralph-works resume-handoff ${state.pendingHandoff.id}`,
+      {
+        deliverAs: "followUp",
+      },
+    );
+  }
+
   async function handleCommand(args, ctx) {
     const [command = "status", ...commandArgs] = splitCommandArgs(args);
 
-    if (command === "start") {
-      await startWorkflow(ctx, commandArgs);
-      return;
-    }
     if (command === "status") {
       await showStatus(ctx);
       return;
     }
     if (command === "help") {
       ctx.ui?.notify?.(HELP_MESSAGE, "info");
+      return;
+    }
+    if (command === "reset") {
+      state = undefined;
+      implementationStatus = createImplementationStatus();
+      ctx.ui?.setStatus?.("ralph-works", undefined);
+      ctx.ui?.setWidget?.("ralph-works", []);
+      return;
+    }
+    if (command === "handoff") {
+      const handoffId = commandArgs[0];
+      if (!handoffId) {
+        throw new Error("Usage: /ralph-works handoff <handoff-id>");
+      }
+      await executePendingHandoff(ctx, handoffId);
+      return;
+    }
+    if (command === "resume-handoff") {
+      const handoffId = commandArgs[0];
+      if (!handoffId) {
+        throw new Error("Usage: /ralph-works resume-handoff <handoff-id>");
+      }
+      await resumeHandoff(ctx, handoffId);
+      return;
+    }
+
+    if (blockIfHandoffActive(ctx, command)) {
+      return;
+    }
+
+    if (command === "start") {
+      await startWorkflow(ctx, commandArgs);
       return;
     }
     if (command === "next") {
@@ -560,19 +926,10 @@ export function registerRalphWorksExtension(
       return;
     }
     if (command === "loopback") {
-      if (!state) {
-        notifyNoActivePipeline(ctx);
-        return;
-      }
-      state = applyPhaseCommand(state, command, commandArgs);
-      await enterPhase(ctx, state, { reason: command });
-      return;
-    }
-    if (command === "reset") {
-      state = undefined;
-      implementationStatus = createImplementationStatus();
-      ctx.ui?.setStatus?.("ralph-works", undefined);
-      ctx.ui?.setWidget?.("ralph-works", []);
+      await requestReviewLoopback(
+        ctx,
+        commandArgs.join(" ") || "review-critical-bugs",
+      );
       return;
     }
 
@@ -585,6 +942,7 @@ export function registerRalphWorksExtension(
       state?.implementationStatus ?? createImplementationStatus();
     if (state) {
       await showStatus(ctx);
+      await queueReadyHandoffResume(ctx);
     }
   });
 
@@ -659,10 +1017,7 @@ export function registerRalphWorksExtension(
         params.renderHtml ? ["--render-html"] : [],
         "command:next",
       );
-      return createToolResult(
-        `ralph-works phase: ${state.currentPhase}`,
-        state,
-      );
+      return createToolResult(formatTransitionToolResultText(), state);
     },
   });
 
@@ -684,20 +1039,14 @@ export function registerRalphWorksExtension(
         return createToolResult("ralph-works pipeline not started", undefined);
       }
 
+      if (blockIfHandoffActive(ctx, "artifact recording")) {
+        return createToolResult(formatTransitionToolResultText(), state);
+      }
+
       state = recordArtifact(state, params.key, params.path);
       persistRalphWorksState(pi, state);
       await showStatus(ctx);
       return createToolResult(`recorded ${params.key}: ${params.path}`, state);
     },
   });
-}
-
-function applyPhaseCommand(state, command, commandArgs) {
-  if (command === "loopback") {
-    return transitionToPhase(state, "tdd_implement", {
-      reason: commandArgs.join(" ") || "review-critical-bugs",
-    });
-  }
-
-  throw new Error(`Unknown ralph-works phase command: ${command}`);
 }
