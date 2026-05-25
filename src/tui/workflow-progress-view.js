@@ -183,6 +183,22 @@ function renderHandoffDetails(state, { color }) {
   return lines;
 }
 
+function renderHardenApprovalDetails(state, { color }) {
+  if (state.phaseStatus !== HARDEN_APPROVAL_STATUS) {
+    return [];
+  }
+
+  return [
+    [
+      colorText("Approval", "mist", color),
+      colorText(" · ", "muted", color),
+      colorText("/ralph-works approve", "amber", color),
+      colorText(" or ", "muted", color),
+      colorText("/ralph-works approve --render-html", "amber", color),
+    ].join(""),
+  ];
+}
+
 export function renderWorkflowProgress(
   state,
   { activeModel, color = true } = {},
@@ -244,6 +260,7 @@ export function renderWorkflowProgress(
     );
   }
 
+  lines.push(...renderHardenApprovalDetails(state, { color }));
   lines.push(...renderHandoffDetails(state, { color }));
   lines.push(...renderGateStatus(state.gateResults, { color }));
 

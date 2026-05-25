@@ -96,6 +96,8 @@ test("workflow progress view shows harden approval waiting state", () => {
 
   assert.match(lines[0], /ralph-works · WAITING/);
   assert.match(lines.join("\n"), /Harden Spec/);
+  assert.match(lines.join("\n"), /Approval · \/ralph-works approve/);
+  assert.match(lines.join("\n"), /\/ralph-works approve --render-html/);
 });
 
 test("workflow progress view shows pending handoff details", () => {
