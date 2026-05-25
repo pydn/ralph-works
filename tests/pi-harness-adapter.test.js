@@ -891,6 +891,43 @@ test("ralph_works_transition reports existing pending handoffs without queuing d
   }
 });
 
+test("ralph_works_transition queues internal handoff command through pi runtime when context can send", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx } = createFakeContext(tempDir);
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+    await startPipeline(piCalls, ctx);
+
+    const contextMessages = [];
+    ctx.sendUserMessage = async (content, options) => {
+      contextMessages.push({ content, options });
+      piCalls.operations.push({
+        type: "ctx.sendUserMessage",
+        content,
+        options,
+      });
+    };
+    const messagesBeforeTransition = piCalls.userMessages.length;
+
+    const tool = piCalls.tools.find(
+      (definition) => definition.name === "ralph_works_transition",
+    );
+    const result = await tool.execute("tool-1", {}, undefined, undefined, ctx);
+
+    assert.match(result.content[0].text, /handoff_pending/);
+    assert.equal(piCalls.userMessages.length, messagesBeforeTransition + 1);
+    assert.equal(
+      piCalls.userMessages.at(-1).content,
+      `/ralph-works handoff ${result.details.state.pendingHandoff.id}`,
+    );
+    assert.equal(piCalls.userMessages.at(-1).options.deliverAs, "followUp");
+    assert.deepEqual(contextMessages, []);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("replacement session_start queues ready handoff resume and resume uses replacement runtime", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
@@ -947,6 +984,49 @@ test("replacement session_start queues ready handoff resume and resume uses repl
     assert.equal(piCalls.userMessages[0].options.deliverAs, "followUp");
     assert.equal(oldRuntime.calls.models.length, 0);
     assert.equal(oldRuntime.calls.userMessages.length, 0);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("replacement session_start queues ready handoff resume through pi runtime when context can send", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
+  try {
+    const readyState = createReadyPhaseHandoffState();
+    const { pi, calls: piCalls } = createFakePi();
+    const { ctx } = createFakeContext(tempDir, {
+      entries: [
+        {
+          type: "custom",
+          customType: RALPH_WORKS_STATE_ENTRY_TYPE,
+          data: readyState,
+        },
+      ],
+      parentSession: "sessions/replacement.jsonl",
+    });
+    const contextMessages = [];
+    ctx.sendUserMessage = async (content, options) => {
+      contextMessages.push({ content, options });
+      piCalls.operations.push({
+        type: "ctx.sendUserMessage",
+        content,
+        options,
+      });
+    };
+    registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
+
+    await piCalls.events.get("session_start")(
+      { reason: "new", previousSessionFile: "old" },
+      ctx,
+    );
+
+    assert.equal(piCalls.userMessages.length, 1);
+    assert.equal(
+      piCalls.userMessages[0].content,
+      "/ralph-works resume-handoff handoff-1",
+    );
+    assert.equal(piCalls.userMessages[0].options.deliverAs, "followUp");
+    assert.deepEqual(contextMessages, []);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -1039,26 +1119,33 @@ test("replacement handoff routes model before sending the replacement prompt wit
       sourceCalls.operations.slice(sourceOperationsBeforeHandoff),
       [],
     );
-    assert.equal(replacementCalls.userMessages.length, 0);
-    assert.equal(replacementContextMessages.length, 1);
+    assert.equal(replacementCalls.userMessages.length, 1);
     assert.equal(
-      replacementContextMessages[0].content,
+      replacementCalls.userMessages[0].content,
       `/ralph-works resume-handoff ${latestState(sourceCalls).pendingHandoff.id}`,
     );
+    assert.equal(
+      replacementCalls.userMessages[0].options.deliverAs,
+      "followUp",
+    );
+    assert.equal(replacementContextMessages.length, 0);
 
     await replacementCalls.commands
       .get("ralph-works")
       .handler(
-        replacementContextMessages[0].content.replace(/^\/ralph-works\s+/, ""),
+        replacementCalls.userMessages[0].content.replace(
+          /^\/ralph-works\s+/,
+          "",
+        ),
         replacementCtx,
       );
 
     assert.equal(replacementCalls.models.at(-1).provider, "openai");
     assert.equal(replacementCalls.models.at(-1).id, "red-team-model");
-    assert.equal(replacementCalls.userMessages.length, 0);
-    assert.equal(replacementContextMessages.length, 2);
+    assert.equal(replacementCalls.userMessages.length, 1);
+    assert.equal(replacementContextMessages.length, 1);
     assert.match(
-      replacementContextMessages[1].content,
+      replacementContextMessages[0].content,
       /# ralph-works Phase: Red Team/,
     );
     const modelIndex = replacementCalls.operations.findIndex(
@@ -1899,12 +1986,20 @@ test("replacement prompt dispatch failure marks the handoff failed instead of si
       { reason: "new", previousSessionFile: "old" },
       ctx,
     );
-    assert.equal(replacementContextMessages.length, 1);
+    assert.equal(piCalls.userMessages.length, 1);
+    assert.equal(
+      piCalls.userMessages[0].content,
+      "/ralph-works resume-handoff handoff-1",
+    );
+    assert.equal(replacementContextMessages.length, 0);
 
     await assert.doesNotReject(() =>
       piCalls.commands
         .get("ralph-works")
-        .handler("resume-handoff handoff-1", ctx),
+        .handler(
+          piCalls.userMessages[0].content.replace(/^\/ralph-works\s+/, ""),
+          ctx,
+        ),
     );
 
     const failedState = latestState(piCalls);
@@ -1918,7 +2013,12 @@ test("replacement prompt dispatch failure marks the handoff failed instead of si
     );
     assert.equal(failedState.sessionHandoffEvents.length, 0);
     assert.equal(piCalls.models.length, 0);
-    assert.equal(replacementContextMessages.length, 2);
+    assert.equal(piCalls.userMessages.length, 1);
+    assert.equal(replacementContextMessages.length, 1);
+    assert.match(
+      replacementContextMessages[0].content,
+      /# ralph-works Phase: Red Team/,
+    );
     assert.match(
       ctxCalls.notifications.at(-1).message,
       /prompt dispatch exploded/,

@@ -179,6 +179,12 @@ export function registerRalphWorksExtension(
     return pi.sendUserMessage?.(content, options);
   }
 
+  async function queueInternalCommand(content) {
+    return pi.sendUserMessage?.(content, {
+      deliverAs: "followUp",
+    });
+  }
+
   async function launchCurrentPhase(ctx, { prefixText, delivery } = {}) {
     if (!state) {
       return undefined;
@@ -203,10 +209,8 @@ export function registerRalphWorksExtension(
     return state;
   }
 
-  async function queueInternalHandoffCommand(ctx, handoffId) {
-    await sendUserMessageForContext(ctx, `/ralph-works handoff ${handoffId}`, {
-      deliverAs: "followUp",
-    });
+  async function queueInternalHandoffCommand(handoffId) {
+    await queueInternalCommand(`/ralph-works handoff ${handoffId}`);
   }
 
   async function requestSessionHandoff(
@@ -225,7 +229,7 @@ export function registerRalphWorksExtension(
     });
     persistRalphWorksState(pi, state);
     updateRalphWorksTui(ctx, state, await getActivePhaseModelName(ctx, state));
-    await queueInternalHandoffCommand(ctx, state.pendingHandoff.id);
+    await queueInternalHandoffCommand(state.pendingHandoff.id);
     return state;
   }
 
@@ -830,17 +834,13 @@ export function registerRalphWorksExtension(
     }
   }
 
-  async function queueReadyHandoffResume(ctx) {
+  async function queueReadyHandoffResume() {
     if (state?.pendingHandoff?.status !== HANDOFF_STATUS_READY_IN_NEW_SESSION) {
       return;
     }
 
-    await sendUserMessageForContext(
-      ctx,
+    await queueInternalCommand(
       `/ralph-works resume-handoff ${state.pendingHandoff.id}`,
-      {
-        deliverAs: "followUp",
-      },
     );
   }
 
@@ -942,7 +942,7 @@ export function registerRalphWorksExtension(
       state?.implementationStatus ?? createImplementationStatus();
     if (state) {
       await showStatus(ctx);
-      await queueReadyHandoffResume(ctx);
+      await queueReadyHandoffResume();
     }
   });
 
