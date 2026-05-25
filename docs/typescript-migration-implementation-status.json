@@ -1,0 +1,267 @@
+{
+  "claimedTaskIds": [],
+  "completedTaskIds": [
+    "T001",
+    "T002",
+    "T003",
+    "T004",
+    "T005",
+    "T006",
+    "T007",
+    "T008",
+    "T009",
+    "T010",
+    "T011",
+    "T012",
+    "T013"
+  ],
+  "gateResultsByTask": {
+    "T001": [],
+    "T002": [],
+    "T003": [],
+    "T004": [],
+    "T005": [],
+    "T006": [],
+    "T007": [],
+    "T008": [],
+    "T009": [],
+    "T010": [],
+    "T011": [],
+    "T012": [],
+    "T013": []
+  },
+  "taskSummaries": {
+    "T001": {
+      "status": "complete",
+      "redEvidence": "npm run typecheck failed before setup because the typecheck script was missing.",
+      "changes": [
+        "Added TypeScript source-run dependencies: typescript, @types/node, and jiti.",
+        "Added strict no-emit NodeNext tsconfig.json with allowImportingTsExtensions, isolatedModules, erasableSyntaxOnly, and Node ambient types.",
+        "Added engines.node >=22.22.2 and package scripts that run typecheck before check and test.",
+        "Replaced the extension-entry Pi package type import with a local erasable object type so type checking works without bundling Pi core.",
+        "Added a narrow temporary declaration shim for the existing JavaScript harness adapter until that module is migrated."
+      ],
+      "validation": ["npm run typecheck", "npm test", "npm run check"],
+      "gates": "gate.config.json currently configures no gates."
+    },
+    "T002": {
+      "status": "complete",
+      "redEvidence": "Added tests/entrypoint-load.test.js; node --test tests/entrypoint-load.test.js failed because index.ts still exported ./src/extension-entry.js and the JavaScript wrapper still existed.",
+      "changes": [
+        "Updated index.ts to re-export ./src/extension-entry.ts with an explicit .ts specifier.",
+        "Removed the obsolete src/extension-entry.js JavaScript entrypoint wrapper.",
+        "Added tests/entrypoint-load.test.js to verify package pi.extensions, TypeScript entrypoint imports, absence of the JavaScript wrapper, and jiti source loading.",
+        "Added a temporary TypeScript harness bridge used by src/extension-entry.ts until the full harness adapter is migrated in T007."
+      ],
+      "validation": [
+        "node --test tests/entrypoint-load.test.js",
+        "npm run typecheck",
+        "npm test",
+        "npm run check"
+      ],
+      "gates": "gate.config.json currently configures no gates."
+    },
+    "T003": {
+      "status": "complete",
+      "redEvidence": "Updated focused workflow tests to import the expected .ts state/task modules; node --test tests/phase-completion.test.js tests/phase-transitions.test.js tests/session-handoff-state.test.js tests/task-status-updater.test.js failed with ERR_MODULE_NOT_FOUND before the modules were renamed.",
+      "changes": [
+        "Renamed src/phases, src/state, and src/tasks workflow modules from .js to .ts.",
+        "Added explicit workflow, phase, transition, handoff, gate-result, and implementation-status types for the migrated modules.",
+        "Updated runtime and test imports that depend on phase, state, and task-status modules to explicit .ts specifiers.",
+        "Preserved phase markers, harden approval status, transition behavior, session handoff status values, and task completion behavior."
+      ],
+      "validation": [
+        "node --test tests/phase-completion.test.js tests/phase-transitions.test.js tests/session-handoff-state.test.js tests/task-status-updater.test.js",
+        "npm run typecheck",
+        "npm test",
+        "npm run check"
+      ],
+      "gates": "gate.config.json currently configures no gates."
+    },
+    "T004": {
+      "status": "complete",
+      "redEvidence": "Updated artifact path, phase prompt builder, and session handoff summary tests to import the expected .ts modules; node --test tests/artifact-paths.test.js tests/phase-prompt-builder.test.js tests/session-handoff-summary.test.js failed with ERR_MODULE_NOT_FOUND before the modules were renamed.",
+      "changes": [
+        "Renamed src/artifacts/*.js and src/prompts/*.js to .ts and updated runtime/test imports to explicit .ts specifiers.",
+        "Added TypeScript types for artifact references, handoff summary state, artifact inventory limits/records, explicit current artifacts, prompt builder inputs, and prompt/transition helpers.",
+        "Preserved docs artifact path naming, feature sanitization, prompt artifact ordering, untrusted excerpt labeling, bounded excerpt budgets, binary detection, outside-workspace checks, and symlink escape safeguards.",
+        "Tightened WorkflowState artifact typing to recorded string paths and kept optional implementation status context available to handoff summaries."
+      ],
+      "validation": [
+        "node --test tests/artifact-paths.test.js tests/phase-prompt-builder.test.js tests/session-handoff-summary.test.js",
+        "npm run typecheck",
+        "npm run check",
+        "npm test"
+      ],
+      "gates": "gate.config.json currently configures no gates."
+    },
+    "T005": {
+      "status": "complete",
+      "redEvidence": "Updated gate/model focused tests to import the expected .ts modules; node --test tests/gate-config-loader.test.js tests/gate-runner.test.js tests/model-config-loader.test.js tests/phase-model-resolver.test.js failed with ERR_MODULE_NOT_FOUND before the modules were renamed.",
+      "changes": [
+        "Renamed src/gates/*.js and src/models/*.js to .ts and updated runtime/test imports to explicit .ts specifiers.",
+        "Added explicit TypeScript types for gate configs, gate definitions, gate execution/results, runner options, model configs, model references, and phase model resolution inputs.",
+        "Changed gate and model validators to accept unknown inputs and narrow JSON/config shapes while preserving existing validation messages and fallback behavior.",
+        "Preserved required/optional gate blocking semantics, gate result fields, model reference parsing, and phase/default model fallback behavior."
+      ],
+      "validation": [
+        "node --test tests/gate-config-loader.test.js tests/gate-runner.test.js tests/model-config-loader.test.js tests/phase-model-resolver.test.js",
+        "npm run typecheck",
+        "npm run check",
+        "npm test"
+      ],
+      "gates": "gate.config.json currently configures no gates."
+    },
+    "T006": {
+      "status": "complete",
+      "redEvidence": "Updated tests/workflow-progress-view.test.js to import ../src/tui/workflow-progress-view.ts; node --test tests/workflow-progress-view.test.js failed with ERR_MODULE_NOT_FOUND before the TUI modules were renamed.",
+      "changes": [
+        "Renamed src/tui/calm-terminal-palette.js, src/tui/gate-status-view.js, and src/tui/workflow-progress-view.js to .ts.",
+        "Updated TUI and dependent harness imports to explicit .ts specifiers.",
+        "Added explicit TypeScript types for palette color names, gate status rows/options, workflow progress state, transitions, handoff display data, active model options, and rendering helpers.",
+        "Preserved visible widget labels, ordering, control-character sanitization, harden approval instructions, loopback display, handoff details, model truncation, ANSI color behavior, and gate status text."
+      ],
+      "validation": [
+        "node --test tests/workflow-progress-view.test.js",
+        "npm run typecheck",
+        "npm run check",
+        "npm test"
+      ],
+      "gates": "gate.config.json currently configures no gates."
+    },
+    "T007": {
+      "status": "complete",
+      "redEvidence": "Updated harness-focused tests to import ../src/harness/*.ts modules; node --test tests/pi-harness-adapter.test.js tests/pi-state-persistence.test.js tests/pi-session-handoff.test.js failed with ERR_MODULE_NOT_FOUND before the harness modules were renamed.",
+      "changes": [
+        "Renamed src/harness/*.js modules to .ts and updated harness tests plus internal harness imports to explicit .ts specifiers.",
+        "Removed the temporary TypeScript harness adapter bridge and pointed src/extension-entry.ts directly at the migrated TypeScript adapter.",
+        "Added narrow local TypeScript interfaces for the Pi API, context, session manager, UI, commands, tools, and tool results used by RalphWorks.",
+        "Typed the command handler, tool handlers, state persistence, session handoff orchestration, gate runner bridge, model routing, TUI updater, argument parser, and tool result helpers while preserving command/tool names and workflow behavior.",
+        "Preserved marker handling, harden approval pause, optional HTML approval, required gate blocking, model routing, TUI updates, notifications, replacement-session handoff behavior, and persisted state semantics."
+      ],
+      "validation": [
+        "node --test tests/pi-harness-adapter.test.js tests/pi-state-persistence.test.js tests/pi-session-handoff.test.js",
+        "node --test tests/entrypoint-load.test.js tests/pi-harness-adapter.test.js tests/pi-state-persistence.test.js tests/pi-session-handoff.test.js",
+        "npm run typecheck",
+        "npm run check",
+        "npm test"
+      ],
+      "gates": "gate.config.json currently configures no gates."
+    },
+    "T008": {
+      "status": "complete",
+      "redEvidence": "A repository checklist command failed before migration because the expected tests/*.test.ts, tests/*.e2e.test.ts, and tests/fixtures/scripted-pi-provider.ts counterparts did not exist.",
+      "changes": [
+        "Renamed every first-party test under tests/ from .js to .ts, including the opt-in real-Pi e2e test.",
+        "Renamed tests/fixtures/scripted-pi-provider.js to tests/fixtures/scripted-pi-provider.ts and updated real-Pi e2e fixture extension paths to the .ts file.",
+        "Added strict TypeScript annotations and narrow local test helper types so the migrated tests, fixtures, and skipped e2e coverage are included in tsc --noEmit.",
+        "Updated npm test to run the TypeScript test files explicitly and updated npm run test:e2e:pi to target the migrated .e2e.test.ts path.",
+        "Added a narrow local declaration for the external @earendil-works/pi-ai fixture helper used by the scripted provider during type checking."
+      ],
+      "validation": [
+        "node --input-type=module <one-to-one TypeScript test counterpart checklist> (failed before rename)",
+        "node --input-type=module <one-to-one TypeScript test counterpart checklist> (passed after rename)",
+        "npm run typecheck",
+        "node --test tests/*.test.ts tests/*.e2e.test.ts",
+        "npm run check",
+        "npm test"
+      ],
+      "gates": "gate.config.json currently configures no gates."
+    },
+    "T009": {
+      "status": "complete",
+      "redEvidence": "Added tests/repository-invariants.test.ts before its helper existed; node --test tests/repository-invariants.test.ts failed with ERR_MODULE_NOT_FOUND for tests/repository-invariant-checks.ts.",
+      "changes": [
+        "Added tests/repository-invariants.test.ts to cover migration invariants in the normal tests/*.test.ts suite.",
+        "Added tests/repository-invariant-checks.ts to discover first-party repository files while excluding node_modules, dist, coverage, docs, and .git content.",
+        "The invariant now fails on existing first-party .js, .mjs, or .cjs files outside generated/external directories.",
+        "The invariant parses TypeScript files with the TypeScript compiler API and fails on actual local relative import/export/dynamic/type import specifiers ending in .js without flagging comments, strings, docs artifacts, or external package imports.",
+        "Kept the existing jiti entrypoint smoke test in tests/entrypoint-load.test.ts covered by the npm test TypeScript glob."
+      ],
+      "validation": [
+        "node --test tests/repository-invariants.test.ts",
+        "npm run typecheck",
+        "npm run check",
+        "npm test"
+      ],
+      "gates": "gate.config.json currently configures no gates."
+    },
+    "T010": {
+      "status": "complete",
+      "redEvidence": "Added tests/package-validation-contract.test.ts; node --test tests/package-validation-contract.test.ts failed because tsconfig.json did not include root TypeScript support files with the *.ts include pattern.",
+      "changes": [
+        "Added a package validation contract test covering final TypeScript-oriented npm scripts, TypeScript test path targets, Biome helper scripts, strict source-run compiler options, and tsconfig include/exclude coverage.",
+        "Expanded tsconfig.json include entries to cover root TypeScript support files with *.ts while retaining the explicit index.ts, src/**/*.ts, and tests/**/*.ts coverage.",
+        "Verified npm test runs typecheck before explicit TypeScript test globs and npm run check runs typecheck before Biome checks."
+      ],
+      "validation": [
+        "node --test tests/package-validation-contract.test.ts (failed before tsconfig include update)",
+        "node --test tests/package-validation-contract.test.ts",
+        "npm run typecheck",
+        "npm test",
+        "npm run check",
+        "npm run lint",
+        "npm run format:check"
+      ],
+      "gates": "gate.config.json currently configures no gates."
+    },
+    "T011": {
+      "status": "complete",
+      "redEvidence": "Updated tests/documentation-wording.test.ts to require TypeScript source-run guidance and stale JavaScript guidance removal; node --test tests/documentation-wording.test.ts failed before README.md and AGENTS.md were updated.",
+      "changes": [
+        "Documented that RalphWorks ships and runs as TypeScript source through ./index.ts without a build step or committed JavaScript output.",
+        "Updated README.md test and development-check sections to mention Node >=22.22.2, npm run typecheck, explicit TypeScript node --test globs, and the opt-in real Pi e2e command.",
+        "Updated AGENTS.md focused test examples from deleted .js paths to .ts node --test commands.",
+        "Removed stale AGENTS.md guidance about keeping a JavaScript extension-entry wrapper aligned and replaced compaction wording with fresh Pi session handoff/session handoff summary wording.",
+        "Added documentation wording assertions so stale first-party .js test examples or extension-entry wrapper guidance fail in the future."
+      ],
+      "validation": [
+        "node --test tests/documentation-wording.test.ts (failed before documentation updates)",
+        "node --test tests/documentation-wording.test.ts",
+        "npm run typecheck",
+        "npm run check",
+        "npm test"
+      ],
+      "gates": "gate.config.json currently configures no gates."
+    },
+    "T012": {
+      "status": "complete",
+      "redEvidence": "Used the repository invariant tests and existing behavior tests as the final audit safety net; no new behavior drift failures were found during the T012 audit.",
+      "changes": [
+        "Ran final repository scans for existing first-party .js, .mjs, and .cjs files outside generated/external directories; no files were reported.",
+        "Ran final scans for local relative .js import specifiers in TypeScript source; no specifiers were reported.",
+        "Verified package-script and tsconfig invariants, jiti entrypoint loading, and source-run TypeScript behavior through focused tests.",
+        "Ran focused high-risk behavior tests for harness handoff/persistence, gate/model config, TUI rendering, phase transitions, and the real-Pi e2e file in skipped mode.",
+        "Confirmed package metadata and package-lock synchronization with a dry-run package-lock-only install and found no required lockfile changes."
+      ],
+      "validation": [
+        "npm test",
+        "npm run check",
+        "npm run typecheck",
+        "node --test tests/repository-invariants.test.ts tests/entrypoint-load.test.ts tests/package-validation-contract.test.ts",
+        "node --test tests/pi-harness-adapter.test.ts tests/pi-session-handoff.test.ts tests/pi-state-persistence.test.ts tests/gate-config-loader.test.ts tests/gate-runner.test.ts tests/model-config-loader.test.ts tests/phase-model-resolver.test.ts tests/workflow-progress-view.test.ts tests/phase-transitions.test.ts tests/pi-real-session-handoff.e2e.test.ts",
+        "git diff --check",
+        "npm install --package-lock-only --ignore-scripts --no-audit --no-fund --dry-run"
+      ],
+      "gates": "gate.config.json currently configures no gates."
+    },
+    "T013": {
+      "status": "complete",
+      "redEvidence": "Review-required opt-in validation failed before the fix: npm run test:e2e:pi timed out after red_team because the replacement-session agent_end context could not create the next handoff and reported \"RalphWorks session handoff requires an active Pi command context.\" Added a focused harness regression for replacement event contexts without ctx.newSession.",
+      "changes": [
+        "Moved retained session-control contexts into a process-global registry so Pi replacement extension instances can find the command-capable replacement context created by ctx.newSession.withSession.",
+        "Changed remembered session-control lookup to combine the current event context with the retained replacement newSession function, preserving the current session file as the parent for subsequent handoffs.",
+        "Added a harness regression proving a replacement phase completion can create the next handoff even when the event context lacks ctx.newSession.",
+        "Preserved the existing failure behavior when no command-capable context has ever been captured for a pending handoff."
+      ],
+      "validation": [
+        "node --test --test-name-pattern \"replacement phase completion reuses replacement session control when event ctx lacks newSession\" tests/pi-harness-adapter.test.ts",
+        "npm run typecheck",
+        "npm run check",
+        "npm test",
+        "npm run test:e2e:pi"
+      ],
+      "gates": "gate.config.json currently configures no gates."
+    }
+  }
+}
