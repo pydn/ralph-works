@@ -4,14 +4,18 @@
   "private": true,
   "type": "module",
   "description": "Lightweight RalphWorks workflow coordinator for the Pi agent harness.",
+  "engines": {
+    "node": ">=22.22.2"
+  },
   "scripts": {
-    "check": "biome check .",
+    "check": "npm run typecheck && biome check .",
     "check:write": "biome check --write .",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
-    "test": "node --test",
-    "test:e2e:pi": "RALPH_WORKS_PI_E2E=1 node --test tests/pi-real-session-handoff.e2e.test.js"
+    "test": "npm run typecheck && node --test tests/*.test.ts tests/*.e2e.test.ts",
+    "test:e2e:pi": "RALPH_WORKS_PI_E2E=1 node --test tests/pi-real-session-handoff.e2e.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "pi": {
     "extensions": [
@@ -19,6 +23,9 @@
     ]
   },
   "devDependencies": {
-    "@biomejs/biome": "2.4.15"
+    "@biomejs/biome": "2.4.15",
+    "@types/node": "^22.19.19",
+    "jiti": "^2.7.0",
+    "typescript": "^6.0.3"
   }
 }

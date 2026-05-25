@@ -13,6 +13,8 @@
 
 The extension starts only when `/ralph-works start` is called. It tracks the active phase, renders a small dark-terminal TUI widget after the pipeline starts, injects the phase skill and artifact context into each phase prompt, routes phase models from `model.config.json`, runs configured gates from `gate.config.json`, and uses fresh Pi session handoff via `ctx.newSession({ withSession })` after phase and TDD task boundaries.
 
+RalphWorks is shipped as TypeScript source. `package.json` exposes `./index.ts` through `pi.extensions`, and Pi loads the extension from source without a build step or committed JavaScript output. Local development requires Node >=22.22.2 so Node can type-strip and run the TypeScript test files directly.
+
 ## Install
 
 Use the package as a local Pi extension:
@@ -99,13 +101,23 @@ Use `provider/model-id` values when you want the extension to call `pi.setModel(
 
 ## Tests
 
+`npm test` runs `npm run typecheck` first, then executes the TypeScript test suite with explicit Node test globs:
+
 ```sh
 npm test
+npm run typecheck
+node --test tests/*.test.ts tests/*.e2e.test.ts
+```
+
+Run the opt-in real Pi e2e test with:
+
+```sh
+npm run test:e2e:pi
 ```
 
 ## Development Checks
 
-Biome is the repo formatter and linter:
+Biome is the repo formatter and linter. `npm run check` runs TypeScript type checking and Biome checks:
 
 ```sh
 npm run check
