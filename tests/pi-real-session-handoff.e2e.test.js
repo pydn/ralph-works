@@ -193,6 +193,38 @@ async function readSessionHeader(sessionFile) {
   return JSON.parse(text.split("\n")[0]);
 }
 
+async function readLatestRalphWorksState(sessionFile) {
+  let text;
+  try {
+    text = await readFile(sessionFile, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+  return text
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .filter(
+      (entry) =>
+        entry.type === "custom" && entry.customType === "ralph-works-state",
+    )
+    .at(-1)?.data;
+}
+
+async function findRalphWorksState(sessionDir, predicate) {
+  const sessionFiles = await listSessionFiles(sessionDir);
+  for (const sessionFile of sessionFiles.reverse()) {
+    const workflowState = await readLatestRalphWorksState(sessionFile);
+    if (workflowState && predicate(workflowState)) {
+      return { sessionFile, workflowState };
+    }
+  }
+  return undefined;
+}
+
 async function waitForObservation(fn, { timeoutMs = 8_000 } = {}) {
   const startedAt = Date.now();
   let latest;
@@ -294,6 +326,7 @@ test("real Pi creates a replacement session for marker-driven phase handoff", {
   skip: RUN_PI_E2E ? false : "set RALPH_WORKS_PI_E2E=1 to run real Pi E2E",
 }, async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-pi-e2e-"));
+  const workspaceDir = path.join(tempDir, "workspace");
   const agentDir = path.join(tempDir, "agent");
   const sessionDir = path.join(tempDir, "sessions");
   const providerLog = path.join(tempDir, "provider-log.jsonl");
@@ -309,11 +342,12 @@ test("real Pi creates a replacement session for marker-driven phase handoff", {
   const client = new PiRpcClient({
     command: process.execPath,
     args: [],
-    cwd: REPO_ROOT,
+    cwd: workspaceDir,
     env,
   });
 
   try {
+    await mkdir(workspaceDir, { recursive: true });
     await mkdir(sessionDir, { recursive: true });
     await mkdir(agentDir, { recursive: true });
     const bootstrapPath = await writePiMainBootstrap(
@@ -413,6 +447,185 @@ test("real Pi creates a replacement session for marker-driven phase handoff", {
       replacementHeader.parentSession,
       initialState.sessionFile,
       "replacement session should record the source session as parentSession",
+    );
+  } finally {
+    await client.stop();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("real Pi creates a replacement session after a TDD task marker", {
+  skip: RUN_PI_E2E ? false : "set RALPH_WORKS_PI_E2E=1 to run real Pi E2E",
+}, async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-pi-e2e-"));
+  const workspaceDir = path.join(tempDir, "workspace");
+  const agentDir = path.join(tempDir, "agent");
+  const sessionDir = path.join(tempDir, "sessions");
+  const providerLog = path.join(tempDir, "provider-log.jsonl");
+  const piBin = process.env.RALPH_WORKS_PI_BIN ?? "pi";
+  const env = {
+    ...process.env,
+    PI_CODING_AGENT_DIR: agentDir,
+    PI_CODING_AGENT_SESSION_DIR: sessionDir,
+    PI_OFFLINE: "1",
+    PI_TELEMETRY: "0",
+    RALPH_E2E_PROVIDER_LOG: providerLog,
+    RALPH_E2E_SCENARIO: "tdd-handoff",
+  };
+  const client = new PiRpcClient({
+    command: process.execPath,
+    args: [],
+    cwd: workspaceDir,
+    env,
+  });
+
+  try {
+    await mkdir(path.join(workspaceDir, "docs"), { recursive: true });
+    await mkdir(sessionDir, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(
+      path.join(workspaceDir, "docs", "hello-world-task-list.md"),
+      [
+        "- [ ] T001 P0 Build first increment",
+        "- [ ] T002 P1 Build second increment",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const bootstrapPath = await writePiMainBootstrap(
+      tempDir,
+      resolveCommandPath(piBin),
+    );
+    client.args = [
+      bootstrapPath,
+      "--mode",
+      "rpc",
+      "--offline",
+      "--no-extensions",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-themes",
+      "--no-context-files",
+      "--session-dir",
+      sessionDir,
+      "--extension",
+      path.join(__dirname, "fixtures", "scripted-pi-provider.js"),
+      "--extension",
+      path.join(REPO_ROOT, "index.ts"),
+      "--model",
+      "ralph-e2e/scripted",
+    ];
+    await client.start();
+
+    await client.send({
+      type: "prompt",
+      message: "/ralph-works start hello-world Build a hello world example.",
+    });
+
+    const approvalObservation = await waitForObservation(async () => {
+      const [providerCalls, currentState] = await Promise.all([
+        readProviderLog(providerLog),
+        client.getState(),
+      ]);
+      const sawWaitingForApproval = client.events.some(
+        (event) =>
+          event.type === "extension_ui_request" &&
+          event.method === "setWidget" &&
+          event.widgetLines?.some((line) => line.includes("WAITING")),
+      );
+
+      return {
+        done: sawWaitingForApproval,
+        providerCalls,
+        currentState,
+        sawWaitingForApproval,
+      };
+    });
+
+    assert.equal(
+      approvalObservation.timedOut,
+      undefined,
+      [
+        "Timed out waiting for harden approval before TDD handoff.",
+        `stderr:\n${client.stderr}`,
+        `provider calls:\n${JSON.stringify(approvalObservation.providerCalls ?? [], null, 2)}`,
+        `recent events:\n${JSON.stringify(summarizeEvents(client.events), null, 2)}`,
+      ].join("\n\n"),
+    );
+
+    const approvalSessionFile = approvalObservation.currentState.sessionFile;
+    await client.send({
+      type: "prompt",
+      message: "/ralph-works approve",
+    });
+
+    const tddObservation = await waitForObservation(
+      async () => {
+        const [providerCalls, currentState] = await Promise.all([
+          readProviderLog(providerLog),
+          client.getState(),
+        ]);
+        const matchedState = await findRalphWorksState(
+          sessionDir,
+          (workflowState) =>
+            workflowState.currentPhase === "tdd_implement" &&
+            workflowState.phaseStatus === "executing" &&
+            workflowState.implementationStatus?.completedTaskIds?.includes(
+              "T001",
+            ),
+        );
+        const tddPromptCalls = providerCalls.filter(
+          (entry) => entry.sawTddPrompt,
+        );
+
+        return {
+          done: tddPromptCalls.length >= 2 && Boolean(matchedState),
+          providerCalls,
+          currentState,
+          workflowState: matchedState?.workflowState,
+          workflowSessionFile: matchedState?.sessionFile,
+          tddPromptCalls,
+        };
+      },
+      { timeoutMs: 12_000 },
+    );
+
+    assert.equal(
+      tddObservation.timedOut,
+      undefined,
+      [
+        "Timed out waiting for TDD task handoff into a fresh session.",
+        `stderr:\n${client.stderr}`,
+        `provider calls:\n${JSON.stringify(tddObservation.providerCalls ?? [], null, 2)}`,
+        `recent events:\n${JSON.stringify(summarizeEvents(client.events), null, 2)}`,
+      ].join("\n\n"),
+    );
+    assert.equal(
+      tddObservation.providerCalls.some((entry) => entry.sawHandoffCommand),
+      false,
+      "an internal /ralph-works handoff command reached the model during TDD",
+    );
+    assert.notEqual(
+      tddObservation.workflowSessionFile,
+      approvalSessionFile,
+      "expected TDD task completion to move into a later replacement session",
+    );
+    assert.equal(
+      tddObservation.workflowState.sessionHandoffEvents.some(
+        (event) =>
+          event.boundary === "task" &&
+          event.taskId === "T001" &&
+          event.sourcePhase === "tdd_implement" &&
+          event.targetPhase === "tdd_implement",
+      ),
+      true,
+      "expected a completed task handoff event for T001",
+    );
+
+    const sessionFiles = await listSessionFiles(sessionDir);
+    assert.ok(
+      sessionFiles.length >= 6,
+      `expected several replacement Pi sessions through TDD, found ${sessionFiles.length}`,
     );
   } finally {
     await client.stop();

@@ -168,7 +168,10 @@ async function finishAssistantTurn(piCalls, ctx, text) {
 }
 
 async function completeLatestHandoff(_ctxCalls, piCalls, ctx) {
-  await runQueuedHandoffThroughReplacement(piCalls, ctx);
+  const queuedHandoff = piCalls.userMessages.at(-1);
+  if (/^\/ralph-works handoff \S+$/.test(queuedHandoff?.content ?? "")) {
+    await runQueuedHandoffThroughReplacement(piCalls, ctx);
+  }
 }
 
 async function advanceToHardenSpecWithNext(piCalls, ctx) {
@@ -183,15 +186,12 @@ async function advanceToHardenSpecWithNext(piCalls, ctx) {
 async function requestAndApproveHardenSpec(piCalls, ctx) {
   await piCalls.commands.get("ralph-works").handler("next", ctx);
   assert.equal(latestState(piCalls).currentPhase, "harden_spec");
-  assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-  assert.equal(latestState(piCalls).pendingHandoff.boundary, "approval");
-  await completeLatestHandoff(ctx.calls, piCalls, ctx);
   assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
+  await completeLatestHandoff(ctx.calls, piCalls, ctx);
 
   await piCalls.commands.get("ralph-works").handler("approve", ctx);
   assert.equal(latestState(piCalls).currentPhase, "create_tasks");
-  assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-  assert.equal(latestState(piCalls).pendingHandoff.boundary, "approval");
+  assert.equal(latestState(piCalls).phaseStatus, "executing");
   await completeLatestHandoff(ctx.calls, piCalls, ctx);
   assert.equal(latestState(piCalls).phaseStatus, "executing");
 }
@@ -468,7 +468,9 @@ async function runActiveLifecycleHandoff(harness) {
   const sourceRuntime = harness.activeRuntime;
   const queuedHandoff = sourceRuntime.piCalls.userMessages.at(-1);
   const match = /^\/ralph-works handoff (\S+)$/.exec(queuedHandoff?.content);
-  assert.ok(match, "expected queued lifecycle handoff command");
+  if (!match) {
+    return harness.activeRuntime;
+  }
   const handoffId = match[1];
   const sourceMessageCount = sourceRuntime.piCalls.userMessages.length;
 
@@ -734,13 +736,29 @@ test("internal handoff command persists failed state when replacement setup fail
 test("public commands are blocked while a handoff is pending but status and reset remain available", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
+    const pendingState = createPendingSessionHandoff(
+      createWorkflowStateAtPhase("red_team"),
+      {
+        id: "handoff-1",
+        boundary: "phase",
+        reason: "completed generate_spec",
+        sourcePhase: "generate_spec",
+        targetPhase: "red_team",
+      },
+    );
     const { pi, calls: piCalls } = createFakePi();
-    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir, {
+      entries: [
+        {
+          type: "custom",
+          customType: RALPH_WORKS_STATE_ENTRY_TYPE,
+          data: pendingState,
+        },
+      ],
+    });
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
-    await startPipeline(piCalls, ctx);
-    await piCalls.commands.get("ralph-works").handler("next", ctx);
-    const pendingState = latestState(piCalls);
+    await piCalls.events.get("session_start")({ reason: "startup" }, ctx);
     const queuedMessages = piCalls.userMessages.length;
     const appendedEntries = piCalls.appended.length;
 
@@ -756,15 +774,9 @@ test("public commands are blocked while a handoff is pending but status and rese
       await assert.doesNotReject(() =>
         piCalls.commands.get("ralph-works").handler(command, ctx),
       );
-      assert.equal(
-        latestState(piCalls).pendingHandoff.id,
-        pendingState.pendingHandoff.id,
-      );
       assert.match(ctxCalls.notifications.at(-1).message, /handoff/i);
     }
 
-    assert.equal(latestState(piCalls).currentPhase, pendingState.currentPhase);
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
     assert.equal(piCalls.userMessages.length, queuedMessages);
     assert.equal(piCalls.appended.length, appendedEntries);
     assert.equal(ctxCalls.newSessions.length, 0);
@@ -851,10 +863,28 @@ test("failed handoffs block advancement and internal execution until reset", asy
 test("ralph_works_transition reports existing pending handoffs without queuing duplicates", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
+    const pendingState = createPendingSessionHandoff(
+      createWorkflowStateAtPhase("red_team"),
+      {
+        id: "handoff-1",
+        boundary: "phase",
+        reason: "completed generate_spec",
+        sourcePhase: "generate_spec",
+        targetPhase: "red_team",
+      },
+    );
     const { pi, calls: piCalls } = createFakePi();
-    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir, {
+      entries: [
+        {
+          type: "custom",
+          customType: RALPH_WORKS_STATE_ENTRY_TYPE,
+          data: pendingState,
+        },
+      ],
+    });
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
-    await startPipeline(piCalls, ctx);
+    await piCalls.events.get("session_start")({ reason: "startup" }, ctx);
 
     const tool = piCalls.tools.find(
       (definition) => definition.name === "ralph_works_transition",
@@ -891,7 +921,7 @@ test("ralph_works_transition reports existing pending handoffs without queuing d
   }
 });
 
-test("ralph_works_transition queues internal handoff command through pi runtime when context can send", async () => {
+test("ralph_works_transition creates a replacement session without queueing a slash command", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     const { pi, calls: piCalls } = createFakePi();
@@ -915,20 +945,18 @@ test("ralph_works_transition queues internal handoff command through pi runtime 
     );
     const result = await tool.execute("tool-1", {}, undefined, undefined, ctx);
 
-    assert.match(result.content[0].text, /handoff_pending/);
-    assert.equal(piCalls.userMessages.length, messagesBeforeTransition + 1);
-    assert.equal(
-      piCalls.userMessages.at(-1).content,
-      `/ralph-works handoff ${result.details.state.pendingHandoff.id}`,
-    );
-    assert.equal(piCalls.userMessages.at(-1).options.deliverAs, "followUp");
-    assert.deepEqual(contextMessages, []);
+    assert.match(result.content[0].text, /red_team/);
+    assert.equal(result.details.state.currentPhase, "red_team");
+    assert.equal(result.details.state.phaseStatus, "executing");
+    assert.equal(piCalls.userMessages.length, messagesBeforeTransition);
+    assert.equal(contextMessages.length, 1);
+    assert.match(contextMessages[0].content, /# ralph-works Phase: Red Team/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
 });
 
-test("replacement session_start queues ready handoff resume and resume uses replacement runtime", async () => {
+test("replacement session_start resumes a ready handoff and uses replacement runtime", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     await writeFile(
@@ -960,17 +988,6 @@ test("replacement session_start queues ready handoff resume and resume uses repl
       ctx,
     );
 
-    assert.equal(piCalls.userMessages.length, 1);
-    assert.equal(
-      piCalls.userMessages[0].content,
-      "/ralph-works resume-handoff handoff-1",
-    );
-    piCalls.userMessages.length = 0;
-
-    await piCalls.commands
-      .get("ralph-works")
-      .handler("resume-handoff handoff-1", ctx);
-
     assert.equal(latestState(piCalls).currentPhase, "red_team");
     assert.equal(latestState(piCalls).phaseStatus, "executing");
     assert.equal(latestState(piCalls).pendingHandoff, undefined);
@@ -989,7 +1006,7 @@ test("replacement session_start queues ready handoff resume and resume uses repl
   }
 });
 
-test("replacement session_start queues ready handoff resume through pi runtime when context can send", async () => {
+test("replacement session_start sends the resumed prompt through context when available", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     const readyState = createReadyPhaseHandoffState();
@@ -1020,13 +1037,10 @@ test("replacement session_start queues ready handoff resume through pi runtime w
       ctx,
     );
 
-    assert.equal(piCalls.userMessages.length, 1);
-    assert.equal(
-      piCalls.userMessages[0].content,
-      "/ralph-works resume-handoff handoff-1",
-    );
-    assert.equal(piCalls.userMessages[0].options.deliverAs, "followUp");
-    assert.deepEqual(contextMessages, []);
+    assert.equal(piCalls.userMessages.length, 0);
+    assert.equal(contextMessages.length, 1);
+    assert.match(contextMessages[0].content, /# ralph-works Phase: Red Team/);
+    assert.equal(contextMessages[0].options.deliverAs, "followUp");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -1105,13 +1119,6 @@ test("replacement handoff routes model before sending the replacement prompt wit
     await sourceCalls.commands.get("ralph-works").handler("next", sourceCtx);
     const sourceMessagesBeforeHandoff = sourceCalls.userMessages.length;
     const sourceOperationsBeforeHandoff = sourceCalls.operations.length;
-    const handoffCommand = sourceCalls.userMessages
-      .at(-1)
-      .content.replace(/^\/ralph-works\s+/, "");
-
-    await sourceCalls.commands
-      .get("ralph-works")
-      .handler(handoffCommand, sourceCtx);
 
     assert.equal(sourceCtxCalls.newSessions.length, 1);
     assert.equal(sourceCalls.userMessages.length, sourceMessagesBeforeHandoff);
@@ -1119,31 +1126,10 @@ test("replacement handoff routes model before sending the replacement prompt wit
       sourceCalls.operations.slice(sourceOperationsBeforeHandoff),
       [],
     );
-    assert.equal(replacementCalls.userMessages.length, 1);
-    assert.equal(
-      replacementCalls.userMessages[0].content,
-      `/ralph-works resume-handoff ${latestState(sourceCalls).pendingHandoff.id}`,
-    );
-    assert.equal(
-      replacementCalls.userMessages[0].options.deliverAs,
-      "followUp",
-    );
-    assert.equal(replacementContextMessages.length, 0);
-
-    await replacementCalls.commands
-      .get("ralph-works")
-      .handler(
-        replacementCalls.userMessages[0].content.replace(
-          /^\/ralph-works\s+/,
-          "",
-        ),
-        replacementCtx,
-      );
-
+    assert.equal(replacementCalls.userMessages.length, 0);
     assert.equal(replacementCalls.models.at(-1).provider, "openai");
     assert.equal(replacementCalls.models.at(-1).id, "red-team-model");
-    assert.equal(replacementCalls.userMessages.length, 1);
-    assert.equal(replacementContextMessages.length, 1);
+    assert.ok(replacementContextMessages.length >= 1);
     assert.match(
       replacementContextMessages[0].content,
       /# ralph-works Phase: Red Team/,
@@ -1188,11 +1174,6 @@ test("resume handoff for harden approval waits without sending an agent prompt",
       { reason: "new", previousSessionFile: "old" },
       ctx,
     );
-    piCalls.userMessages.length = 0;
-
-    await piCalls.commands
-      .get("ralph-works")
-      .handler("resume-handoff handoff-1", ctx);
 
     assert.equal(latestState(piCalls).currentPhase, "harden_spec");
     assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
@@ -1294,12 +1275,12 @@ test("/ralph-works start launches the first phase with skill and artifact contex
   }
 });
 
-test("phase completion queues a pending handoff before launching the replacement prompt", async () => {
+test("phase completion creates a replacement session before launching the replacement prompt", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     const { pi, calls: piCalls } = createFakePi();
     const sourceState = createWorkflowStateAtPhase("generate_spec");
-    const { sourceCtx, sourceCalls, replacementCtx } = createHandoffContexts(
+    const { sourceCtx, sourceCalls } = createHandoffContexts(
       tempDir,
       sourceState,
     );
@@ -1313,28 +1294,21 @@ test("phase completion queues a pending handoff before launching the replacement
     );
 
     assert.equal(latestState(piCalls).currentPhase, "red_team");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-    assert.equal(latestState(piCalls).pendingHandoff.boundary, "phase");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(sourceCalls.newSessions.length, 1);
     assert.equal(
-      latestState(piCalls).pendingHandoff.sourcePhase,
+      latestState(piCalls).sessionHandoffEvents.at(-1).boundary,
+      "phase",
+    );
+    assert.equal(
+      latestState(piCalls).sessionHandoffEvents.at(-1).sourcePhase,
       "generate_spec",
     );
-    assert.equal(latestState(piCalls).pendingHandoff.targetPhase, "red_team");
-    assert.equal(sourceCalls.newSessions.length, 0);
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
+    assert.equal(
+      latestState(piCalls).sessionHandoffEvents.at(-1).targetPhase,
+      "red_team",
     );
-
-    await runQueuedHandoffThroughReplacement(
-      piCalls,
-      sourceCtx,
-      replacementCtx,
-    );
-
-    assert.equal(sourceCalls.newSessions.length, 1);
     assert.equal(latestState(piCalls).currentPhase, "red_team");
-    assert.equal(latestState(piCalls).phaseStatus, "executing");
     assert.equal(latestState(piCalls).pendingHandoff, undefined);
     assert.match(
       String(piCalls.userMessages.at(-1).content),
@@ -1353,20 +1327,32 @@ test("phase completion queues a pending handoff before launching the replacement
   }
 });
 
-test("duplicate phase marker does not queue a second handoff while one is pending", async () => {
+test("duplicate phase marker is ignored while a handoff is pending", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
+    const pendingState = createPendingSessionHandoff(
+      createWorkflowStateAtPhase("red_team"),
+      {
+        id: "handoff-1",
+        boundary: "phase",
+        reason: "completed generate_spec",
+        sourcePhase: "generate_spec",
+        targetPhase: "red_team",
+      },
+    );
     const { pi, calls: piCalls } = createFakePi();
-    const { ctx, calls: ctxCalls } = createFakeContext(tempDir);
+    const { ctx, calls: ctxCalls } = createFakeContext(tempDir, {
+      entries: [
+        {
+          type: "custom",
+          customType: RALPH_WORKS_STATE_ENTRY_TYPE,
+          data: pendingState,
+        },
+      ],
+    });
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
 
-    await startPipeline(piCalls, ctx);
-    await finishAssistantTurn(
-      piCalls,
-      ctx,
-      "Spec complete.\nRALPH_PHASE_COMPLETE",
-    );
-    const pendingHandoffId = latestState(piCalls).pendingHandoff.id;
+    await piCalls.events.get("session_start")({ reason: "startup" }, ctx);
     const queuedMessages = piCalls.userMessages.length;
     const appendedEntries = piCalls.appended.length;
 
@@ -1376,9 +1362,6 @@ test("duplicate phase marker does not queue a second handoff while one is pendin
       "Spec complete again.\nRALPH_PHASE_COMPLETE",
     );
 
-    assert.equal(latestState(piCalls).currentPhase, "red_team");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-    assert.equal(latestState(piCalls).pendingHandoff.id, pendingHandoffId);
     assert.equal(piCalls.userMessages.length, queuedMessages);
     assert.equal(piCalls.appended.length, appendedEntries);
     assert.equal(ctxCalls.newSessions.length, 0);
@@ -1421,7 +1404,7 @@ test("non-review phase markers hand off through fresh sessions for each target p
     try {
       const { pi, calls: piCalls } = createFakePi();
       const sourceState = createWorkflowStateAtPhase(testCase.sourcePhase);
-      const { sourceCtx, sourceCalls, replacementCtx } = createHandoffContexts(
+      const { sourceCtx, sourceCalls } = createHandoffContexts(
         tempDir,
         sourceState,
       );
@@ -1439,28 +1422,16 @@ test("non-review phase markers hand off through fresh sessions for each target p
 
       const pendingState = latestState(piCalls);
       assert.equal(pendingState.currentPhase, testCase.targetPhase);
-      assert.equal(pendingState.phaseStatus, "handoff_pending");
-      assert.equal(pendingState.pendingHandoff.boundary, "phase");
+      assert.equal(pendingState.phaseStatus, "executing");
+      assert.equal(pendingState.sessionHandoffEvents.at(-1).boundary, "phase");
       assert.equal(
-        pendingState.pendingHandoff.sourcePhase,
+        pendingState.sessionHandoffEvents.at(-1).sourcePhase,
         testCase.sourcePhase,
       );
       assert.equal(
-        pendingState.pendingHandoff.targetPhase,
+        pendingState.sessionHandoffEvents.at(-1).targetPhase,
         testCase.targetPhase,
       );
-      assert.equal(sourceCalls.newSessions.length, 0);
-      assert.match(
-        piCalls.userMessages.at(-1).content,
-        /^\/ralph-works handoff /,
-      );
-
-      await runQueuedHandoffThroughReplacement(
-        piCalls,
-        sourceCtx,
-        replacementCtx,
-      );
-
       assert.equal(sourceCalls.newSessions.length, 1);
       assert.equal(latestState(piCalls).currentPhase, testCase.targetPhase);
       assert.equal(latestState(piCalls).phaseStatus, "executing");
@@ -1507,37 +1478,13 @@ test("harden spec completion hands off to a fresh approval session", async () =>
     );
 
     assert.equal(latestState(piCalls).currentPhase, "harden_spec");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-    assert.equal(latestState(piCalls).pendingHandoff.boundary, "approval");
-    assert.equal(
-      latestState(piCalls).pendingHandoff.sourcePhase,
-      "harden_spec",
-    );
-    assert.equal(
-      latestState(piCalls).pendingHandoff.targetPhase,
-      "harden_spec",
-    );
-    assert.equal(
-      piCalls.userMessages.length,
-      messagesBeforeHardenCompletion + 1,
-    );
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
-    );
-    assert.equal(
-      ctxCalls.newSessions.length,
-      newSessionsBeforeHardenCompletion,
-    );
-
-    await completeLatestHandoff(ctxCalls, piCalls, ctx);
-
+    assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
+    assert.equal(latestState(piCalls).pendingHandoff, undefined);
+    assert.equal(piCalls.userMessages.length, messagesBeforeHardenCompletion);
     assert.equal(
       ctxCalls.newSessions.length,
       newSessionsBeforeHardenCompletion + 1,
     );
-    assert.equal(latestState(piCalls).currentPhase, "harden_spec");
-    assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
     assert.match(
       ctxCalls.notifications.at(-1).message,
       /Approve the hardened spec/,
@@ -1546,33 +1493,19 @@ test("harden spec completion hands off to a fresh approval session", async () =>
       ctxCalls.notifications.at(-1).message,
       /approve --render-html/,
     );
-    assert.doesNotMatch(
-      String(piCalls.userMessages.at(-1).content),
-      /# ralph-works Phase:/,
-    );
-
     await piCalls.commands.get("ralph-works").handler("approve", ctx);
 
     assert.equal(latestState(piCalls).currentPhase, "create_tasks");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-    assert.equal(latestState(piCalls).pendingHandoff.boundary, "approval");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(latestState(piCalls).pendingHandoff, undefined);
     assert.equal(
-      latestState(piCalls).pendingHandoff.sourcePhase,
+      latestState(piCalls).sessionHandoffEvents.at(-1).sourcePhase,
       "harden_spec",
     );
     assert.equal(
-      latestState(piCalls).pendingHandoff.targetPhase,
+      latestState(piCalls).sessionHandoffEvents.at(-1).targetPhase,
       "create_tasks",
     );
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
-    );
-
-    await completeLatestHandoff(ctxCalls, piCalls, ctx);
-
-    assert.equal(latestState(piCalls).currentPhase, "create_tasks");
-    assert.equal(latestState(piCalls).phaseStatus, "executing");
     assert.match(
       String(piCalls.userMessages.at(-1).content),
       /# ralph-works Phase: Task Creation/,
@@ -1602,16 +1535,8 @@ test("ralph-works approve is the only command that advances from harden spec", a
     await piCalls.commands.get("ralph-works").handler("approve", ctx);
 
     assert.equal(latestState(piCalls).currentPhase, "create_tasks");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-    assert.equal(piCalls.userMessages.length, messagesBeforeApprove + 1);
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
-    );
-
-    await completeLatestHandoff(ctxCalls, piCalls, ctx);
-
     assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(piCalls.userMessages.length, messagesBeforeApprove + 1);
     assert.match(
       String(piCalls.userMessages.at(-1).content),
       /# ralph-works Phase: Task Creation/,
@@ -1656,17 +1581,9 @@ test("ralph-works approve can enter optional HTML render before task creation", 
       .handler("approve --render-html", ctx);
 
     assert.equal(latestState(piCalls).currentPhase, "render_html_optional");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-    assert.equal(latestState(piCalls).pendingHandoff.boundary, "approval");
-    assert.equal(piCalls.userMessages.length, messagesBeforeApprove + 1);
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
-    );
-
-    await completeLatestHandoff(ctxCalls, piCalls, ctx);
-
     assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(latestState(piCalls).pendingHandoff, undefined);
+    assert.equal(piCalls.userMessages.length, messagesBeforeApprove + 1);
     assert.match(
       String(piCalls.userMessages.at(-1).content),
       /# ralph-works Phase: Optional HTML Render/,
@@ -1693,18 +1610,8 @@ test("ralph-works next from harden spec pauses for explicit approval", async () 
     await piCalls.commands.get("ralph-works").handler("next", ctx);
 
     assert.equal(latestState(piCalls).currentPhase, "harden_spec");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-    assert.equal(latestState(piCalls).pendingHandoff.boundary, "approval");
-    assert.equal(piCalls.userMessages.length, messagesBeforeNext + 1);
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
-    );
-
-    await completeLatestHandoff(ctxCalls, piCalls, ctx);
-
-    assert.equal(latestState(piCalls).currentPhase, "harden_spec");
     assert.equal(latestState(piCalls).phaseStatus, "awaiting_harden_approval");
+    assert.equal(piCalls.userMessages.length, messagesBeforeNext);
     assert.match(
       ctxCalls.notifications.at(-1).message,
       /Approve the hardened spec/,
@@ -1747,15 +1654,11 @@ test("ralph_works_transition from harden spec requests approval-session handoff"
     const result = await tool.execute("tool-1", {}, undefined, undefined, ctx);
 
     assert.equal(result.details.state.currentPhase, "harden_spec");
-    assert.equal(result.details.state.phaseStatus, "handoff_pending");
-    assert.equal(result.details.state.pendingHandoff.boundary, "approval");
+    assert.equal(result.details.state.phaseStatus, "awaiting_harden_approval");
+    assert.equal(result.details.state.pendingHandoff, undefined);
     assert.equal(latestState(piCalls).currentPhase, "harden_spec");
-    assert.equal(piCalls.userMessages.length, messagesBeforeTransition + 1);
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
-    );
-    assert.equal(ctxCalls.newSessions.length, newSessionsBeforeTransition);
+    assert.equal(piCalls.userMessages.length, messagesBeforeTransition);
+    assert.equal(ctxCalls.newSessions.length, newSessionsBeforeTransition + 1);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -1861,9 +1764,9 @@ test("end-to-end lifecycle restores replacement state across fresh sessions thro
       runtime.ctx,
       "Spec complete.\nRALPH_PHASE_COMPLETE",
     );
-    assert.equal(latestState(runtime.piCalls).currentPhase, "red_team");
-    assert.equal(latestState(runtime.piCalls).phaseStatus, "handoff_pending");
     runtime = await runActiveLifecycleHandoff(harness);
+    assert.equal(latestState(runtime.piCalls).currentPhase, "red_team");
+    assert.equal(latestState(runtime.piCalls).phaseStatus, "executing");
     assert.match(
       String(runtime.piCalls.userMessages.at(-1).content),
       /# ralph-works Phase: Red Team Pass/,
@@ -1893,11 +1796,6 @@ test("end-to-end lifecycle restores replacement state across fresh sessions thro
       latestState(runtime.piCalls).phaseStatus,
       "awaiting_harden_approval",
     );
-    assert.doesNotMatch(
-      String(runtime.piCalls.userMessages.at(-1).content),
-      /# ralph-works Phase:/,
-    );
-
     await runtime.piCalls.commands
       .get("ralph-works")
       .handler("approve", runtime.ctx);
@@ -1924,12 +1822,13 @@ test("end-to-end lifecycle restores replacement state across fresh sessions thro
       runtime.ctx,
       "T001 done.\nRALPH_TDD_TASK_COMPLETE T001",
     );
-    assert.equal(latestState(runtime.piCalls).pendingHandoff.boundary, "task");
-    assert.equal(
-      latestState(runtime.piCalls).pendingHandoff.targetPhase,
-      "review",
-    );
     runtime = await runActiveLifecycleHandoff(harness);
+    assert.equal(latestState(runtime.piCalls).currentPhase, "review");
+    assert.equal(latestState(runtime.piCalls).phaseStatus, "executing");
+    assert.equal(
+      latestState(runtime.piCalls).sessionHandoffEvents.at(-1).boundary,
+      "task",
+    );
     assert.match(
       String(runtime.piCalls.userMessages.at(-1).content),
       /# ralph-works Phase: Review/,
@@ -1986,21 +1885,8 @@ test("replacement prompt dispatch failure marks the handoff failed instead of si
       { reason: "new", previousSessionFile: "old" },
       ctx,
     );
-    assert.equal(piCalls.userMessages.length, 1);
-    assert.equal(
-      piCalls.userMessages[0].content,
-      "/ralph-works resume-handoff handoff-1",
-    );
-    assert.equal(replacementContextMessages.length, 0);
-
-    await assert.doesNotReject(() =>
-      piCalls.commands
-        .get("ralph-works")
-        .handler(
-          piCalls.userMessages[0].content.replace(/^\/ralph-works\s+/, ""),
-          ctx,
-        ),
-    );
+    assert.equal(piCalls.userMessages.length, 0);
+    assert.equal(replacementContextMessages.length, 1);
 
     const failedState = latestState(piCalls);
     assert.equal(failedState.currentPhase, "red_team");
@@ -2013,7 +1899,7 @@ test("replacement prompt dispatch failure marks the handoff failed instead of si
     );
     assert.equal(failedState.sessionHandoffEvents.length, 0);
     assert.equal(piCalls.models.length, 0);
-    assert.equal(piCalls.userMessages.length, 1);
+    assert.equal(piCalls.userMessages.length, 0);
     assert.equal(replacementContextMessages.length, 1);
     assert.match(
       replacementContextMessages[0].content,
@@ -2085,32 +1971,17 @@ test("review changes requested hands off to TDD with loopback context", async ()
     );
 
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-    assert.equal(latestState(piCalls).loopbackCount, 1);
-    assert.equal(
-      latestState(piCalls).pendingHandoff.boundary,
-      "review_loopback",
-    );
-    assert.equal(latestState(piCalls).pendingHandoff.sourcePhase, "review");
-    assert.equal(
-      latestState(piCalls).pendingHandoff.targetPhase,
-      "tdd_implement",
-    );
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
-    );
-    assert.equal(ctxCalls.newSessions.length, newSessionsBefore);
-
-    await runQueuedHandoffThroughReplacement(piCalls, ctx);
-
-    assert.equal(ctxCalls.newSessions.length, newSessionsBefore + 1);
-    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
     assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(latestState(piCalls).loopbackCount, 1);
     assert.equal(
       latestState(piCalls).sessionHandoffEvents.at(-1).boundary,
       "review_loopback",
     );
+    assert.equal(
+      latestState(piCalls).sessionHandoffEvents.at(-1).targetPhase,
+      "tdd_implement",
+    );
+    assert.equal(ctxCalls.newSessions.length, newSessionsBefore + 1);
     assert.match(
       String(piCalls.userMessages.at(-1).content),
       /# ralph-works Phase: Red-Green TDD Implement/,
@@ -2131,7 +2002,18 @@ test("review changes requested hands off to TDD with loopback context", async ()
 test("review loopback ignores duplicate findings while handoff is pending", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
-    const reviewState = createWorkflowStateAtPhase("review");
+    const reviewState = createPendingSessionHandoff(
+      transitionToPhase(createWorkflowStateAtPhase("review"), "tdd_implement", {
+        reason: "review requested changes",
+      }),
+      {
+        id: "handoff-1",
+        boundary: "review_loopback",
+        reason: "review requested changes",
+        sourcePhase: "review",
+        targetPhase: "tdd_implement",
+      },
+    );
     const { pi, calls: piCalls } = createFakePi();
     const { ctx, calls: ctxCalls } = createFakeContext(tempDir, {
       entries: [
@@ -2145,18 +2027,13 @@ test("review loopback ignores duplicate findings while handoff is pending", asyn
     registerRalphWorksExtension(pi, { extensionRoot: path.resolve(".") });
     await piCalls.events.get("session_start")({ reason: "startup" }, ctx);
 
-    await finishAssistantTurn(piCalls, ctx, "RALPH_REVIEW_CHANGES_REQUESTED");
     const queuedMessages = piCalls.userMessages.length;
-    const pendingHandoffId = latestState(piCalls).pendingHandoff.id;
 
     await finishAssistantTurn(piCalls, ctx, "RALPH_REVIEW_CHANGES_REQUESTED");
 
-    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-    assert.equal(latestState(piCalls).loopbackCount, 1);
-    assert.equal(latestState(piCalls).pendingHandoff.id, pendingHandoffId);
     assert.equal(piCalls.userMessages.length, queuedMessages);
     assert.equal(ctxCalls.newSessions.length, 0);
+    assert.match(ctxCalls.notifications.at(-1).message, /handoff/i);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -2218,7 +2095,7 @@ test("review completion requires LGTM instead of the generic phase marker", asyn
   }
 });
 
-test("ralph-works next queues a phase handoff and routes the replacement model on resume", async () => {
+test("ralph-works next creates a fresh session and routes the replacement model", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     await writeFile(
@@ -2240,15 +2117,7 @@ test("ralph-works next queues a phase handoff and routes the replacement model o
 
     assert.equal(piCalls.appended.at(-1).customType, "ralph-works-state");
     assert.equal(piCalls.appended.at(-1).data.currentPhase, "red_team");
-    assert.equal(piCalls.appended.at(-1).data.phaseStatus, "handoff_pending");
-    assert.equal(ctxCalls.newSessions.length, 0);
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
-    );
-
-    await completeLatestHandoff(ctxCalls, piCalls, ctx);
-
+    assert.equal(piCalls.appended.at(-1).data.phaseStatus, "executing");
     assert.equal(ctxCalls.newSessions.length, 1);
     assert.equal(piCalls.models.at(-1).provider, "openai");
     assert.equal(piCalls.models.at(-1).id, "red-team-model");
@@ -2257,7 +2126,7 @@ test("ralph-works next queues a phase handoff and routes the replacement model o
   }
 });
 
-test("ralph_works_transition tool requests a phase handoff without creating a session directly", async () => {
+test("ralph_works_transition tool creates a fresh session for phase handoff", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     const { pi, calls: piCalls } = createFakePi();
@@ -2271,14 +2140,10 @@ test("ralph_works_transition tool requests a phase handoff without creating a se
     const result = await tool.execute("tool-1", {}, undefined, undefined, ctx);
 
     assert.equal(result.details.state.currentPhase, "red_team");
-    assert.equal(result.details.state.phaseStatus, "handoff_pending");
+    assert.equal(result.details.state.phaseStatus, "executing");
     assert.equal(piCalls.appended.at(-1).data.currentPhase, "red_team");
-    assert.equal(piCalls.appended.at(-1).data.phaseStatus, "handoff_pending");
-    assert.equal(ctxCalls.newSessions.length, 0);
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
-    );
+    assert.equal(piCalls.appended.at(-1).data.phaseStatus, "executing");
+    assert.equal(ctxCalls.newSessions.length, 1);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -2308,19 +2173,11 @@ test("ralph-works loopback routes the TDD model", async () => {
       .handler("loopback critical bugs", ctx);
 
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
     assert.equal(
-      latestState(piCalls).pendingHandoff.boundary,
+      latestState(piCalls).sessionHandoffEvents.at(-1).boundary,
       "review_loopback",
     );
-    assert.equal(ctxCalls.newSessions.length, newSessionsBeforeLoopback);
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
-    );
-
-    await completeLatestHandoff(ctxCalls, piCalls, ctx);
-
     assert.equal(ctxCalls.newSessions.length, newSessionsBeforeLoopback + 1);
     assert.equal(piCalls.models.length, modelSelectionsBeforeLoopback + 1);
     assert.equal(piCalls.models.at(-1).provider, "openai");
@@ -2331,7 +2188,7 @@ test("ralph-works loopback routes the TDD model", async () => {
   }
 });
 
-test("ralph-works tdd-complete runs gates, records task completion, and queues task handoff", async () => {
+test("ralph-works tdd-complete runs gates, records task completion, and creates a task handoff session", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     await writeFile(
@@ -2362,11 +2219,17 @@ test("ralph-works tdd-complete runs gates, records task completion, and queues t
     await piCalls.commands.get("ralph-works").handler("tdd-complete T001", ctx);
 
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-    assert.equal(latestState(piCalls).pendingHandoff.boundary, "task");
-    assert.equal(latestState(piCalls).pendingHandoff.taskId, "T001");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
     assert.equal(
-      latestState(piCalls).pendingHandoff.targetPhase,
+      latestState(piCalls).sessionHandoffEvents.at(-1).boundary,
+      "task",
+    );
+    assert.equal(
+      latestState(piCalls).sessionHandoffEvents.at(-1).taskId,
+      "T001",
+    );
+    assert.equal(
+      latestState(piCalls).sessionHandoffEvents.at(-1).targetPhase,
       "tdd_implement",
     );
     assert.equal(latestState(piCalls).tddCompletedTasks, 1);
@@ -2374,19 +2237,9 @@ test("ralph-works tdd-complete runs gates, records task completion, and queues t
       latestState(piCalls).implementationStatus.completedTaskIds[0],
       "T001",
     );
-    assert.equal(ctxCalls.newSessions.length, newSessionsBefore);
-    assert.equal(piCalls.userMessages.length, userMessagesBefore + 1);
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
-    );
-    assert.match(ctxCalls.widgets.at(-1).value.join("\n"), /unit_tests/);
-
-    await completeLatestHandoff(ctxCalls, piCalls, ctx);
-
     assert.equal(ctxCalls.newSessions.length, newSessionsBefore + 1);
-    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
-    assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(piCalls.userMessages.length, userMessagesBefore + 1);
+    assert.match(ctxCalls.widgets.at(-1).value.join("\n"), /unit_tests/);
     assert.match(
       String(piCalls.userMessages.at(-1).content),
       /# ralph-works Phase: Red-Green TDD Implement/,
@@ -2495,27 +2348,23 @@ test("TDD task marker runs gates, records completion, and hands off to the next 
     );
 
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-    assert.equal(latestState(piCalls).pendingHandoff.boundary, "task");
-    assert.equal(latestState(piCalls).pendingHandoff.taskId, "T001");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(
+      latestState(piCalls).sessionHandoffEvents.at(-1).boundary,
+      "task",
+    );
+    assert.equal(
+      latestState(piCalls).sessionHandoffEvents.at(-1).taskId,
+      "T001",
+    );
     assert.equal(latestState(piCalls).tddCompletedTasks, 1);
     assert.equal(
       latestState(piCalls).implementationStatus.completedTaskIds[0],
       "T001",
     );
-    assert.equal(ctxCalls.newSessions.length, newSessionsBefore);
-    assert.equal(piCalls.userMessages.length, userMessagesBeforeMarker + 1);
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
-    );
-    assert.match(ctxCalls.widgets.at(-1).value.join("\n"), /unit_tests/);
-
-    await completeLatestHandoff(ctxCalls, piCalls, ctx);
-
     assert.equal(ctxCalls.newSessions.length, newSessionsBefore + 1);
-    assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
-    assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(piCalls.userMessages.length, userMessagesBeforeMarker + 1);
+    assert.match(ctxCalls.widgets.at(-1).value.join("\n"), /unit_tests/);
     assert.match(
       String(piCalls.userMessages.at(-1).content),
       /# ralph-works Phase: Red-Green TDD Implement/,
@@ -2529,7 +2378,7 @@ test("TDD task marker runs gates, records completion, and hands off to the next 
   }
 });
 
-test("TDD task marker ignores duplicate completion while a task handoff is pending", async () => {
+test("TDD task marker ignores duplicate completion after task handoff completes", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "ralph-adapter-"));
   try {
     await mkdir(path.join(tempDir, "docs"));
@@ -2551,7 +2400,6 @@ test("TDD task marker ignores duplicate completion while a task handoff is pendi
       ctx,
       "T001 done.\nRALPH_TDD_TASK_COMPLETE T001",
     );
-    const pendingHandoffId = latestState(piCalls).pendingHandoff.id;
     const userMessagesAfterFirstMarker = piCalls.userMessages.length;
     const newSessionsAfterFirstMarker = ctxCalls.newSessions.length;
 
@@ -2562,8 +2410,7 @@ test("TDD task marker ignores duplicate completion while a task handoff is pendi
     );
 
     assert.equal(latestState(piCalls).currentPhase, "tdd_implement");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-    assert.equal(latestState(piCalls).pendingHandoff.id, pendingHandoffId);
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
     assert.equal(latestState(piCalls).tddCompletedTasks, 1);
     assert.deepEqual(
       latestState(piCalls).implementationStatus.completedTaskIds,
@@ -2571,7 +2418,7 @@ test("TDD task marker ignores duplicate completion while a task handoff is pendi
     );
     assert.equal(piCalls.userMessages.length, userMessagesAfterFirstMarker);
     assert.equal(ctxCalls.newSessions.length, newSessionsAfterFirstMarker);
-    assert.match(ctxCalls.notifications.at(-1).message, /handoff/i);
+    assert.match(ctxCalls.notifications.at(-1).message, /already completed/i);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -2644,29 +2491,28 @@ test("TDD task marker hands the final task directly to review with one new sessi
     );
 
     assert.equal(latestState(piCalls).currentPhase, "review");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-    assert.equal(latestState(piCalls).pendingHandoff.boundary, "task");
-    assert.equal(latestState(piCalls).pendingHandoff.taskId, "T001");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
     assert.equal(
-      latestState(piCalls).pendingHandoff.sourcePhase,
+      latestState(piCalls).sessionHandoffEvents.at(-1).boundary,
+      "task",
+    );
+    assert.equal(
+      latestState(piCalls).sessionHandoffEvents.at(-1).taskId,
+      "T001",
+    );
+    assert.equal(
+      latestState(piCalls).sessionHandoffEvents.at(-1).sourcePhase,
       "tdd_implement",
     );
-    assert.equal(latestState(piCalls).pendingHandoff.targetPhase, "review");
+    assert.equal(
+      latestState(piCalls).sessionHandoffEvents.at(-1).targetPhase,
+      "review",
+    );
     assert.deepEqual(
       latestState(piCalls).implementationStatus.completedTaskIds,
       ["T001"],
     );
-    assert.equal(ctxCalls.newSessions.length, newSessionsBefore);
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
-    );
-
-    await completeLatestHandoff(ctxCalls, piCalls, ctx);
-
     assert.equal(ctxCalls.newSessions.length, newSessionsBefore + 1);
-    assert.equal(latestState(piCalls).currentPhase, "review");
-    assert.equal(latestState(piCalls).phaseStatus, "executing");
     assert.equal(
       latestState(piCalls).sessionHandoffEvents.filter(
         (event) => event.boundary === "task" && event.targetPhase === "review",
@@ -2836,25 +2682,21 @@ test("TDD phase marker hands all-complete work to review with one new session", 
     );
 
     assert.equal(latestState(piCalls).currentPhase, "review");
-    assert.equal(latestState(piCalls).phaseStatus, "handoff_pending");
-    assert.equal(latestState(piCalls).pendingHandoff.boundary, "phase");
+    assert.equal(latestState(piCalls).phaseStatus, "executing");
     assert.equal(
-      latestState(piCalls).pendingHandoff.sourcePhase,
+      latestState(piCalls).sessionHandoffEvents.at(-1).boundary,
+      "phase",
+    );
+    assert.equal(
+      latestState(piCalls).sessionHandoffEvents.at(-1).sourcePhase,
       "tdd_implement",
     );
-    assert.equal(latestState(piCalls).pendingHandoff.targetPhase, "review");
-    assert.equal(ctxCalls.newSessions.length, newSessionsBefore);
-    assert.equal(piCalls.userMessages.length, userMessagesBefore + 1);
-    assert.match(
-      piCalls.userMessages.at(-1).content,
-      /^\/ralph-works handoff /,
+    assert.equal(
+      latestState(piCalls).sessionHandoffEvents.at(-1).targetPhase,
+      "review",
     );
-
-    await completeLatestHandoff(ctxCalls, piCalls, ctx);
-
     assert.equal(ctxCalls.newSessions.length, newSessionsBefore + 1);
-    assert.equal(latestState(piCalls).currentPhase, "review");
-    assert.equal(latestState(piCalls).phaseStatus, "executing");
+    assert.equal(piCalls.userMessages.length, userMessagesBefore + 1);
     assert.equal(
       latestState(piCalls).sessionHandoffEvents.filter(
         (event) => event.boundary === "phase" && event.targetPhase === "review",

@@ -145,6 +145,67 @@ function createSessionHandoffId() {
   return `handoff-${randomUUID()}`;
 }
 
+const commandContextsBySessionFile = new Map();
+
+function safeGetSessionFile(ctx) {
+  try {
+    return ctx?.sessionManager?.getSessionFile?.();
+  } catch {
+    return undefined;
+  }
+}
+
+function isSessionControlContext(ctx) {
+  try {
+    return typeof ctx?.newSession === "function";
+  } catch {
+    return false;
+  }
+}
+
+function rememberSessionControlContext(ctx) {
+  if (!isSessionControlContext(ctx)) {
+    return;
+  }
+
+  const sessionFile = safeGetSessionFile(ctx);
+  if (sessionFile) {
+    commandContextsBySessionFile.set(sessionFile, ctx);
+  }
+}
+
+function getRememberedSessionControlContext(ctx) {
+  if (isSessionControlContext(ctx)) {
+    rememberSessionControlContext(ctx);
+    return ctx;
+  }
+
+  const sessionFile = safeGetSessionFile(ctx);
+  if (!sessionFile) {
+    return undefined;
+  }
+
+  const remembered = commandContextsBySessionFile.get(sessionFile);
+  if (!remembered) {
+    return undefined;
+  }
+
+  try {
+    if (
+      remembered.sessionManager?.getSessionFile?.() !== sessionFile ||
+      typeof remembered.newSession !== "function"
+    ) {
+      commandContextsBySessionFile.delete(sessionFile);
+      return undefined;
+    }
+  } catch {
+    commandContextsBySessionFile.delete(sessionFile);
+    return undefined;
+  }
+
+  return remembered;
+}
+
 export function registerRalphWorksExtension(
   pi,
   { extensionRoot = DEFAULT_EXTENSION_ROOT } = {},
@@ -179,12 +240,6 @@ export function registerRalphWorksExtension(
     return pi.sendUserMessage?.(content, options);
   }
 
-  async function queueInternalCommand(content) {
-    return pi.sendUserMessage?.(content, {
-      deliverAs: "followUp",
-    });
-  }
-
   async function launchCurrentPhase(ctx, { prefixText, delivery } = {}) {
     if (!state) {
       return undefined;
@@ -209,10 +264,6 @@ export function registerRalphWorksExtension(
     return state;
   }
 
-  async function queueInternalHandoffCommand(handoffId) {
-    await queueInternalCommand(`/ralph-works handoff ${handoffId}`);
-  }
-
   async function requestSessionHandoff(
     ctx,
     nextState,
@@ -229,7 +280,7 @@ export function registerRalphWorksExtension(
     });
     persistRalphWorksState(pi, state);
     updateRalphWorksTui(ctx, state, await getActivePhaseModelName(ctx, state));
-    await queueInternalHandoffCommand(state.pendingHandoff.id);
+    await executePendingHandoffWithSessionControl(ctx, state.pendingHandoff.id);
     return state;
   }
 
@@ -712,6 +763,8 @@ export function registerRalphWorksExtension(
   }
 
   async function executePendingHandoff(ctx, handoffId) {
+    rememberSessionControlContext(ctx);
+
     if (!state) {
       notifyNoActivePipeline(ctx);
       return undefined;
@@ -734,11 +787,45 @@ export function registerRalphWorksExtension(
             await getActivePhaseModelName(ctx, state),
           );
         },
+        withReplacementSession: async (newCtx) => {
+          rememberSessionControlContext(newCtx);
+          const restoredState = restoreRalphWorksState(newCtx);
+          if (
+            restoredState?.pendingHandoff?.status ===
+            HANDOFF_STATUS_READY_IN_NEW_SESSION
+          ) {
+            state = restoredState;
+            implementationStatus =
+              state.implementationStatus ?? createImplementationStatus();
+            await resumeReadyHandoff(newCtx);
+          }
+        },
       });
     } catch (error) {
       ctx.ui?.notify?.(error.message, "error");
       return state;
     }
+  }
+
+  async function executePendingHandoffWithSessionControl(ctx, handoffId) {
+    const sessionControlCtx = getRememberedSessionControlContext(ctx);
+    if (!sessionControlCtx) {
+      state = failSessionHandoff(state, handoffId, {
+        error: new Error(
+          "RalphWorks session handoff requires an active Pi command context.",
+        ),
+      });
+      persistRalphWorksState(pi, state);
+      updateRalphWorksTui(
+        ctx,
+        state,
+        await getActivePhaseModelName(ctx, state),
+      );
+      ctx.ui?.notify?.(state.pendingHandoff.errorMessage, "error");
+      return state;
+    }
+
+    return executePendingHandoff(sessionControlCtx, handoffId);
   }
 
   function validateResumeHandoff(handoffId) {
@@ -834,17 +921,17 @@ export function registerRalphWorksExtension(
     }
   }
 
-  async function queueReadyHandoffResume() {
+  async function resumeReadyHandoff(ctx) {
     if (state?.pendingHandoff?.status !== HANDOFF_STATUS_READY_IN_NEW_SESSION) {
       return;
     }
 
-    await queueInternalCommand(
-      `/ralph-works resume-handoff ${state.pendingHandoff.id}`,
-    );
+    await resumeHandoff(ctx, state.pendingHandoff.id);
   }
 
   async function handleCommand(args, ctx) {
+    rememberSessionControlContext(ctx);
+
     const [command = "status", ...commandArgs] = splitCommandArgs(args);
 
     if (command === "status") {
@@ -942,7 +1029,7 @@ export function registerRalphWorksExtension(
       state?.implementationStatus ?? createImplementationStatus();
     if (state) {
       await showStatus(ctx);
-      await queueReadyHandoffResume();
+      await resumeReadyHandoff(ctx);
     }
   });
 

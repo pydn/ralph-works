@@ -4,6 +4,7 @@ import path from "node:path";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 
 let callCount = 0;
+let tddPromptCount = 0;
 
 function usage() {
   return {
@@ -71,7 +72,28 @@ function scriptedResponseFor(prompt) {
   }
 
   if (/# ralph-works Phase: Red Team Pass/.test(prompt)) {
+    if (process.env.RALPH_E2E_SCENARIO === "tdd-handoff") {
+      return "Red team findings written.\n\nRALPH_PHASE_COMPLETE";
+    }
+
     return "Red team prompt reached in the replacement session.";
+  }
+
+  if (/# ralph-works Phase: Harden Spec/.test(prompt)) {
+    return "Hardened spec written.\n\nRALPH_PHASE_COMPLETE";
+  }
+
+  if (/# ralph-works Phase: Task Creation/.test(prompt)) {
+    return "Task list written.\n\nRALPH_PHASE_COMPLETE";
+  }
+
+  if (/# ralph-works Phase: Red-Green TDD Implement/.test(prompt)) {
+    tddPromptCount += 1;
+    if (tddPromptCount === 1) {
+      return "T001 complete.\n\nRALPH_TDD_TASK_COMPLETE T001";
+    }
+
+    return "Second TDD task prompt reached in the replacement session.";
   }
 
   return "SCRIPTED_PROVIDER_UNEXPECTED_PROMPT";
@@ -108,6 +130,9 @@ function streamScriptedResponse(model, context, options) {
       promptLength: prompt.length,
       sawGenerateSpecPrompt: /# ralph-works Phase: Generate Spec/.test(prompt),
       sawRedTeamPrompt: /# ralph-works Phase: Red Team Pass/.test(prompt),
+      sawHardenSpecPrompt: /# ralph-works Phase: Harden Spec/.test(prompt),
+      sawTaskCreationPrompt: /# ralph-works Phase: Task Creation/.test(prompt),
+      sawTddPrompt: /# ralph-works Phase: Red-Green TDD Implement/.test(prompt),
       sawHandoffCommand: /^\/ralph-works handoff\b/.test(prompt.trim()),
       responseText: text,
       timestamp: new Date().toISOString(),
